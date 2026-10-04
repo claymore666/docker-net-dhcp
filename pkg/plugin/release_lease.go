@@ -144,8 +144,7 @@ func (m *dhcpManager) releaseHeldLease(v6 bool) releaseOutcome {
 					"and RFC 9915 section 18.2.7 requires that before the exchange begins")
 			return releaseWithdrawFailed
 		}
-		// The aggregate is unreachable and forwards nothing, so one left behind uses no part of the prefix (RFC 8415
-		// section 18.2.7); holding the Release for it would strand the address and the prefix on the server (#214).
+		// An unreachable aggregate forwards nothing; holding the Release for it would strand the lease (RFC 8415 section 18.2.7, #214).
 		m.seedPrefixRoutes(&rec.Lease)
 		if err := m.withdrawPrefixRoutes(); err != nil {
 			log.WithError(err).WithFields(m.logFields(true)).

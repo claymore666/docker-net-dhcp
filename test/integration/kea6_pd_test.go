@@ -385,21 +385,12 @@ func TestKea6PD_APluginRestartRebindsAndKeepsTheAggregate(t *testing.T) {
 	if got := aggregatesOf(t, ctx, id)(); !samePrefixes(held)(got) {
 		t.Errorf("the container routes %v after the restart, want the unchanged %v", got, held)
 	}
-	// The route survives a restart in the sandbox with no plugin action, so only the new process's own lease events,
-	// which fill delegated_prefixes, show that it holds the prefix again (#214).
-	var h *harness.HealthResponse
-	reported := false
-	for stop := time.Now().Add(15 * time.Second); !reported && time.Now().Before(stop); time.Sleep(250 * time.Millisecond) {
-		if got, err := harness.PluginHealth(ctx, cli); err == nil {
-			h = got
-			reported = healthReports(h, held[0])
-		}
-	}
-	if !reported {
-		t.Errorf("15s after the Rebind no endpoint in Plugin.Health of the restarted plugin reports %s: %+v", held[0], h)
-	}
+	// The route outlives a restart, so only the new process's own events, which fill delegated_prefixes, show it holds
+	// the prefix again (#214).
+	harness.WaitPluginHealthFor(t, ctx, cli, 15*time.Second, "the restarted plugin to report "+held[0].String(),
+		func(h *harness.HealthResponse) bool { return healthReports(h, held[0]) })
 
-	// A Leave withdraws what this process owns, and it owns the route only if Start seeded it from the record (#214).
+	// The new process owns the route only if Start seeded it from the record (#214).
 	if err := cli.NetworkDisconnect(ctx, "dh-itest-pdrst", id, false); err != nil {
 		t.Fatalf("NetworkDisconnect: %v", err)
 	}
@@ -409,10 +400,8 @@ func TestKea6PD_APluginRestartRebindsAndKeepsTheAggregate(t *testing.T) {
 	}
 }
 
-// foreignAggregate is outside harness.Kea6PDPrefix and keaPDMovedPool, so no delegation Kea makes can be it.
 var foreignAggregate = netip.MustParsePrefix("fd00:77:0:5::/64")
 
-// ownAggregates are the aggregates of routes other than the foreign one.
 func ownAggregates(t *testing.T, ctx context.Context, id string) []netip.Prefix {
 	var out []netip.Prefix
 	for _, p := range harness.DelegatedAggregates(harness.ContainerV6Routes(t, ctx, id)) {
@@ -423,11 +412,10 @@ func ownAggregates(t *testing.T, ctx context.Context, id string) []netip.Prefix 
 	return out
 }
 
-// TestKea6PD_AnEndpointLeavesAnotherOwnersAggregateAlone checks that a renewal and a release of an ipv6_pd endpoint
-// leave an unreachable proto dhcp route that it did not install, as a second endpoint's or a PD client's, in the shared
-// sandbox (#214). The pool lane has one v6 segment, and libnetwork refuses a second interface in a subnet the container
-// already routes (#847), so a second plugin network cannot join this container; TestReconcilePrefixRoutes_
-// AnEndpointTouchesOnlyTheAggregatesItInstalled drives two endpoints on one table.
+// TestKea6PD_AnEndpointLeavesAnotherOwnersAggregateAlone checks that a Renew and a release leave a route the endpoint did
+// not install, as a second endpoint's or a PD client's (#214). The lane has one v6 segment and libnetwork refuses a second
+// interface in a routed subnet (#847), so a second plugin network cannot join; the unit test of two endpoints on one
+// table is the other observer.
 func TestKea6PD_AnEndpointLeavesAnotherOwnersAggregateAlone(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -448,8 +436,8 @@ func TestKea6PD_AnEndpointLeavesAnotherOwnersAggregateAlone(t *testing.T) {
 			foreignAggregate, harness.ContainerV6Routes(t, ctx, id))
 	}
 
-	// T1 is 10s, so the first Renew follows within the budget; the route is read every poll until Kea's row moves, then
-	// for a settle window past it, because the plugin handles the Reply after Kea writes the row.
+	// The route is read until Kea's row moves and for a settle window past it: the plugin handles the Reply after Kea
+	// writes the row (#214).
 	renewedAt := time.Time{}
 	for stop := time.Now().Add(45 * time.Second); time.Now().Before(stop); time.Sleep(250 * time.Millisecond) {
 		if !foreignHeld() {
@@ -482,7 +470,6 @@ func TestKea6PD_AnEndpointLeavesAnotherOwnersAggregateAlone(t *testing.T) {
 	if kea.CountLogLines("DHCP6_RELEASE_PD_EXPIRED") <= before {
 		t.Fatalf("Kea logged no DHCP6_RELEASE_PD_EXPIRED within 15s of the disconnect: the release the withdrawal belongs to never ran")
 	}
-	// The control for the absence below: the endpoint's own aggregate must be the one that went.
 	if got, ok := pollPrefixes(5*time.Second, func() []netip.Prefix { return ownAggregates(t, ctx, id) }, none); !ok {
 		t.Errorf("the endpoint's own aggregates are %v after it left the network, want none", got)
 	}

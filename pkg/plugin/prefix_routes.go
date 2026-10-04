@@ -43,8 +43,7 @@ func (m *dhcpManager) installedPrefixRoutes() (map[string]*net.IPNet, error) {
 	return out, nil
 }
 
-// reconcilePrefixRoutes makes this endpoint's aggregates exactly prefixes, leaving every route it did not install alone;
-// skip_routes governs a server's routes, not this one (#214).
+// reconcilePrefixRoutes makes this endpoint's own aggregates exactly prefixes; skip_routes does not govern them (#214).
 func (m *dhcpManager) reconcilePrefixRoutes(prefixes []dhcp.V6Addr) error {
 	if m.netHandle == nil {
 		return nil

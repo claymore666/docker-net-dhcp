@@ -94,8 +94,7 @@ type dhcpManager struct {
 	// delegated is the last v6 lease event's IA_PD prefixes, prefixOverlap whether they overlapped another endpoint's (#214).
 	delegated     []v6PrefixRecord
 	prefixOverlap bool
-	// prefixRoutes is the aggregates this endpoint installed, so a renewal or withdrawal never touches another
-	// endpoint's in a shared sandbox; it is seeded from the endpoint's own lease record, which outlives a restart (#214).
+	// prefixRoutes is the aggregates this endpoint installed, seeded from its own lease record, which outlives a restart (#214).
 	prefixRoutes map[string]*net.IPNet
 
 	// recordID is the durable lease record (#899); empty in unit tests and adopted endpoints, where record calls no-op.
