@@ -2390,6 +2390,23 @@ their exceptions, such as test files and <code>testdata/</code>, are one table i
 the library, and a class that matches nothing refuses unless the gate
 passes <code>--may-be-empty</code>. <code>scripts/test-gatelib.sh</code> checks the contract
 and that every <code>check-*.sh</code> sources the library.</p>
+<p>Every gate also says when it should be removed (#749). Its leading
+comment block carries one <code># Expires-when:</code> line, continued on lines
+indented two or more spaces, that names the condition and cites the issue
+it comes from; a gate that guards a standing invariant says <code>never</code> and
+why. The gates are every <code>scripts/check-*.sh</code> and every <code>scripts/*-gate.sh</code>.
+<a href="https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/check-gate-expiry.sh"><code>scripts/check-gate-expiry.sh</code></a>
+fails a pull request whose gate has no such line, or one that is empty, a
+placeholder, under six words, without an issue reference, longer than four
+lines, or copied from another gate. From the v2.5.0 release on, the Gate
+expiry workflow lists every gate with its condition in the job summary
+once a quarter, for a person to re-read; it never decides that a
+condition holds. GitHub runs a scheduled workflow only from the default
+branch, so until that release <code>bash scripts/check-gate-expiry.sh --list</code>
+prints the same list locally. To add a gate: source
+<code>gatelib.sh</code>, write the <code>Expires-when</code> line, add a <code>scripts/test-check-&lt;name&gt;.sh</code>
+self-test, and wire it into the <code>policy-gates</code> job of <code>test.yaml</code> and into
+<code>scripts/local-lane.sh</code>.</p>
 <p>Everything it does <strong>not</strong> do is declared and never merely absent.
 <code>scripts/local-lane.sh --list-exempt</code> prints the list with reasons, and
 that is the place to read it instead of a count written here, which has
