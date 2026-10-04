@@ -652,6 +652,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#versioning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Versioning
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#creating-networks" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1189,6 +1200,17 @@
     <span class="md-ellipsis">
       
         Install, upgrade, uninstall
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#versioning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Versioning
       
     </span>
   </a>
@@ -1993,6 +2015,57 @@ policy, fails the same way and leaves it stopped: then run
 </code></pre></div>
 <p><code>disable</code> fails while networks still use the plugin. Remove those first
 (<code>docker network ls</code>, <code>docker network rm ...</code>).</p>
+<hr />
+<h2 id="versioning">Versioning<a class="headerlink" href="#versioning" title="Permanent link">&para;</a></h2>
+<p>Releases are numbered <code>vMAJOR.MINOR.PATCH</code> in the sense of
+<a href="https://semver.org/">Semantic Versioning</a>. The numbers describe one
+thing: what an operator depends on, called the contract below. The
+project ships as a plugin image, and its Go packages are not part of the
+contract.</p>
+<p><strong>The contract</strong> is:</p>
+<ul>
+<li>the driver options and the values each one accepts, with their
+  defaults
+  (<a href="#driver-options-network-level">network-level</a>,
+  <a href="#driver-options-per-endpoint">per-endpoint</a>);</li>
+<li>what a network does in each mode, bridge, macvlan and ipvlan
+  (<a href="#creating-networks">Creating networks</a>, <a href="#behaviour">Behaviour</a>);</li>
+<li>the plugin settings, among them <code>STATE_DIR</code>: its location on the host,
+  <code>/var/lib/net-dhcp</code>, and the names and formats of the files the plugin
+  keeps in it (<a href="#plugin-settings">Plugin settings</a>,
+  <a href="#state-persistence">State persistence</a>);</li>
+<li>the fields and counter names of <a href="#pluginhealth"><code>/Plugin.Health</code></a>,
+  and the <a href="#metrics"><code>/metrics</code></a> series rendered from them;</li>
+<li>the image names and the tag scheme: <code>vX.Y.Z</code> for <code>linux/amd64</code>,
+  <code>vX.Y.Z-arm64</code> for <code>linux/arm64</code>, and the floating <code>latest</code> and
+  <code>latest-arm64</code> (<a href="#install-upgrade-uninstall">Install, upgrade, uninstall</a>);</li>
+<li>the minimum Docker Engine, 20.10 today
+  (<a href="../#requirements">Requirements</a>, #672).</li>
+</ul>
+<p><strong>Which number moves:</strong></p>
+<ul>
+<li><strong>Major:</strong> something in the contract is removed, renamed or changes
+  meaning, so an install, a Compose file or a monitor that worked on the
+  previous release needs a change from the operator. Examples: an option
+  or an accepted value is removed, a default changes what it does,
+  <code>STATE_DIR</code> moves or a file in it changes so the new release cannot
+  read the old one, a Health field or counter is removed or renamed, the
+  tag scheme changes, the minimum engine goes up.</li>
+<li><strong>Minor:</strong> something is added to the contract and nothing in it
+  changes. Examples: a new option, a new accepted value, a new Health
+  field or counter, a new architecture tag, a lower minimum engine.</li>
+<li><strong>Patch:</strong> the contract is unchanged. Examples: a fix that makes the
+  plugin do what this page already says, a security fix, a dependency
+  update, a refactor.</li>
+</ul>
+<p><strong>Not part of the contract:</strong> log lines (their text, level and fields),
+counters the plugin keeps but <code>/Plugin.Health</code> does not show, the
+internal dependencies, the test suites, CI and the test lab. These change
+in any release. The files in <code>STATE_DIR</code> stay in the contract, as listed
+above.</p>
+<p>The rule binds from v2.5.0 onward. The case that prompted it: v1.5.0, a
+minor release, moved <code>STATE_DIR</code> to a host bind mount that every existing
+install had to create before upgrading, which under this rule is a major.</p>
 <hr />
 <h2 id="creating-networks">Creating networks<a class="headerlink" href="#creating-networks" title="Permanent link">&para;</a></h2>
 <p>All modes share two invariants:</p>
