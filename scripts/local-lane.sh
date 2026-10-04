@@ -118,7 +118,7 @@ LANE=(
   "proc-path discipline|-|bash scripts/check-proc-path-discipline.sh"
   "openat cloexec|-|bash scripts/check-openat-cloexec.sh"
   "manager registration|-|bash scripts/check-manager-registration.sh"
-  "pi watchdog wiring|-|bash scripts/check-pi-watchdog-wiring.sh"
+  "pi watchdog wiring|-|bash scripts/check-pi-watchdog.sh --tree"
   "parent-gate accounting|-|bash scripts/check-parent-gate-accounting.sh"
   "doc invariants|-|bash scripts/check-doc-invariants.sh"
   "build-dir refs|-|bash scripts/check-build-dir-refs.sh"

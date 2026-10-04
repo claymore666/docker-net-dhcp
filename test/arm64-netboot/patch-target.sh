@@ -159,7 +159,7 @@ ln -sf /dev/null "${NFSROOT_DIR}/etc/systemd/system/systemd-networkd-wait-online
 #     configured
 #   - without the unit, nothing pets at all and a healthy host resets a
 #     minute after boot
-# scripts/check-pi-watchdog-wiring.sh exists because that pair is exactly
+# scripts/check-pi-watchdog.sh --tree exists because that pair is exactly
 # the kind of thing prose cannot hold.
 log "handing /dev/watchdog from systemd to nfs-watchdog"
 mkdir -p "${NFSROOT_DIR}/etc/systemd/system.conf.d"
@@ -191,7 +191,7 @@ Documentation=https://github.com/claymore666/docker-net-dhcp/issues/632
 # opposite, which handed the SoC timer back at the first instant of every
 # reboot: systemd stopped this unit, the daemon disarmed on SIGTERM, and a
 # shutdown that then blocked on the dead share hung forever with nothing
-# armed to end it. Do not add them back -- check-pi-watchdog-wiring.sh
+# armed to end it. Do not add them back -- check-pi-watchdog.sh --tree
 # fails if they return.
 DefaultDependencies=no
 After=sysinit.target

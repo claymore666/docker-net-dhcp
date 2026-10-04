@@ -152,7 +152,7 @@ jobs:
       - name: Verify the host's NFS-outage watchdog
         run: |
           set +e
-          bash scripts/check-host-watchdog.sh
+          bash scripts/check-pi-watchdog.sh --host
           rc=$?
           set -e
           if [ "$rc" -eq 2 ]; then

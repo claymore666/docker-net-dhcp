@@ -750,7 +750,7 @@ jobs:
       # image, so without this the breakage surfaces at the next
       # reprovision of that host instead of here (#632).
       - name: Pi watchdog wiring
-        run: bash scripts/check-pi-watchdog-wiring.sh
+        run: bash scripts/check-pi-watchdog.sh --tree
 
       # A parent NIC registers one rx_handler, so it is a macvlan port
       # or an ipvlan port and never both. Every child link attached to a
