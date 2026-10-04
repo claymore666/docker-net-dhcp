@@ -9,6 +9,9 @@
 #   --tree  reads the PROVISIONER, in the tree. Fails only with a commit.
 #   --host  reads the RUNNING host. Can fail with nobody touching the tree.
 #
+# Expires-when: the arm64 host no longer boots from an NFS root, so there is
+#   no NFS outage left to watch (#632).
+#
 # There is no default mode: a bare call is a usage error (exit 2), so a
 # lane that forgets to name its side runs neither.
 #

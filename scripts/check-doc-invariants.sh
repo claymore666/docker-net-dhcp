@@ -5,6 +5,9 @@
 # Every documentation invariant declared in .github/doc-invariants.txt
 # must still be present in every file that declares it (#579).
 #
+# Expires-when: .github/doc-invariants.txt is empty: each entry is an
+#   operator precondition with no code fact another gate could check (#579).
+#
 # WHY THIS EXISTS
 #
 # The STATE_DIR install precondition — `sudo mkdir -p /var/lib/net-dhcp`

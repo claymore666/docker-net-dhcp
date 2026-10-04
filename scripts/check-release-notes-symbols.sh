@@ -4,6 +4,9 @@
 
 # Every Go-shaped symbol RELEASE_NOTES.md names must exist in the tree.
 #
+# Expires-when: release notes stop naming Go symbols, or are generated from
+#   merged PRs instead of written by hand (#888).
+#
 # RELEASE_NOTES.md merges last and describes code that is still moving.
 # The v1.8.0 PID-mismatch paragraph named `notePIDMismatch` and
 # `TestNotePIDMismatch_CountsTheEffect`; the only file in the repository

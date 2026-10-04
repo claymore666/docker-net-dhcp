@@ -7,6 +7,9 @@
 # allowlist. Warn (without failing) about allowlist entries that are no
 # longer reported, so stale acceptances get cleaned up.
 #
+# Expires-when: govulncheck itself accepts a reviewed exclusion list and
+#   warns on stale entries, so this wrapper adds nothing (#127).
+#
 # Usage: govulncheck-gate.sh <govulncheck-text-output> <allowlist-file>
 #   <govulncheck-text-output>: captured stdout of `govulncheck ./...`
 #       (exit 3 from govulncheck means "findings exist" — capture the

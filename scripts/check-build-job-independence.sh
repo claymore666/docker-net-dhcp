@@ -3,6 +3,9 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # Assert that no image-publishing job waits on another one (#796).
 #
+# Expires-when: both architectures publish from one job or one
+#   multi-platform build, so no publishing job can wait on another (#796).
+#
 # WHAT #796 CHANGED AND WHY IT NEEDS A GATE. `release-arm64` used to
 # carry `needs: release`, so the arm64 build did not start until the
 # entire amd64 job had finished, and was SKIPPED outright when amd64

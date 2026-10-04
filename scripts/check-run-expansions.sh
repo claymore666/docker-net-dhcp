@@ -5,6 +5,9 @@
 # Assert that no attacker-influenced expression is expanded into a
 # `run:` body (#737).
 #
+# Expires-when: never: a ${{ }} expression is substituted before bash parses
+#   the step (#737), a platform fact; ends if Actions quotes it.
+#
 # THE FAILURE THIS PREVENTS. `${{ ... }}` is substituted into the step
 # script BEFORE bash parses it. A value carrying a quote and a semicolon
 # therefore becomes commands, and validating it on the next line is too

@@ -4,6 +4,9 @@
 
 # pipefail + early-exit-consumer gate.
 #
+# Expires-when: never: pipefail with an early-exit consumer reports SIGPIPE
+#   141 as a failure, a shell fact (#297); ends if no script uses pipefail.
+#
 # Under `set -o pipefail` a pipeline reports the failure of ANY stage.
 # `grep -q` exits the moment it matches, which closes the pipe while the
 # producer is still writing: the producer dies of SIGPIPE with status

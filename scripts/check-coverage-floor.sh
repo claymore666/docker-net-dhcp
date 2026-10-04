@@ -5,6 +5,9 @@
 # Coverage-floor gate (#735): a PR may not lower a floor in
 # .github/coverage-baseline.txt without saying so.
 #
+# Expires-when: the coverage ratchet and .github/coverage-baseline.txt are
+#   retired; until then a silent floor cut is the hole #735 closed.
+#
 # Usage: check-coverage-floor.sh <commit-range> [pr-body-file]
 #   <commit-range>: any git range, e.g. origin/dev..HEAD
 #   [pr-body-file]: optional file holding the PR description

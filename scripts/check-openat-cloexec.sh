@@ -5,6 +5,9 @@
 # Every raw file descriptor the PLUGIN opens must be close-on-exec
 # (#729).
 #
+# Expires-when: the plugin opens no raw file descriptor and every open goes
+#   through Go's os package, which sets close-on-exec (#729).
+#
 # "Raw" and "the plugin" are both load-bearing and both narrower than
 # "every fd": descriptors opened through Go's os package already carry
 # the flag, and test files are deliberately out of scope (see below).

@@ -5,6 +5,9 @@
 # The three settings that stand between a fork PR and root on the
 # self-hosted pool (#830).
 #
+# Expires-when: no workflow an outsider can trigger places jobs on the
+#   self-hosted pool, so these settings guard nothing (#830).
+#
 # WHAT IS ACTUALLY AT STAKE. TWO workflows trigger on something an
 # outsider can cause AND place jobs off the GitHub-hosted images:
 # `coverage.yml` and `integration.yml`. Neither carries a fork guard --

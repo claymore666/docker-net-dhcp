@@ -162,3 +162,13 @@
 #     with nothing to report stays quiet, pins or no pins.
 #     The stale rule is never suspended.
 #
+.github/workflows/gate-expiry.yml
+  Reason: The Gate expiry list (#749) is new on this branch, so neither
+    its quarterly cron nor a dispatch can start it until it reaches
+    `main`. Until then the same script runs on every pull request as
+    the Gate expiry check, and `bash scripts/check-gate-expiry.sh --list`
+    prints the list locally.
+  Clears: The v2.5.0 release merges `dev` into `main`. Remove this entry
+    in that release PR; this gate fails on it once the workflow is on the
+    default branch.
+  Triggers: schedule workflow_dispatch

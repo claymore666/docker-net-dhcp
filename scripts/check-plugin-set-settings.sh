@@ -5,6 +5,9 @@
 # Every `docker plugin set NAME=...` operand must be a setting some
 # manifest actually declares.
 #
+# Expires-when: never: the daemon refuses docker plugin set for a setting no
+#   manifest declares (#899); ends only if no document shows plugin set.
+#
 # WHY THIS EXISTS. The daemon refuses the call outright:
 #
 #   Error response from daemon: setting "OUTAGE_TICK" not found in the

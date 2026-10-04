@@ -4,6 +4,9 @@
 
 # The local lane must not test less than CI does (#636).
 #
+# Expires-when: scripts/local-lane.sh is generated from test.yaml instead of
+#   listing the gates by hand (#636).
+#
 # WHY THIS EXISTS
 #
 # `scripts/local-lane.sh` lets a developer run the fast CI lane before

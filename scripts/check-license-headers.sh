@@ -8,6 +8,9 @@
 # at repository level. Measured before this gate existed: 0 of 102
 # tracked Go files carried either.
 #
+# Expires-when: the OpenSSF gold criteria copyright_per_file and
+#   license_per_file stop being a project goal (#454).
+#
 # WHY THE EXPRESSION IS `GPL-3.0-only` AND NOT `-or-later`. The issue
 # that asked for this drafted `-or-later`, and that would have been a
 # licence change. LICENSE.md here — and in upstream, which this is a

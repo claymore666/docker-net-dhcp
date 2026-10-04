@@ -1,0 +1,31 @@
+name: Gate expiry
+
+# Lists every gate with its Expires-when condition for a human to re-read
+# (#749). A gate whose condition now holds is a candidate for removal;
+# the job never decides that, so it is never red because a condition
+# might be met. It goes red only on a gate with no line, which the same
+# script in test.yaml refuses on every PR first, or when it cannot read
+# the gates at all.
+#
+# Output is the job summary, not an issue: the list needs only a read
+# token, and an issue each quarter would need issues: write and a
+# milestone or backlog decision on the public tracker. A cron fires
+# from the default branch, so it lists main's gates, the shipped set.
+on:
+  schedule:
+    # First day of each quarter; a premise needs months to expire.
+    - cron: '29 6 1 1,4,7,10 *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gate-expiry:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: List every gate and when it expires
+        run: bash scripts/check-gate-expiry.sh --list
