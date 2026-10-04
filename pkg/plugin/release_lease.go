@@ -118,6 +118,13 @@ func (m *dhcpManager) releaseHeldLease(v6 bool) releaseOutcome {
 					"and RFC 9915 section 18.2.7 requires that before the exchange begins")
 			return releaseWithdrawFailed
 		}
+		// The same rule holds for a delegated prefix: no use after the Release (RFC 8415 section 18.2.7, #214).
+		if err := m.withdrawPrefixRoutes(); err != nil {
+			log.WithError(err).WithFields(m.logFields(true)).
+				Warn("Not releasing the DHCPv6 lease: the delegated prefix route could not be taken out of the " +
+					"container first, and RFC 8415 section 18.2.7 requires that before the exchange begins")
+			return releaseWithdrawFailed
+		}
 	}
 
 	held, _ := m.releasedAddr(v6)

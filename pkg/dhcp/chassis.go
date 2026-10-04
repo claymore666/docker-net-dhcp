@@ -112,6 +112,9 @@ type DHCPClientOptions struct {
 	// IPv6Temporary puts an IA_TA (RFC 8415 section 21.5) in the Solicit and the Request, and nothing in v4 (#927).
 	IPv6Temporary bool
 
+	// IPv6PD is the delegated prefix length asked for with an IA_PD (RFC 8415 section 21.21), 0 for none (#214).
+	IPv6PD int
+
 	// IPv6IID is how SLAAC forms the interface identifier, the zero value being RFC 4291 Appendix A's modified EUI-64
 	// (#1032).
 	IPv6IID proto.IIDMode

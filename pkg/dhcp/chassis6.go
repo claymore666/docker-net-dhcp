@@ -128,7 +128,7 @@ func newLibClient6(iface string, params proto.Params6, opts *DHCPClientOptions) 
 		Interface: iface,
 		Params6:   params,
 		// A resumed binding makes the first message a Confirm (RFC 9915 section 18.2.12, #820).
-		Resume:      opts.Resume,
+		Resume:      resumeFor(opts.Resume, params.PrefixHint),
 		EventBuffer: eventBuffer,
 	}
 
@@ -162,6 +162,18 @@ func newLibClient6(iface string, params proto.Params6, opts *DHCPClientOptions) 
 		return nil, fmt.Errorf("dhcp: open a DHCPv6 client on %v: %w", opened, cerr)
 	}
 	return client, nil
+}
+
+// resumeFor drops a resumed record's prefixes when the network no longer asks for one, so the client Confirms the
+// address and installs no prefix it was not asked for (RFC 8415 section 18.2.12, #214). The record is shared, so a
+// copy is changed.
+func resumeFor(r *lease.Lease, prefixHint int) *lease.Lease {
+	if r == nil || prefixHint != 0 || len(r.Prefixes) == 0 {
+		return r
+	}
+	c := *r
+	c.Prefixes = nil
+	return &c
 }
 
 // Router() is zero until the first advertisement, and RFC 9915 section 7.6 gives Solicit no MRC or MRD with SOL_MAX_RT

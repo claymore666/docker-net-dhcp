@@ -226,6 +226,9 @@ type DHCPNetworkOptions struct {
 	IPv6MainPrefix string `mapstructure:"ipv6_main_prefix"`
 	// IPv6Temporary puts an IA_TA (RFC 8415 section 21.5) beside the IA_NA in every Solicit and Request (#927).
 	IPv6Temporary bool `mapstructure:"ipv6_temporary"`
+	// IPv6PD asks for a delegated prefix of this length (RFC 8415 section 21.21 IA_PD) beside the address; 0 asks
+	// for none (#214).
+	IPv6PD int `mapstructure:"ipv6_pd"`
 	// IPv6IID is how SLAAC forms the interface identifier: eui64 (unset) from the MAC, or stable-privacy per RFC 7217
 	// from a secret in STATE_DIR (#1032).
 	IPv6IID      string        `mapstructure:"ipv6_iid"`
@@ -822,6 +825,12 @@ type Plugin struct {
 	// counting removals since a shutting-down router sends several (section 6.2.5) (#821). Not healthy-affecting.
 	ipv6RouterWithdrawn atomic.Int32
 
+	// ipv6PrefixRoutes* count the unreachable aggregates of delegated prefixes put into and taken out of containers,
+	// and ipv6PrefixOverlaps endpoints whose prefix overlapped another endpoint's on the network (#214).
+	ipv6PrefixRoutesInstalled atomic.Int32
+	ipv6PrefixRoutesWithdrawn atomic.Int32
+	ipv6PrefixOverlaps        atomic.Int32
+
 	// displacedStops tracks Join's goroutines stopping a displaced manager so Close waits for them (#338), unbounded
 	// to keep Join free of head-of-line blocking; a displacement sends no release (#962).
 	displacedStops      sync.WaitGroup
@@ -945,6 +954,8 @@ type endpointFingerprint struct {
 	Ifname string
 	// Released records that the lease actually went back at Leave, so DeleteEndpoint offers no tombstone (#962).
 	Released bool
+	// Prefixes is the IA_PD prefixes of the last v6 lease event, carried to the tombstone (#214).
+	Prefixes []string
 }
 
 // dhcpHostname is a hostname with its trust bit, one value because safeHostname's "" means both refused and absent,
@@ -970,6 +981,18 @@ func (p *Plugin) rememberEndpoint(endpointID string, fp endpointFingerprint, h d
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.endpointFingerprints[endpointID] = fp
+}
+
+// updateEndpointPrefixes overwrites the fingerprint's delegated prefixes, an empty list included (#214).
+func (p *Plugin) updateEndpointPrefixes(endpointID string, prefixes []string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	fp, ok := p.endpointFingerprints[endpointID]
+	if !ok {
+		return
+	}
+	fp.Prefixes = prefixes
 	p.endpointFingerprints[endpointID] = fp
 }
 
@@ -1031,7 +1054,7 @@ func (p *Plugin) takeEndpoint(endpointID string) (endpointFingerprint, bool) {
 
 // addTombstone records a deleted endpoint's MAC and addresses for the next CreateEndpoint within tombstoneTTL;
 // a disk failure is logged and loses only that restart's stability (#46).
-func (p *Plugin) addTombstone(networkID, hostname, mac, ipv4, ipv6 string) {
+func (p *Plugin) addTombstone(networkID, hostname, mac, ipv4, ipv6 string, prefixes ...string) {
 	if mac == "" {
 		return
 	}
@@ -1039,7 +1062,7 @@ func (p *Plugin) addTombstone(networkID, hostname, mac, ipv4, ipv6 string) {
 	if isLinkLocalV4String(ipv4) {
 		ipv4 = ""
 	}
-	if err := p.tombstones.add(networkID, hostname, mac, ipv4, ipv6); err != nil {
+	if err := p.tombstones.add(networkID, hostname, mac, ipv4, ipv6, prefixes...); err != nil {
 		p.tombstoneWriteFailures.Add(1)
 		log.WithError(err).Warn("Failed to persist tombstone; container restart may pick a new MAC/IP")
 	}

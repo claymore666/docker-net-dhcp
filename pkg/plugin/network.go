@@ -1272,7 +1272,7 @@ func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) er
 			}).Info("Endpoint released its lease at Leave; laying no tombstone for it")
 		}
 		if modeKnown && mode != ModeIPvlan && !fp.HostnameRefused && !ipamMode && !fp.Released {
-			p.addTombstone(r.NetworkID, fp.Hostname, fp.MAC, fp.IPv4, fp.IPv6)
+			p.addTombstone(r.NetworkID, fp.Hostname, fp.MAC, fp.IPv4, fp.IPv6, fp.Prefixes...)
 		}
 		// RETAINED on every mode and hostname decision, so plugin-restart recovery never resumes a gone endpoint's
 		// lease; keyed as the record was filed, since fp.MAC is empty on ipvlan (#899).
