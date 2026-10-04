@@ -569,3 +569,59 @@ Aug 20 11:04:07 dnsmasq-dhcp[1]: relayed text DHCP4_LEASE_ADVERT for 1e:c1:60:88
 			"this the zero above would be an unreadable log and not an absent offer", got)
 	}
 }
+
+// Kea's lease file and log go where the packaged AppArmor profile permits, never to stdout or a temp directory (#680).
+func TestKeaConfig_LeaseAndLogSitOnTheProfilePaths(t *testing.T) {
+	ef := &EphemeralFixture{
+		t: t, backend: backendKea, poolStart: EphemeralPoolStart, poolEnd: EphemeralPoolEnd,
+		serverCIDR: EphemeralServerAddr, leaseSeconds: EphemeralDefaultLeaseSeconds,
+		leaseFile: kea4Default.leasePath(), keaLog: kea4Default.logPath(),
+	}
+	raw := ef.keaConfig(keaLoggerOutputModern)
+	var cfg struct {
+		Dhcp4 struct {
+			LeaseDatabase struct{ Name string } `json:"lease-database"`
+			Loggers       []struct {
+				OutputOptions []struct{ Output string } `json:"output-options"`
+			}
+		}
+	}
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatalf("keaConfig is not valid JSON: %v\n%s", err, raw)
+	}
+	if got := cfg.Dhcp4.LeaseDatabase.Name; !profileAllows(packagedProfileRules, got) {
+		t.Errorf("lease database %q is outside the packaged profile", got)
+	}
+	if len(cfg.Dhcp4.Loggers) != 1 || len(cfg.Dhcp4.Loggers[0].OutputOptions) != 1 {
+		t.Fatalf("want one logger with one output, got:\n%s", raw)
+	}
+	if got := cfg.Dhcp4.Loggers[0].OutputOptions[0].Output; !profileAllows(packagedProfileRules, got) {
+		t.Errorf("logger output %q is outside the packaged profile", got)
+	}
+}
+
+func TestReadLog_KeaJoinsItsOwnLogAndTheCapture(t *testing.T) {
+	ef := newLogFixture(t, backendKea, "stderr before the logger\n")
+	ef.keaLog = filepath.Join(t.TempDir(), "kea-dhcp4.log")
+
+	if got := ef.readLog(); got != "stderr before the logger\n" {
+		t.Errorf("a Kea that wrote no log file: got %q", got)
+	}
+	if err := os.WriteFile(ef.keaLog, []byte("DHCP4_STARTED\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := ef.readLog(); got != "DHCP4_STARTED\nstderr before the logger\n" {
+		t.Errorf("own log and capture not joined: got %q", got)
+	}
+	if got := ef.keaLogSize(); got != len("DHCP4_STARTED\n") {
+		t.Errorf("keaLogSize = %d, want the size of Kea's own log, not the capture's", got)
+	}
+}
+
+func TestReadLog_EmptyKeaLogStaysEmpty(t *testing.T) {
+	ef := newLogFixture(t, backendKea, "")
+	ef.keaLog = filepath.Join(t.TempDir(), "never-created.log")
+	if got := ef.readLog(); got != "" {
+		t.Errorf("readLog = %q; the AppArmor hint's empty-log claim needs \"\" when Kea wrote nothing (#869)", got)
+	}
+}

@@ -84,7 +84,10 @@ type EphemeralFixture struct {
 	leaseFile      string
 	configFile     string
 	renderedConfig string
-	logFile        string
+	// logFile is the dnsmasq log, and for Kea only what its stdout and stderr carry before its own logger is up (#680).
+	logFile      string
+	keaLog       string
+	kernelBefore string
 
 	poolStart, poolEnd string
 	serverCIDR         string
@@ -297,8 +300,14 @@ func NewEphemeralFixture(t *testing.T, opts ...EphemeralOption) *EphemeralFixtur
 	ef.tmpDir = tmp
 	ef.logFile = filepath.Join(tmp, "dhcp-server.log")
 	if ef.backend == backendKea {
-		ef.leaseFile = filepath.Join(tmp, "leases4.csv")
-		ef.configFile = filepath.Join(tmp, "kea-dhcp4.json")
+		// Every Kea file sits where the distribution's AppArmor profile permits it, not in tmp (#680).
+		if msg := foreignKea(); msg != "" {
+			t.Fatal(msg)
+		}
+		kea4Default.removeState()
+		ef.leaseFile = kea4Default.leasePath()
+		ef.configFile = kea4Default.confPath()
+		ef.keaLog = kea4Default.logPath()
 	} else {
 		ef.leaseFile = filepath.Join(tmp, "leases")
 	}
@@ -383,9 +392,9 @@ func (ef *EphemeralFixture) start() {
 	ef.started = true
 }
 
-// Kea path rules (#356): the lease file must sit under /var/lib/kea unless KEA_DHCP_DATA_DIR says otherwise, logger
-// output is validated the same way, and the PID directory /run/kea must exist. INFO severity: DEBUG repeats DHCPACK
-// in DHCP4_RESPONSE_DATA. The logger key is output-options from Kea 2.5.4, output_options on Debian's 2.4.x (#615).
+// Kea path rules (#356, #680): every file sits on a path the kea-dhcp4 AppArmor profile permits (kea4Default, keaEnv),
+// which a privileged container still enters on exec. INFO severity: DEBUG repeats DHCPACK in DHCP4_RESPONSE_DATA. The
+// logger key is output-options from Kea 2.5.4, output_options on Debian's 2.4.x (#615).
 var (
 	keaLoggerKeyOnce sync.Once
 	keaLoggerKey     string
@@ -396,17 +405,14 @@ func (ef *EphemeralFixture) resolveKeaLoggerKey(keaPath string) string {
 	ef.t.Helper()
 	keaLoggerKeyOnce.Do(func() {
 		keaLoggerKey = keaLoggerOutputModern
-		probeDir, err := os.MkdirTemp("", "kea-logger-probe-")
-		if err != nil {
-			return
-		}
-		defer os.RemoveAll(probeDir)
-
-		probe := filepath.Join(probeDir, "kea-dhcp4.json")
+		probe := filepath.Join(kea4Default.conf, "probe-"+kea4ConfFile)
 		if err := os.WriteFile(probe, []byte(ef.keaConfig(keaLoggerOutputModern)), 0o644); err != nil {
 			return
 		}
-		out, err := withCLocale(exec.Command(keaPath, "-t", probe)).CombinedOutput()
+		defer os.Remove(probe)
+		cmd := withCLocale(exec.Command(keaPath, "-t", probe))
+		cmd.Env = append(cmd.Env, keaEnv()...)
+		out, err := cmd.CombinedOutput()
 		if err != nil && strings.Contains(string(out), keaLoggerOutputModern) {
 			keaLoggerKey = keaLoggerOutputLegacy
 			ef.t.Logf("kea rejects %q, falling back to %q (pre-2.5.4 server)",
@@ -447,13 +453,13 @@ func (ef *EphemeralFixture) keaConfig(loggerOutputKey string) string {
     } ],
     "loggers": [ {
       "name": "kea-dhcp4",
-      %q: [ { "output": "stdout", "flush": true } ],
+      %q: [ { "output": %q, "flush": true } ],
       "severity": "INFO"
     } ]
   }
 }
 `, ephemeralDhcpVeth, ef.leaseFile, ef.leaseSeconds, timers, ef.subnet(),
-		ef.poolStart, ef.poolEnd, loggerOutputKey)
+		ef.poolStart, ef.poolEnd, loggerOutputKey, ef.keaLog)
 }
 
 func (ef *EphemeralFixture) subnet() string {
@@ -485,9 +491,9 @@ func (ef *EphemeralFixture) requireKea() string {
 func (ef *EphemeralFixture) startKea() {
 	ef.t.Helper()
 	keaPath := ef.requireKea()
-	// Kea will not create its PID directory and dies before reporting any config error (#356).
-	if err := os.MkdirAll("/run/kea", 0o755); err != nil {
-		ef.t.Fatalf("mkdir /run/kea: %v", err)
+	// Kea creates none of its directories and dies before reporting any config error (#356).
+	if err := kea4Default.mkdirAll(); err != nil {
+		ef.t.Fatalf("create kea directories: %v", err)
 	}
 	ef.renderedConfig = ef.keaConfig(ef.resolveKeaLoggerKey(keaPath))
 	if err := os.WriteFile(ef.configFile, []byte(ef.renderedConfig), 0o644); err != nil {
@@ -500,13 +506,11 @@ func (ef *EphemeralFixture) startKea() {
 	}
 	defer logF.Close()
 
-	startMark := ef.logSize()
+	ef.kernelBefore, _ = readKernelLog()
+	startMark := ef.keaLogSize()
 	ef.cmd = ef.netnsCommand(keaPath, "-c", ef.configFile)
-	// KEA_DHCP_DATA_DIR and KEA_LOCKFILE_DIR keep every file Kea writes in the fixture's temp dir (#356).
-	ef.cmd.Env = append(os.Environ(),
-		"KEA_DHCP_DATA_DIR="+ef.tmpDir,
-		"KEA_LOCKFILE_DIR="+ef.tmpDir,
-	)
+	ef.cmd.Env = append(ef.cmd.Env, keaEnv()...)
+	// The profile may deny an fd inherited from a temp directory; readiness reads Kea's own log file instead (#680).
 	ef.cmd.Stdout = logF
 	ef.cmd.Stderr = logF
 	ef.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -518,7 +522,7 @@ func (ef *EphemeralFixture) startKea() {
 	// readiness needs the interface listening and no socket failure since startMark.
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		data, err := os.ReadFile(ef.logFile)
+		data, err := os.ReadFile(ef.keaLog)
 		if err != nil || len(data) <= startMark {
 			time.Sleep(50 * time.Millisecond)
 			continue
@@ -535,10 +539,20 @@ func (ef *EphemeralFixture) startKea() {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	// An empty log with no readiness marker usually means AppArmor denied Kea its config (#869); the log is read once.
+	// An empty log with no readiness marker usually means AppArmor denied Kea a path (#869, #680); the log is read once.
 	keaLog := ef.readLog()
 	ef.t.Fatalf("ephemeral kea did not become ready; config:\n%s\nlog:\n%s\n%s",
-		ef.renderedConfig, keaLog, appArmorKeaHint(ef.tmpDir, keaLog == ""))
+		ef.renderedConfig, keaLog, appArmorKeaHint(ef.kernelBefore, keaLog == ""))
+}
+
+// keaEnv pins every directory Kea writes to the one the profile permits, so the host's own settings cannot move one (#680).
+func keaEnv() []string {
+	return []string{
+		"KEA_DHCP_DATA_DIR=" + kea4Default.lease,
+		"KEA_PIDFILE_DIR=" + kea4Default.pid,
+		"KEA_LOCKFILE_DIR=" + kea4Default.lock,
+		"KEA_LOG_FILE_DIR=" + kea4Default.log,
+	}
 }
 
 func (ef *EphemeralFixture) startDnsmasq() {
@@ -626,8 +640,12 @@ func keaSocketFailure(window string) string {
 	return ""
 }
 
-func (ef *EphemeralFixture) logSize() int {
-	st, err := os.Stat(ef.logFile)
+func (ef *EphemeralFixture) logSize() int { return fileSize(ef.logFile) }
+
+func (ef *EphemeralFixture) keaLogSize() int { return fileSize(ef.keaLog) }
+
+func fileSize(path string) int {
+	st, err := os.Stat(path)
 	if err != nil {
 		return 0
 	}
@@ -1024,7 +1042,15 @@ func (ef *EphemeralFixture) readLog() string {
 	if err != nil {
 		return fmt.Sprintf("(could not read ephemeral DHCP server log: %v)", err)
 	}
-	return string(data)
+	if ef.keaLog == "" {
+		return string(data)
+	}
+	// Kea logs to its own file on the profile's path; the capture holds what it wrote before the logger was up (#680).
+	own, err := os.ReadFile(ef.keaLog)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Sprintf("(could not read %s: %v)\n%s", ef.keaLog, err, data)
+	}
+	return string(own) + string(data)
 }
 
 // DumpLogs mirrors Fixture.DumpLogs for failure-path diagnostics.
@@ -1039,6 +1065,9 @@ func (ef *EphemeralFixture) teardown() {
 	if ef.tmpDir != "" {
 		_ = os.RemoveAll(ef.tmpDir)
 	}
+	if ef.backend == backendKea {
+		kea4Default.removeState()
+	}
 	cleanupEphemeralLinks()
 }
 
@@ -1050,4 +1079,26 @@ func cleanupEphemeralLinks() {
 			_ = netlink.LinkDel(link)
 		}
 	}
+}
+
+// activeKeaUnits names the active systemd units for a kea-dhcp4 service (Debian isc-kea-dhcp4-server, upstream
+// kea-dhcp4); a host without systemctl has none (#680).
+func activeKeaUnits() []string {
+	out, err := withCLocale(exec.Command("systemctl", "list-units", "--state=active", "--plain", "--no-legend",
+		"--type=service", "*kea-dhcp4*")).Output()
+	if err != nil {
+		return nil
+	}
+	var units []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if f := strings.Fields(line); len(f) > 0 && strings.Contains(f[0], "kea-dhcp4") {
+			units = append(units, f[0])
+		}
+	}
+	return units
+}
+
+// foreignKea reads the host and returns keaHostConflict's verdict (#680).
+func foreignKea() string {
+	return keaHostConflict(readKeaProcs("/proc"), activeKeaUnits(), kea4Default.conf)
 }

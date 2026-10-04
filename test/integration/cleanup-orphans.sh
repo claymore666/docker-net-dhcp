@@ -40,7 +40,8 @@ all_suite_pids() {
 # Full command lines (#1147): the test binary's comm is cut at 15 characters
 # ("integration.tes") and it lives in a go-build temp dir, so `pgrep -x` never
 # sees it. Both dnsmasq fixtures share the --interface=dh-itest- prefix; the
-# ephemeral kea is told apart by its config dir, and outlives its deleted netns.
+# ephemeral kea is told apart by its config dir (under /etc/kea since #680, where the AppArmor profile permits it),
+# and outlives its deleted netns.
 suite_patterns=(
     '(^|/)integration\.test( |$)'
     '(^|[ /])go test .*-tags integration'
@@ -48,6 +49,7 @@ suite_patterns=(
     '--interface=dh-itest-'
     'kea-dhcp[46] .*dh-itest-ephemeral-'
     'kea-dhcp6 -c /etc/kea/dh-itest/'
+    'kea-dhcp4 -c /etc/kea/dh-itest-v4/'
 )
 
 # This script and every ancestor up to init are protected by pid.
