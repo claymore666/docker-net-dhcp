@@ -3,6 +3,9 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # Assert that the fixture capture still runs ON THE INTEGRATION LANE (#644).
 #
+# Expires-when: the request fixtures are no longer captured from a live
+#   engine, or the capture runs inside the integration job itself (#644).
+#
 # WHY THIS EXISTS SEPARATELY FROM THE DRIFT GATE. The two look like they
 # cover the same ground and do not. check-fixture-engine-drift.sh asks
 # "were these fixtures recorded on the engine I am running on?" — and

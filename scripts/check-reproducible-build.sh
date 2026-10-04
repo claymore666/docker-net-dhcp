@@ -8,6 +8,9 @@
 # toolchain bump, an unpinned base image, or a stray timestamp would
 # take it away silently: nothing else in CI would go red.
 #
+# Expires-when: the OpenSSF gold criterion build_reproducible stops being a
+#   goal, or the release lane itself rebuilds and compares (#456).
+#
 # This script is only the comparison. The two builds are the caller's
 # job (.github/workflows/reproducible-build.yml runs them on separate
 # cold BuildKit builders), which keeps the part that can be reasoned

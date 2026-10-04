@@ -6,6 +6,9 @@
 # package index. Prints a diff and, WITH --strict, exits non-zero when a
 # pin is behind upstream.
 #
+# Expires-when: the Dockerfile stops pinning apk package versions, or a bot
+#   that opens pin-bump PRs for Alpine packages replaces this cron (#742).
+#
 # --strict is not optional for the cron caller, and this header used to
 # imply otherwise (#742). It said an upgrade signal "lands on the
 # maintainer's desk without anyone having to remember to look", while

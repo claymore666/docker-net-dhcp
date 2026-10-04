@@ -5,6 +5,9 @@
 # Assert that every workflow job which builds container images on the
 # self-hosted pool authenticates to Docker Hub first (#562).
 #
+# Expires-when: the privileged pool no longer pulls from Docker Hub, or a
+#   pull-through cache makes an anonymous pull impossible (#562).
+#
 # THE FAILURE THIS PREVENTS. The plugin build pulls two Hub base images.
 # Pulled anonymously they are billed to a per-ADDRESS quota shared by
 # the whole runner pool, and when it is spent `make plugin` dies fifteen

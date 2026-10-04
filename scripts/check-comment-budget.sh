@@ -8,6 +8,9 @@
 # when PR_BODY has a "Comments-only: yes" line, require unchanged code tokens.
 # --whole applies the block rules to every line of the named Go files.
 #
+# Expires-when: never: the comment rule of #1056 is a standing review policy
+#   for Go code; this ends only if the maintainer retires that rule.
+#
 # Usage: check-comment-budget.sh [<base>..<head>]
 #        check-comment-budget.sh --prove <base> <head>
 #        check-comment-budget.sh --prove-marked [<base> <head>]

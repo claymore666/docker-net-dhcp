@@ -4,6 +4,9 @@
 
 # Every `uses:` in every workflow must name a 40-hex commit SHA (#831).
 #
+# Expires-when: the repository's Actions policy requires full-length SHA
+#   pinning, so an unpinned `uses:` cannot run at all (#831).
+#
 # WHAT THIS IS. Pinning is at 100% today and was measured to be enforced
 # by nothing: `actions/checkout@v7` was planted in a workflow and the
 # whole gate corpus was run, and the red set came back BYTE-IDENTICAL to

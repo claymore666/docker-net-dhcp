@@ -6,6 +6,9 @@
 # must each state a ceiling that holds it, and their job caps must hold
 # the ceilings (#934).
 #
+# Expires-when: no lane runs the whole integration suite in one go test
+#   binary; every lane shards it (#934).
+#
 # WHY THIS EXISTS. Three lanes now run the main suite unsharded --
 # integration-arm64.yml, coverage.yml and integration-hosted.yml -- and
 # each of them arrived at the same ceiling by its own derivation, in its own

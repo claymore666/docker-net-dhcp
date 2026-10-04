@@ -4,6 +4,9 @@
 
 # Every build-constraint term in the tree must be linted by something (#871).
 #
+# Expires-when: the lint step derives its -tags from the build constraints
+#   in the tree, or the tree carries no build-constraint terms (#871).
+#
 # WHAT WENT WRONG. `.github/workflows/test.yaml` ran `staticcheck ./...`
 # with no `-tags`. A Go build constraint is not a filter the linter
 # applies afterwards — the tagged files are never compiled, so they are

@@ -4,6 +4,9 @@
 
 # Will this pull request be reachable from an issue after it merges (#718)?
 #
+# Expires-when: sync-issue-state-labels.sh no longer needs a merged PR to
+#   name its issue to set in-dev on it (#718).
+#
 # WHY THIS EXISTS
 #
 # `scripts/sync-issue-state-labels.sh` puts `in-dev` on an issue whose work

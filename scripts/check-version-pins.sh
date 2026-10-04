@@ -11,6 +11,9 @@
 # not others — the failure mode scripts/bump-version.sh exists to avoid,
 # and this gate catches it on any branch.
 #
+# Expires-when: the docs stop spelling a versioned image reference, for
+#   example by substituting the version at build time (#251).
+#
 # It does NOT assert the pins equal the latest release tag: the release
 # branch legitimately leads it (pins bumped to the version about to
 # ship, before the tag exists). Internal agreement is the invariant that

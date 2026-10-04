@@ -5,6 +5,9 @@
 # The release lane must have a reachable passing state, and the tree must
 # describe the manifest it actually publishes (#910, reviews r2 and r3).
 #
+# Expires-when: the release stops comparing anything committed in the tree
+#   against the manifest it builds and publishes (#910).
+#
 # WHAT WENT WRONG. Through 1.x this repository carried a per-release
 # block of binary digests in docs/verifying-releases.md, and the release
 # workflow compared it against the binaries it had just built. Its

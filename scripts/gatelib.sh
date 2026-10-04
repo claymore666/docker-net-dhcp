@@ -39,6 +39,8 @@ gate_collation
 # One class per line: name, then git pathspecs. Exceptions are the
 # exclude specs on the same line (#744); testdata holds fixtures, not
 # subjects, except for the class that names it.
+# named-gates are the verdict scripts outside the check-* name; their
+# self-tests share the suffix, so test-* is excluded (#749).
 GATE_CLASSES='
 go          :(glob)**/*.go :(exclude,glob)**/testdata/**
 go-src      :(glob)**/*.go :(exclude,glob)**/*_test.go :(exclude,glob)**/testdata/**
@@ -46,6 +48,7 @@ go-test     :(glob)**/*_test.go :(exclude,glob)**/testdata/**
 md          :(glob)**/*.md :(exclude,glob)**/testdata/**
 docs        :(glob)README.md :(glob)docs/*.md
 gates       :(glob)check-*.sh
+named-gates :(glob)*-gate.sh :(exclude,glob)test-*
 manifest    :(glob)*/manifest.json
 '
 

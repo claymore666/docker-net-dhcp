@@ -5,6 +5,10 @@
 # The release notes' manifest-delta table must agree, field by field,
 # with the two manifests it claims to compare (review round 1, finding 1).
 #
+# Expires-when: the release notes stop carrying a hand-written
+#   manifest-delta table, for example because it is generated at release
+#   time (#725).
+#
 # WHY THIS EXISTS
 #
 # `docker plugin upgrade` re-prompts for privileges, and an operator

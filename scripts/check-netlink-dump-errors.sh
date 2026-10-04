@@ -4,6 +4,9 @@
 
 # Every netlink dump-style call goes through util.DumpResult (#802).
 #
+# Expires-when: the netlink library stops returning ErrDumpInterrupted
+#   beside a usable result set, so the one wrapper is not needed (#802).
+#
 # WHY THIS EXISTS
 #
 # vishvananda/netlink v1.3.1 returns ErrDumpInterrupted TOGETHER WITH A

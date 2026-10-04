@@ -4,6 +4,10 @@
 
 # The label taxonomy is what .github/labels.yml says it is (#715).
 #
+# Expires-when: labels are applied only by automation from
+#   .github/labels.yml, so the tracker cannot drift from the declaration
+#   (#715).
+#
 # WHY THIS EXISTS
 #
 # The taxonomy was consolidated once and rotted twice, and both rots were

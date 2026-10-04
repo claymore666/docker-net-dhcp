@@ -5,6 +5,9 @@
 # Every published {registry x architecture} must have an install
 # verifier and a floating-tag promotion (#833).
 #
+# Expires-when: never: a registry or architecture with no install verifier
+#   shipped 20 unproven tags (#833); a standing release invariant.
+#
 # WHAT WENT WRONG. Docker Hub dual-publish began 2026-05-05. Hub
 # install-verification landed 2026-08-22 (#777). In between, 20 tags
 # shipped a Docker Hub artifact that nothing proved installable -- and

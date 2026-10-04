@@ -4,6 +4,9 @@
 
 # A release from the canonical repository must reach BOTH registries.
 #
+# Expires-when: the project publishes to one registry only, so a release
+#   cannot silently skip the second (#972).
+#
 # WHY THIS EXISTS
 #
 # The Docker Hub push is conditional on DOCKERHUB_USERNAME and
