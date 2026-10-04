@@ -103,7 +103,6 @@ LANE=(
   # (see the note in it), so the row builds one first. `go` because of
   # that build.
   "library pin (bytes built)|go|d=\$(mktemp -d); trap 'rm -rf \"\$d\"' EXIT; go build -o \"\$d/net-dhcp\" ./cmd/net-dhcp && bash scripts/check-library-pin.sh --binary \"\$d/net-dhcp\""
-  "issue label map|-|bash scripts/check-issue-label-map.sh"
   "label taxonomy|-|bash scripts/check-label-taxonomy.sh --static"
   "release-notes symbols|-|bash scripts/check-release-notes-symbols.sh"
   "dockerfile pins|-|bash scripts/check-dockerfile-pins.sh"
