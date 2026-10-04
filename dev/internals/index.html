@@ -2373,6 +2373,23 @@ and
 fails CI if that file lists fewer gates than the workflow runs; a local
 target that hand-listed them would quietly cover less the first time a
 gate was added (#636, the same shape as #542).</p>
+<p>Every gate sources
+<a href="https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/gatelib.sh"><code>scripts/gatelib.sh</code></a>
+first (#744). The library does three things each gate used to do its own
+way. It runs the gate under <code>LC_ALL=C.UTF-8</code>, the locale the hosted CI
+lanes use, so <code>sort</code>, <code>comm</code> and <code>join</code> order file names by code point
+on a desktop with a German or English locale too, and <code>grep</code> and <code>awk</code>
+read a character such as <code>→</code> as one character, not as bytes. A machine
+without that locale gets a refusal. It has one refusal, <code>gate_refuse</code>, which prints an <code>::error</code>
+annotation naming the gate and the reason and exits 2, so a gate that
+cannot judge never reads as a pass or a finding. And it lists the files
+a gate judges with <code>gate_subjects &lt;array&gt; &lt;class&gt; [&lt;dir&gt;]</code>: git's view
+of the tree (tracked files, plus untracked files that are not ignored),
+narrowed to a class such as <code>go-src</code>, <code>md</code> or <code>docs</code>. The classes and
+their exceptions, such as test files and <code>testdata/</code>, are one table in
+the library, and a class that matches nothing refuses unless the gate
+passes <code>--may-be-empty</code>. <code>scripts/test-gatelib.sh</code> checks the contract
+and that every <code>check-*.sh</code> sources the library.</p>
 <p>Everything it does <strong>not</strong> do is declared and never merely absent.
 <code>scripts/local-lane.sh --list-exempt</code> prints the list with reasons, and
 that is the place to read it instead of a count written here, which has
