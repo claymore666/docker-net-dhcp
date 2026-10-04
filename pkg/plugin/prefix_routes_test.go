@@ -543,3 +543,27 @@ func TestValidateIPv6Options_IPv6PDZeroIsRefusedAndEmptyIsUnset(t *testing.T) {
 		}
 	}
 }
+
+// The lane's shape: the record's prefix is seeded, never installed, and the bound lease carries none (PR #1220's CI red).
+func TestApplyPrefixes_ALeaseWithoutTheAskedPrefixSaysSo(t *testing.T) {
+	m, _, _ := v6Manager(t)
+	m.opts.IPv6PD = 64
+	m.seedPrefixRoutes(&lease.Lease{Prefixes: []lease.Addr6{{Addr: netip.MustParsePrefix("fd00:98::/64")}}})
+
+	out := captureLog(t, func() { _ = m.applyPrefixes(nil) })
+	if !strings.Contains(out, "carries no delegated prefix") || !strings.Contains(out, "fd00:98::/64") {
+		t.Errorf("a v6 lease without the prefix ipv6_pd asked for logged:\n%s\nwant the absence and the dropped fd00:98::/64 named", out)
+	}
+	if again := captureLog(t, func() { _ = m.applyPrefixes(nil) }); strings.Contains(again, "carries no delegated prefix") {
+		t.Errorf("a second lease without the prefix repeated the line:\n%s", again)
+	}
+	_ = m.applyPrefixes(pdInfo("fd00:98::/64").DelegatedPrefixes)
+	if back := captureLog(t, func() { _ = m.applyPrefixes(nil) }); !strings.Contains(back, "carries no delegated prefix") {
+		t.Errorf("losing the prefix after holding it logged:\n%s\nwant the absence again", back)
+	}
+
+	plain, _, _ := v6Manager(t)
+	if none := captureLog(t, func() { _ = plain.applyPrefixes(nil) }); strings.Contains(none, "carries no delegated prefix") {
+		t.Errorf("a network without ipv6_pd logged the absence:\n%s", none)
+	}
+}

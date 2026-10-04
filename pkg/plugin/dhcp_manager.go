@@ -96,6 +96,8 @@ type dhcpManager struct {
 	prefixOverlap bool
 	// prefixRoutes is the aggregates this endpoint installed, seeded from its own lease record, which outlives a restart (#214).
 	prefixRoutes map[string]*net.IPNet
+	// prefixNoneLogged says the absence of the asked-for prefix was logged, so a lease without one says so once (#214).
+	prefixNoneLogged bool
 
 	// recordID is the durable lease record (#899); empty in unit tests and adopted endpoints, where record calls no-op.
 	recordID string

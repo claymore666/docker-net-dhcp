@@ -69,6 +69,8 @@ func (m *dhcpManager) reconcilePrefixRoutes(prefixes []dhcp.V6Addr) error {
 		}
 		if _, present := installed[key]; !present {
 			m.disownPrefixRoute(key)
+			log.WithFields(m.logFields(true)).WithField("prefix", key).
+				Info("The delegated prefix is no longer held; its route was already gone from the container")
 			continue
 		}
 		if err := nlHandleRouteDel(m.netHandle, prefixAggregate(dst)); err != nil {
@@ -165,7 +167,23 @@ func (m *dhcpManager) withdrawPrefixRoutes() error {
 // applyPrefixes records a v6 lease event's prefixes and makes the container's aggregates match them (#214).
 func (m *dhcpManager) applyPrefixes(prefixes []dhcp.V6Addr) error {
 	m.notePrefixes(prefixes, time.Now())
+	m.notePrefixAbsence(len(prefixes) == 0)
 	return m.reconcilePrefixRoutes(prefixes)
+}
+
+// notePrefixAbsence logs, once per absence, a v6 lease that carries no prefix although ipv6_pd asked for one (#214).
+func (m *dhcpManager) notePrefixAbsence(none bool) {
+	if m.opts.IPv6PD == 0 {
+		return
+	}
+	m.ipMu.Lock()
+	was := m.prefixNoneLogged
+	m.prefixNoneLogged = none
+	m.ipMu.Unlock()
+	if none && !was {
+		log.WithFields(m.logFields(true)).WithField("ipv6_pd", m.opts.IPv6PD).
+			Info("The DHCPv6 lease carries no delegated prefix although ipv6_pd asks for one; no aggregate route is installed")
+	}
 }
 
 type v6PrefixRecord struct {
