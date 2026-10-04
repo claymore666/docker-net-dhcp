@@ -305,6 +305,12 @@ func (k *Kea6Fixture) StartedAt() time.Time { return k.startedAt }
 
 func (k *Kea6Fixture) RACapture() *RACapture { return k.cap }
 
+// StartDHCPv6Capture captures on Kea's veth in its netns; the bridge device never sees port-to-port unicast (#1203).
+func (k *Kea6Fixture) StartDHCPv6Capture() *DHCPv6Capture {
+	k.t.Helper()
+	return StartDHCPv6CaptureInNetns(k.t, Kea6Netns, kea6SrvVeth)
+}
+
 func (k *Kea6Fixture) Rows() []Kea6Row {
 	data, err := os.ReadFile(filepath.Join(Kea6LeaseDir, Kea6LeaseFile))
 	if err != nil {

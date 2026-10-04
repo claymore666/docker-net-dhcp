@@ -845,3 +845,4 @@ TestVlan_ALinkThePluginDidNotMakeOrThatIsInUseIsLeftAlone	20.00
 TestVlan_IPAMModeBindsThePoolToTheSubInterface	15.00
 TestVlan_TheSubInterfaceCarriesTheLeaseSurvivesARestartAndGoesWithItsLastNetwork	30.00
 TestKea6ServesAnAddress	40.00
+TestKea6Option17ReachesTheOptionsLogLine	40.00

@@ -36,9 +36,11 @@ type Info struct {
 	TimeOffset    string `json:",omitempty"`
 
 	// VendorSpecific is option 43's bytes, hex-encoded, and VendorIdentifying is option 125's blocks, one per enterprise
-	// in wire order; both are logged only and never read (RFC 2132 section 8.4, RFC 3925 section 4, #1034).
+	// in wire order; VendorInformation is DHCPv6 option 17's instances the same way. All are logged only and never read
+	// (RFC 2132 section 8.4, RFC 3925 section 4, RFC 8415 section 21.17, #1034, #1203).
 	VendorSpecific    string        `json:",omitempty"`
 	VendorIdentifying []VendorBlock `json:",omitempty"`
+	VendorInformation []VendorBlock `json:",omitempty"`
 
 	// A default route is never here: RFC 3442 folds 0.0.0.0/0 into Gateway and RFC 4191 section 2.3's ::/0 means the
 	// same, and a copy would race the default route Docker installs (#821).
@@ -119,8 +121,8 @@ type V6Addr struct {
 	Deprecated bool `json:",omitempty"`
 }
 
-// VendorBlock is one enterprise's block of option 125; Data is hex, so a server's bytes cannot reach a log as text
-// (#1034, #703).
+// VendorBlock is one enterprise's block of option 125 or one instance of DHCPv6 option 17; Data is hex, so a server's
+// bytes cannot reach a log as text (#1034, #1203, #703).
 type VendorBlock struct {
 	Enterprise uint32
 	Data       string
