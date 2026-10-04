@@ -854,6 +854,26 @@ func (m *dhcpManager) forgetV6Addr(key string) {
 	delete(m.v6Installed, key)
 }
 
+// vendorLogCap bounds one logged vendor value, in bytes (#1203).
+const vendorLogCap = 256
+
+// capVendorHex cuts hexData past vendorLogCap bytes and appends "...(+N bytes, T total)" (#1203).
+func capVendorHex(hexData string) string {
+	total := len(hexData) / 2
+	if total <= vendorLogCap {
+		return hexData
+	}
+	return fmt.Sprintf("%s...(+%d bytes, %d total)", hexData[:2*vendorLogCap], total-vendorLogCap, total)
+}
+
+func vendorBlocksField(blocks []dhcp.VendorBlock) []string {
+	out := make([]string, 0, len(blocks))
+	for _, b := range blocks {
+		out = append(out, fmt.Sprintf("%d:%s", b.Enterprise, capVendorHex(b.Data)))
+	}
+	return out
+}
+
 // logObservedOptions logs captured options the plugin does not apply, only when at least one is set.
 func (m *dhcpManager) logObservedOptions(v6 bool, info dhcp.Info) {
 	if len(info.NTPServers) == 0 && info.TFTPServer == "" && info.BootFile == "" && len(info.SearchList) == 0 &&
@@ -895,21 +915,13 @@ func (m *dhcpManager) logObservedOptions(v6 bool, info dhcp.Info) {
 	// Vendor blobs (options 43 and 125, DHCPv6 option 17) are hex, 125 and 17 as "enterprise:hex" per block; never
 	// interpreted (#1034, #1203).
 	if info.VendorSpecific != "" {
-		fields["vendor_43"] = info.VendorSpecific
+		fields["vendor_43"] = capVendorHex(info.VendorSpecific)
 	}
 	if len(info.VendorIdentifying) > 0 {
-		blocks := make([]string, 0, len(info.VendorIdentifying))
-		for _, b := range info.VendorIdentifying {
-			blocks = append(blocks, fmt.Sprintf("%d:%s", b.Enterprise, b.Data))
-		}
-		fields["vendor_125"] = blocks
+		fields["vendor_125"] = vendorBlocksField(info.VendorIdentifying)
 	}
 	if len(info.VendorInformation) > 0 {
-		blocks := make([]string, 0, len(info.VendorInformation))
-		for _, b := range info.VendorInformation {
-			blocks = append(blocks, fmt.Sprintf("%d:%s", b.Enterprise, b.Data))
-		}
-		fields["vendor_17"] = blocks
+		fields["vendor_17"] = vendorBlocksField(info.VendorInformation)
 	}
 	log.WithFields(fields).Info("DHCP options received")
 }

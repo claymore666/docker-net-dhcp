@@ -231,6 +231,41 @@ func TestLogObservedOptions_NamesOption17BlocksByEnterpriseInWireOrder(t *testin
 	}
 }
 
+func TestLogObservedOptions_CapsEachVendorValueAndStatesTheFullLength(t *testing.T) {
+	whole := strings.Repeat("ab", vendorLogCap)
+	long := strings.Repeat("cd", vendorLogCap+56)
+	cut := strings.Repeat("cd", vendorLogCap) + "...(+56 bytes, 312 total)"
+	out := captureLog(t, func() {
+		(&dhcpManager{}).logObservedOptions(false, dhcp.Info{
+			VendorSpecific:    long,
+			VendorIdentifying: []dhcp.VendorBlock{{Enterprise: 9, Data: whole}, {Enterprise: 3561, Data: long}},
+			VendorInformation: []dhcp.VendorBlock{{Enterprise: 9, Data: long}},
+		})
+	})
+	for name, want := range map[string]string{
+		"vendor_43":  `vendor_43="` + cut + `"`,
+		"vendor_125": `vendor_125="[9:` + whole + " 3561:" + cut + `]"`,
+		"vendor_17":  `vendor_17="[9:` + cut + `]"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("%s: logged %q, want %q", name, out, want)
+		}
+	}
+	if strings.Contains(out, long) {
+		t.Errorf("logged %d bytes of a value over the cap uncut", len(long)/2)
+	}
+}
+
+func TestCapVendorHex_CutsAtOneByteOverTheCap(t *testing.T) {
+	if got := capVendorHex(strings.Repeat("ab", vendorLogCap)); got != strings.Repeat("ab", vendorLogCap) {
+		t.Errorf("a value at the cap was cut: %q", got)
+	}
+	want := strings.Repeat("ab", vendorLogCap) + "...(+1 bytes, 257 total)"
+	if got := capVendorHex(strings.Repeat("ab", vendorLogCap+1)); got != want {
+		t.Errorf("a value one byte over the cap is %q, want %q", got, want)
+	}
+}
+
 func captureLog(t *testing.T, fn func()) string {
 	t.Helper()
 

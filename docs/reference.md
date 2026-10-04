@@ -1545,7 +1545,9 @@ instance of the option, and the hex is the instance's encapsulated
 sub-options. An option 43 of zero octets and a malformed option 125 are left
 out. An instance of option 17 shorter than the four octets of its enterprise
 number leaves the whole option out, the well-formed instances included,
-because the client library returns no list beside the error.
+because the client library returns no list beside the error. A value
+longer than 256 bytes is logged as its first 256 bytes followed by
+`...(+N bytes, T total)`, which states how many bytes were cut and the full length.
 
 ```text
 level=info msg="DHCP options received" vendor_43=0104c0a86301
