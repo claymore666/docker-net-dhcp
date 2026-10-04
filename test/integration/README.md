@@ -110,26 +110,59 @@ fixture says so in that failure itself, along with the commands below —
 but the error string is repeated here so a search for it lands on the
 explanation.
 
+Since #680 the fixture keeps every file Kea touches where the packaged
+profile permits it: the config under `/etc/kea/dh-itest-v4/` (named
+`kea-dhcp4.conf`, because Kea names its PID file after the config and the
+profile permits exactly one PID name), leases at
+`/var/lib/kea/kea-leases4.csv`, the log at `/var/log/kea/kea-dhcp4.log`,
+the PID file in `/run/kea` and the lock in `/run/lock/kea`. It deletes the
+lease file and log (with their rotation suffixes) at setup and teardown.
+Before deleting anything it checks for a Kea it did not start (a
+`kea-dhcp4` process outside `/etc/kea/dh-itest-v4/`, or an installed,
+non-masked `kea-dhcp4` systemd unit, whether running or not) and fails the
+test, touching nothing, if it finds one. A packaged config file alone does
+not count: it exists on every host that installed `kea-dhcp4-server`,
+including the CI runners. Kea's own stdout and stderr go to the log file
+above, because the profile denies an inherited descriptor on any other path.
+On a stock host the packaged profile is enforcing and grants root neither
+`dac_read_search` nor `dac_override`, while the packages make `/etc/kea`
+(`kea-common`'s postinst runs `dpkg-statoverride --add _kea _kea 0750
+/etc/kea`) and, once the packaged service has run, `/var/lib/kea`,
+`/var/log/kea`, `/run/kea` and `/run/lock/kea` (its unit's state, logs and
+runtime directories) `0750 _kea:_kea`. Kea runs as root here, so it cannot
+enter or write any of them and the kernel logs a capability denial with no
+path. The hint reads the owner and mode of all five directories when Kea
+fails and names each one root cannot use, with a `sudo install -d -o root -g
+root -m 0755 <dir>` per directory; a host where only some are closed is told
+only those. If the hint says none is closed, the cause is not one of them.
+The fix is not `chmod 0755` alone: root then uses the "other" bits, which give
+no write on a `_kea`-owned directory. The unit must also be masked, which the
+host-Kea guard demands. No enforcing host has run this, so the list is what the
+fixture could measure, not a promised start. A failure with a path denial of a
+file the fixture needs, or none at all, means the loaded profile differs from
+the packaged one, for example a site override.
+
+No lane runs the v4 fixture under an enforcing profile today: the pool image
+has no Kea profile and the hosted lane puts it in complain mode. The test that checks every fixture path against the packaged
+profile's rules is the only observer of this section (#680).
+
 What the fixture reports depends on what it could measure, and it
-distinguishes the cases rather than blurring them. A loaded enforcing
-profile *plus* a kernel denial record naming the fixture's own temp
-directory is stated as the cause, with the record quoted. A loaded
-enforcing profile with no such record is reported as the likely cause
-only: the profile ends in `#include <local/usr.sbin.kea-dhcp4>`, so a
-site override under `/etc/apparmor.d/local/` can leave it enforcing
-while permitting exactly these paths. A profile that is installed but
-measurably **not** loaded is not reported at all.
+distinguishes the cases rather than blurring them. A kernel denial record
+for `kea-dhcp4` logged after the fixture started Kea is stated as the
+cause, with the record quoted; the kernel log is read with `dmesg`, then
+`journalctl -k`, and the message says so when neither is readable. A loaded
+enforcing profile with no such record is reported as a candidate only: the
+profile ends in `#include <local/usr.sbin.kea-dhcp4>`, so a site override
+under `/etc/apparmor.d/local/` can change what it permits. A profile that is
+installed but measurably **not** loaded is not reported at all.
 
-Debian's `kea-dhcp4-server` package ships an **enforcing** AppArmor
-profile that pins Kea to its own packaged paths — right down to the
-exact PID filename, which Kea derives from the config filename. The
-ephemeral fixture writes its config, lease DB and lockfile into a
-per-test temp directory instead, so under the shipped profile Kea
-cannot start. The profile denies `dac_override`, so running as root
-does not help; the symptom is `Permission denied` on paths root can
-obviously write.
+Debian's and Ubuntu's `kea-dhcp4-server` packages ship an **enforcing**
+AppArmor profile that pins Kea to its own packaged paths. The profile
+denies `dac_override`, so running as root does not help; the symptom of a
+path outside it is `Permission denied` on paths root can obviously write.
 
-Put the profile in complain mode for local runs:
+If the denial names a path the packaged profile does not list, put the profile
+in complain mode for local runs:
 
 ```sh
 sudo apparmor_parser -C -r /etc/apparmor.d/usr.sbin.kea-dhcp4
@@ -153,7 +186,8 @@ What actually decides it is whether **the host has the profile loaded at all**,
 which in practice means whether `kea-dhcp4-server` is installed on the host —
 not whether the container is privileged. CI has been unaffected because its
 runner host does not have the package, not because the container is privileged.
-Install kea on a runner host and CI starts failing the same way.
+Install kea on a runner host and the fixture runs under the profile, on the
+paths it permits (#680).
 
 The package also enables and starts a system `kea-dhcp4-server`
 service on install. The fixture runs its own Kea, so the packaged
@@ -443,7 +477,7 @@ disagree, start here rather than assuming a bug.**
 |---|---|---|---|
 | Machine | your dev box / the integration runner host, bare metal | privileged container from `ghcr.io/claymore666/dhcp-ci-runner` | stock GitHub-hosted VM |
 | `dnsmasq`, `kea-dhcp4` | host packages, whatever the distro ships | baked into the image, see `ci/runner-image/Dockerfile` | installed per run by the workflow |
-| AppArmor | **profiles apply** — Debian's enforcing `kea-dhcp4` profile blocks the fixture (see Prerequisites) | applies **if the host has the profile loaded**; today it does not, because kea is not installed on the runner host — privilege is *not* what saves it | none in practice |
+| AppArmor | **profiles apply** — the packaged `kea-dhcp4` profile enforces; the fixture keeps its files on the paths it permits (see Prerequisites) | applies **if the host has the profile loaded**; today it does not, because kea is not installed on the runner host — privilege is *not* what saves it | none in practice |
 | State between runs | **accumulates** — leftover containers, veths, namespaces | none: one container per job, `--rm` | none |
 | Docker daemon | your host daemon, whatever version | nested daemon, Engine >= 28 | the runner's daemon |
 | Gating | no | **yes**, required check | no — portability signal only |
