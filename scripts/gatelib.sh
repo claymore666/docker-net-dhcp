@@ -20,7 +20,8 @@ gate_collation() {
 }
 gate_collation
 
-GATE_NAME="$(basename "$0" .sh)"
+GATE_NAME="${0##*/}"
+GATE_NAME="${GATE_NAME%.sh}"
 
 # GATE_TITLE keeps a gate's established annotation title where its
 # self-test or a reader already matches on it (#744).

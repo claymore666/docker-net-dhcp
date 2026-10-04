@@ -87,13 +87,10 @@ command -v python3 >/dev/null 2>&1 || {
     exit 2
 }
 
-# Enumerated from the filesystem rather than from `git ls-files`, and
-# that is the untracked-file question answered rather than skipped: a
-# file being written is not tracked yet, and that is exactly when this
-# gate is worth asking. `find` sees it either way. The sibling
-# check-proc-path-discipline.sh reads the tree the same way, and the
-# directories in scope hold no build output for a git listing to filter.
-FILES=$(find pkg cmd -type f -name '*.go' ! -name '*_test.go' 2>/dev/null | sort)
+# Untracked files count (#743); gate_subjects lists them with the
+# tracked ones (#744).
+gate_subjects --may-be-empty gofiles go-src
+FILES=$(printf '%s\n' ${gofiles[@]+"${gofiles[@]}"} | grep -E '^(pkg|cmd)/')
 
 if [ -z "$FILES" ]; then
     echo "::error title=Nothing to inspect::no non-test Go files under pkg/ or cmd/ in '${1:-.}'." \

@@ -51,7 +51,7 @@ run_case() {
     local d
     guarded_tmpdir d "$ROOT/caseXXXXXX"
     mkdir -p "$d/scripts" "$d/.github/workflows"
-    cp "$CHECK" "$d/scripts/"
+    cp "$CHECK" "$HERE/gatelib.sh" "$d/scripts/"
     local pair
     for pair in "$@"; do
         local f="${pair%%=*}" body="${pair#*=}"
