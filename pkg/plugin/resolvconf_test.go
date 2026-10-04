@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unsafe"
@@ -141,6 +142,14 @@ func readWhileRewriting(t *testing.T, path string, contents [][]byte, rounds int
 			states = append(states, c, resolvPadTo(c, len(o)))
 		}
 	}
+	// A stale-size read needs a grow inside the read; the same bytes with none are on disk (#1215).
+	grows := make([]bool, rounds)
+	prev, _ := os.ReadFile(path)
+	for i := range grows {
+		grows[i] = len(contents[i%len(contents)]) > len(prev)
+		prev = contents[i%len(contents)]
+	}
+	var epoch atomic.Int64
 	stop := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
@@ -151,7 +160,9 @@ func readWhileRewriting(t *testing.T, path string, contents [][]byte, rounds int
 				return
 			default:
 			}
+			e0 := epoch.Load()
 			got, err := read()
+			e1 := epoch.Load()
 			if err != nil {
 				continue
 			}
@@ -173,7 +184,11 @@ func readWhileRewriting(t *testing.T, path string, contents [][]byte, rounds int
 				st.spliced++
 				continue
 			}
-			if !ok && resolvSplice(raw, states, true) {
+			grew := false
+			for i := e0 / 2; 2*i+1 <= e1; i++ {
+				grew = grew || grows[i]
+			}
+			if !ok && grew && resolvSplice(raw, states, true) {
 				st.stale++
 				continue
 			}
@@ -186,11 +201,13 @@ func readWhileRewriting(t *testing.T, path string, contents [][]byte, rounds int
 		}
 	}()
 	for i := 0; i < rounds; i++ {
+		epoch.Store(int64(2*i + 1))
 		if err := writeResolvConfFile(testCtr, path, contents[i%len(contents)]); err != nil {
 			close(stop)
 			<-done
 			t.Fatalf("write %d: %v", i, err)
 		}
+		epoch.Store(int64(2*i + 2))
 	}
 	close(stop)
 	<-done
@@ -287,14 +304,16 @@ func TestReadWhileRewriting_CountsEachReadInItsClassAndKeepsFiveTorn(t *testing.
 	for n := 0; n < 7; n++ {
 		seq = append(seq, foreign(n))
 	}
-	consumed := make(chan struct{})
-	resolvRewriteStep = func(string) { <-consumed }
+	entered, consumed := make(chan struct{}), make(chan struct{})
+	var enter sync.Once
+	resolvRewriteStep = func(string) { enter.Do(func() { close(entered) }); <-consumed }
 	t.Cleanup(func() { resolvRewriteStep = func(string) {} })
 	next := 0
 	st := readWhileRewriting(t, path, [][]byte{long, short}, 1, func() ([]byte, error) {
 		if next == len(seq) {
 			return long, nil
 		}
+		<-entered
 		next++
 		if next == len(seq) {
 			close(consumed)
@@ -311,6 +330,43 @@ func TestReadWhileRewriting_CountsEachReadInItsClassAndKeepsFiveTorn(t *testing.
 		if !bytes.Equal(got, foreign(n)) {
 			t.Errorf("torn read %d kept as %q, want %q", n, got, foreign(n))
 		}
+	}
+}
+
+func TestReadWhileRewriting_StaleSizeCountsOnlyAcrossAGrow(t *testing.T) {
+	long := buildResolvConf([]string{"192.0.2.1", "192.0.2.2", "192.0.2.3"}, []string{"a.example", "b.example"}, "", "")
+	short := buildResolvConf([]string{"192.0.2.9"}, nil, "", "")
+	for _, tc := range []struct {
+		name        string
+		from, to    []byte
+		stale, torn int
+	}{
+		{"during_a_grow", short, long, 1, 0},
+		{"during_a_shrink", long, short, 0, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "resolv.conf")
+			if err := os.WriteFile(path, tc.from, 0644); err != nil {
+				t.Fatal(err)
+			}
+			entered, consumed := make(chan struct{}), make(chan struct{})
+			var enter sync.Once
+			resolvRewriteStep = func(string) { enter.Do(func() { close(entered) }); <-consumed }
+			t.Cleanup(func() { resolvRewriteStep = func(string) {} })
+			once := false
+			st := readWhileRewriting(t, path, [][]byte{tc.to, tc.from}, 1, func() ([]byte, error) {
+				if once {
+					return tc.to, nil
+				}
+				once = true
+				<-entered
+				close(consumed)
+				return long[:len(short)], nil
+			})
+			if st.stale != tc.stale || st.torn != tc.torn {
+				t.Errorf("stale=%d torn=%d, want %d %d", st.stale, st.torn, tc.stale, tc.torn)
+			}
+		})
 	}
 }
 
@@ -335,9 +391,6 @@ func TestWriteResolvConfFile_StalledReaderSeesOnlyModelledStates(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { unix.Munmap(mbuf) })
-	if err := unix.Madvise(mbuf, unix.MADV_PAGEOUT); err != nil {
-		t.Fatalf("MADV_PAGEOUT: %v", err)
-	}
 
 	faulted := 0
 	st := readWhileRewriting(t, path, [][]byte{long, short}, 20000, func() ([]byte, error) {
@@ -368,7 +421,7 @@ func TestWriteResolvConfFile_StalledReaderSeesOnlyModelledStates(t *testing.T) {
 	}
 	resolvReportTorn(t, st, [][]byte{long, short})
 	if faulted == 0 {
-		t.Errorf("no read faulted on its buffer, so none stalled: the kernel kept the page mapped in %s", dir)
+		t.Errorf("no read faulted, not even the first one into the untouched buffer: RUSAGE_THREAD misses kernel-mode faults")
 	}
 }
 
