@@ -11,14 +11,19 @@
 #   gate_classes                    print the class table
 
 # The issue's measured pair (#744): check-go-pins.sh sorts before
-# check-good-first-issues.sh in C and after it in de_DE.UTF-8, and comm
-# reads the order its own locale produces. CI runs C.UTF-8, whose order
-# is C's for these names, so C here is CI's answer on every machine.
+# check-good-first-issues.sh in C and after it in de_DE.UTF-8. C.UTF-8
+# orders by code point, which is byte order, and reads text as UTF-8 the
+# way the hosted lanes always did; plain C would split a "→" into bytes
+# that a bracket class like [—:-] then matches. Without C.UTF-8 the
+# shell keeps the caller's locale, so both properties are probed.
 gate_collation() {
-    export LC_ALL=C
+    export LC_ALL=C.UTF-8
     unset LANGUAGE
+    local _gc_s=$'\303\251' _gc_a=check-go-pins.sh _gc_b=check-good-first-issues.sh
+    if [ "${#_gc_s}" -ne 1 ] || [[ ! $_gc_a < $_gc_b ]]; then
+        gate_refuse "the C.UTF-8 locale is missing here; gates read text as CI does"
+    fi
 }
-gate_collation
 
 GATE_NAME="${0##*/}"
 GATE_NAME="${GATE_NAME%.sh}"
@@ -29,6 +34,7 @@ gate_refuse() {
     printf '::error title=%s::%s\n' "${GATE_TITLE:-$GATE_NAME cannot judge}" "$*" >&2
     exit 2
 }
+gate_collation
 
 # One class per line: name, then git pathspecs. Exceptions are the
 # exclude specs on the same line (#744); testdata holds fixtures, not
@@ -39,10 +45,7 @@ go-src      :(glob)**/*.go :(exclude,glob)**/*_test.go :(exclude,glob)**/testdat
 go-test     :(glob)**/*_test.go :(exclude,glob)**/testdata/**
 md          :(glob)**/*.md :(exclude,glob)**/testdata/**
 docs        :(glob)README.md :(glob)docs/*.md
-sh          :(glob)**/*.sh
 gates       :(glob)check-*.sh
-workflows   :(glob)*.yml :(glob)*.yaml
-dockerfile  :(glob)**/Dockerfile :(glob)**/Dockerfile.* :(glob)**/*.Dockerfile
 manifest    :(glob)*/manifest.json
 '
 

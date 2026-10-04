@@ -42,8 +42,24 @@ echo "LC_ALL=$LC_ALL"
 printf 'check-good-first-issues.sh\ncheck-go-pins.sh\n' | sort | head -n 1
 EOF
 rc=$(LC_ALL=de_DE.UTF-8 LANG=de_DE.UTF-8 run check-collate)
-expect "a gate runs under LC_ALL=C whatever the caller exported" "0|LC_ALL=C" "$rc|$(head -n 1 "$T/out")"
+expect "a gate runs under LC_ALL=C.UTF-8 whatever the caller exported" "0|LC_ALL=C.UTF-8" "$rc|$(head -n 1 "$T/out")"
 expect "sort inside a gate puts check-go-pins.sh first (byte order)" "check-go-pins.sh" "$(sed -n 2p "$T/out")"
+# C.UTF-8 reads text as characters, as the hosted lanes do: under C the
+# arrow's first byte matches the bracket class check-docs-drift.sh uses.
+gate check-reading <<'EOF'
+s=$'\303\251'
+echo "len=${#s}"
+printf -- '- `x` \342\206\222 y\n' | grep -c -- '^- `x` [—:-]'
+EOF
+rc=$(LC_ALL=C LANG=C run check-reading)
+expect "a gate reads UTF-8 as characters even when the caller runs under C" "1|len=1|0" "$rc|$(tr '\n' '|' < "$T/out" | sed 's/|$//')"
+mkdir -p "$T/noloc"
+cp "$T/bin/check-reading.sh" "$T/noloc/check-reading.sh"
+sed 's/LC_ALL=C\.UTF-8/LC_ALL=xx_NONE.UTF-8/' "$LIB" > "$T/noloc/gatelib.sh"
+for loc in C de_DE.UTF-8; do
+    rc=0; ( cd "$T" && LC_ALL=$loc bash "$T/noloc/check-reading.sh" ) > "$T/out" 2>&1 || rc=$?
+    expect "a box without the locale refuses (caller $loc)" "2|1" "$rc|$(grep -c 'C.UTF-8 locale is missing' "$T/out")"
+done
 # The pair differs only where a collating locale exists; the issue measured it under de_DE.UTF-8.
 control=""
 for loc in de_DE.UTF-8 en_US.UTF-8; do
@@ -73,9 +89,9 @@ expect "GATE_TITLE keeps an established annotation title" "2|::error title=Nothi
 
 # --- subject discovery ----------------------------------------------------
 R="$T/repo"
-mkdir -p "$R/sub" "$R/testdata" "$R/deep/testdata" "$R/docs/deep"
+mkdir -p "$R/sub" "$R/testdata" "$R/deep/testdata" "$R/docs/deep" "$R/fix/deep"
 git init -q "$R"
-for f in a.go a_test.go sub/b.go sub/b_test.go testdata/c.go deep/testdata/x.go ignored.go gone.go README.md sub/notes.md docs/guide.md docs/deep/x.md; do
+for f in a.go a_test.go sub/b.go sub/b_test.go testdata/c.go deep/testdata/x.go ignored.go gone.go README.md sub/notes.md docs/guide.md docs/deep/x.md testdata/n.md check-a.sh sub/check-b.sh manifest.json fix/manifest.json fix/deep/manifest.json; do
     echo "package x" > "$R/$f"
 done
 printf 'ignored.go\n' > "$R/.gitignore"
@@ -103,15 +119,19 @@ rc=$(subjects go-src "$R/sub")
 expect "a <dir> narrows the walk and prefixes the paths as find did" \
     "0|n=1|$R/sub/b.go" "$rc|$(tr '\n' '|' < "$T/out" | sed 's/|$//')"
 rc=$(subjects md)
-expect "md lists every markdown copy, nested ones too" "0|n=4|README.md|docs/deep/x.md|docs/guide.md|sub/notes.md" "$rc|$(tr '\n' '|' < "$T/out" | sed 's/|$//')"
+expect "md lists every markdown copy, nested ones too, testdata excluded" "0|n=4|README.md|docs/deep/x.md|docs/guide.md|sub/notes.md" "$rc|$(tr '\n' '|' < "$T/out" | sed 's/|$//')"
 rc=$(subjects docs)
 expect "docs is the README and the top-level docs pages" "0|n=2|README.md|docs/guide.md" "$rc|$(tr '\n' '|' < "$T/out" | sed 's/|$//')"
+rc=$(subjects gates)
+expect "gates is the directory's own check-*.sh only" "0|n=1|check-a.sh" "$rc|$(tr '\n' '|' < "$T/out" | sed 's/|$//')"
+rc=$(subjects manifest)
+expect "manifest is one directory level deep only" "0|n=1|fix/manifest.json" "$rc|$(tr '\n' '|' < "$T/out" | sed 's/|$//')"
 
-rc=$(subjects workflows)
+rc=$(subjects go-test "$R/docs")
 expect "an empty class refuses by default" 2 "$rc"
-if grep -q "no 'workflows' file under" "$T/out"; then ok "the empty refusal names the class"; else no "the empty refusal names the class: $(cat "$T/out")"; fi
+if grep -q "no 'go-test' file under" "$T/out"; then ok "the empty refusal names the class"; else no "the empty refusal names the class: $(cat "$T/out")"; fi
 if grep -q '^n=' "$T/out"; then no "the gate went on after the empty refusal"; else ok "the gate stops at the empty refusal"; fi
-rc=$(subjects workflows "" --may-be-empty)
+rc=$(subjects go-test "$R/docs" --may-be-empty)
 expect "--may-be-empty is the explicit opt-out" "0|n=0" "$rc|$(cat "$T/out")"
 rc=$(subjects nosuchclass)
 expect "an unknown class refuses" 2 "$rc"

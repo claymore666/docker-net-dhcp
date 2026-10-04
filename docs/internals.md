@@ -967,9 +967,11 @@ gate was added (#636, the same shape as #542).
 Every gate sources
 [`scripts/gatelib.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/gatelib.sh)
 first (#744). The library does three things each gate used to do its own
-way. It runs the gate under `LC_ALL=C`, so `sort`, `comm` and `join`
-order file names the same on a desktop with a German or English locale
-as in CI. It has one refusal, `gate_refuse`, which prints an `::error`
+way. It runs the gate under `LC_ALL=C.UTF-8`, the locale the hosted CI
+lanes use, so `sort`, `comm` and `join` order file names by code point
+on a desktop with a German or English locale too, and `grep` and `awk`
+read a character such as `→` as one character, not as bytes. A machine
+without that locale gets a refusal. It has one refusal, `gate_refuse`, which prints an `::error`
 annotation naming the gate and the reason and exits 2, so a gate that
 cannot judge never reads as a pass or a finding. And it lists the files
 a gate judges with `gate_subjects <array> <class> [<dir>]`: git's view
