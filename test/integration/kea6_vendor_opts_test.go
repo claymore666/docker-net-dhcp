@@ -16,7 +16,8 @@ import (
 )
 
 // TestKea6Option17ReachesTheOptionsLogLine checks that two option 17 instances become one vendor_17 entry each in the
-// bind's options line (#1203); Kea's wire order is its own, so the entries are compared as a set.
+// bind's options line (#1203); Kea's wire order is its own, so the entries are compared as a set. A capture of Kea's
+// own messages separates "Kea sent none" from "the plugin dropped them".
 func TestKea6Option17ReachesTheOptionsLogLine(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -39,6 +40,7 @@ func TestKea6Option17ReachesTheOptionsLogLine(t *testing.T) {
 		}
 	})
 	answerRouterSolicits(t, f.Bridge(), sender, spec)
+	cap6 := f.StartDHCPv6Capture()
 
 	// The first v6 line of this network is the bind's, so a later renew line cannot pass for it (#1033).
 	logMark := harness.MarkPluginLog(t, ctx)
@@ -58,7 +60,8 @@ func TestKea6Option17ReachesTheOptionsLogLine(t *testing.T) {
 	}
 	ours := []string{"DHCP options received", "is_ipv6=true", "network=" + ep.NetworkID[:12]}
 
-	want := []string{"3561:bbcc", "9:00aa"}
+	// Each entry is the enterprise number, then the whole encapsulated sub-option: code 2 or 1, length 2, data.
+	want := []string{"3561:00020002bbcc", "9:0001000200aa"}
 	deadline := time.Now().Add(persistentV6BindBudget)
 	var got string
 	for {
@@ -67,9 +70,15 @@ func TestKea6Option17ReachesTheOptionsLogLine(t *testing.T) {
 			if !containsAll(line, ours) {
 				continue
 			}
+			wire := serverVendor17(cap6)
+			if !equalStrings(wire, want) {
+				cap6.Dump(func(s string) { t.Log(s) })
+				t.Fatalf("Kea's captured Reply carries option 17 entries %q, want %q: the fixture side is wrong, "+
+					"not the plugin", wire, want)
+			}
 			if entries := vendor17Entries(line); !equalStrings(entries, want) {
-				t.Fatalf("the first v6 \"DHCP options received\" line has vendor_17 entries %q, want %q:\n%s",
-					entries, want, line)
+				t.Fatalf("Kea sent option 17 entries %q but the first v6 \"DHCP options received\" line has %q, want %q:"+
+					"\n%s", wire, entries, want, line)
 			}
 			t.Logf("the bind's options line carries vendor_17 entries %q", want)
 			return
@@ -79,8 +88,22 @@ func TestKea6Option17ReachesTheOptionsLogLine(t *testing.T) {
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	t.Errorf("no v6 \"DHCP options received\" line within %s; Kea's log is dumped above, and the plugin log since the "+
-		"mark was:\n%s", persistentV6BindBudget, got)
+	t.Errorf("no v6 \"DHCP options received\" line within %s (Kea's captured Reply carried option 17 entries %q); "+
+		"Kea's log is dumped above, and the plugin log since the mark was:\n%s",
+		persistentV6BindBudget, serverVendor17(cap6), got)
+}
+
+// serverVendor17 is the sorted option 17 entries of the last server Reply that carried any, nil when none did (#1203).
+func serverVendor17(c *harness.DHCPv6Capture) []string {
+	var out []string
+	for _, m := range c.Messages() {
+		if !m.FromClient && m.Type == harness.DHCPv6Reply {
+			if e := m.VendorOptsEntries(); len(e) > 0 {
+				out = e
+			}
+		}
+	}
+	return out
 }
 
 // vendor17Entries is the sorted entries of vendor_17="[e1 e2]", or vendor_17=[e1] for one; nil when absent (#1203).
