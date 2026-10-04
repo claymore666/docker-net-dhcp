@@ -378,6 +378,62 @@ docker plugin rm ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z
 
 ---
 
+## Versioning
+
+Releases are numbered `vMAJOR.MINOR.PATCH` in the sense of
+[Semantic Versioning](https://semver.org/). The numbers describe one
+thing: what an operator depends on, called the contract below. The
+project ships as a plugin image, and its Go packages are not part of the
+contract.
+
+**The contract** is:
+
+- the driver options and the values each one accepts, with their
+  defaults
+  ([network-level](#driver-options-network-level),
+  [per-endpoint](#driver-options-per-endpoint));
+- what a network does in each mode, bridge, macvlan and ipvlan
+  ([Creating networks](#creating-networks), [Behaviour](#behaviour));
+- the plugin settings, among them `STATE_DIR`: its location on the host,
+  `/var/lib/net-dhcp`, and the names and formats of the files the plugin
+  keeps in it ([Plugin settings](#plugin-settings),
+  [State persistence](#state-persistence));
+- the fields and counter names of [`/Plugin.Health`](#pluginhealth),
+  and the [`/metrics`](#metrics) series rendered from them;
+- the image names and the tag scheme: `vX.Y.Z` for `linux/amd64`,
+  `vX.Y.Z-arm64` for `linux/arm64`, and the floating `latest` and
+  `latest-arm64` ([Install, upgrade, uninstall](#install-upgrade-uninstall));
+- the minimum Docker Engine, 20.10 today
+  ([Requirements](index.md#requirements), #672).
+
+**Which number moves:**
+
+- **Major:** something in the contract is removed, renamed or changes
+  meaning, so an install, a Compose file or a monitor that worked on the
+  previous release needs a change from the operator. Examples: an option
+  or an accepted value is removed, a default changes what it does,
+  `STATE_DIR` moves or a file in it changes so the new release cannot
+  read the old one, a Health field or counter is removed or renamed, the
+  tag scheme changes, the minimum engine goes up.
+- **Minor:** something is added to the contract and nothing in it
+  changes. Examples: a new option, a new accepted value, a new Health
+  field or counter, a new architecture tag, a lower minimum engine.
+- **Patch:** the contract is unchanged. Examples: a fix that makes the
+  plugin do what this page already says, a security fix, a dependency
+  update, a refactor.
+
+**Not part of the contract:** log lines (their text, level and fields),
+counters the plugin keeps but `/Plugin.Health` does not show, the
+internal dependencies, the test suites, CI and the test lab. These change
+in any release. The files in `STATE_DIR` stay in the contract, as listed
+above.
+
+The rule binds from v2.5.0 onward. The case that prompted it: v1.5.0, a
+minor release, moved `STATE_DIR` to a host bind mount that every existing
+install had to create before upgrading, which under this rule is a major.
+
+---
+
 ## Creating networks
 
 All modes share two invariants:

@@ -531,6 +531,12 @@ be true.
    versioned documentation site publishes for this tag, so the review
    *is* the site review; there's no separate wiki to reconcile.
 
+   **Check the version number against the contract.** Read the release
+   notes against [Versioning](reference.md#versioning): the number this
+   release takes is the one its largest change to the contract calls
+   for. A removed or renamed option, setting, Health field or tag is a
+   major, whatever the milestone says.
+
    **Read the pages whole, and aim at the ungated prose.** The
    reference material defends itself: `check-docs-drift.sh` and
    `check-version-pins.sh` gate every driver option, health counter,

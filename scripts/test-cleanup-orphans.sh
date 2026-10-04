@@ -187,7 +187,8 @@ case $mode in
         fake "make integration-test-shard SHARD=1 OF=2"; surv+=("$last")
         fake "dnsmasq --interface=dh-itest-br2 --dhcp-range=x"; surv+=("$last")
         fake "kea-dhcp4 -c /tmp/dh-itest-ephemeral-77/kea-dhcp4.json"; surv+=("$last")
-        fake "kea-dhcp6 -c /tmp/dh-itest-ephemeral-78/kea-dhcp6.json"; surv+=("$last") ;;
+        fake "kea-dhcp6 -c /tmp/dh-itest-ephemeral-78/kea-dhcp6.json"; surv+=("$last")
+        fake "kea-dhcp4 -c /etc/kea/dh-itest-v4/kea-dhcp4.conf"; surv+=("$last") ;;
     nokill)
         fake "/tmp/go-build9/b001/integration.test -test.v"; surv+=("$last") ;;
 esac
@@ -243,16 +244,16 @@ run survives-kill "$SWEEP" nokill &
 [[ -f "$TMP/mut-noprotect.sh" ]] && run mut-noprotect "$TMP/mut-noprotect.sh" full &
 wait
 
-if [[ "$(fact control RC)" == 0 && "$(fact control SURV_TOTAL)" == 7 && "$(fact control SURV_ALIVE)" == 0 ]]; then
-    pass "seven survivors, one ignoring TERM, are all gone and the sweep exits 0"
+if [[ "$(fact control RC)" == 0 && "$(fact control SURV_TOTAL)" == 8 && "$(fact control SURV_ALIVE)" == 0 ]]; then
+    pass "eight survivors, one ignoring TERM, are all gone and the sweep exits 0"
 else
     fail "control: $(tr '\n' ' ' < "$TMP/control/facts")"
 fi
 [[ "$(fact control DECOY_ALIVE)" == 7 && "$(fact control WRAPPER)" == yes ]] \
     && pass "seven decoys and the calling wrapper whose command line matches go test are spared" \
     || fail "control spared: $(tr '\n' ' ' < "$TMP/control/facts")"
-[[ "$(grep -c 'found pid=' "$TMP/control/out")" == 7 ]] && has control 'age=[0-9]+s' \
-    && pass "each of the seven is reported with pid and age" || fail "control did not report seven found lines"
+[[ "$(grep -c 'found pid=' "$TMP/control/out")" == 8 ]] && has control 'age=[0-9]+s' \
+    && pass "each of the eight is reported with pid and age" || fail "control did not report eight found lines"
 [[ "$(fact none RC)" == 0 && "$(fact none DECOY_ALIVE)" == 7 ]] && has none '^  none$' \
     && pass "nothing to kill: prints none, exits 0, decoys spared" || fail "none: $(tr '\n' ' ' < "$TMP/none/facts")"
 [[ "$(fact survives-kill RC)" == 1 && "$(fact survives-kill SURV_ALIVE)" == 1 ]] && has survives-kill 'SURVIVOR pid=' \

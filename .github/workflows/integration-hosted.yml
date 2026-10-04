@@ -196,10 +196,11 @@ jobs:
               done
 
           # Debian's kea AppArmor profile is ENFORCING and denies even
-          # root (it grants no dac_override), so the fixture cannot
-          # create the logger's lockfile in its own temp dir and kea
-          # never reaches ready. Put the profile in complain mode, which
-          # is what the test box has run since #356.
+          # root (it grants no dac_override or dac_read_search). Since
+          # #680 the v4 fixture keeps its files on the paths the profile
+          # permits, but /etc/kea ships 0750 _kea, which root Kea cannot
+          # read under it. Complain mode keeps this lane running, as the
+          # test box has since #356; no lane runs v4 enforcing (#680).
           #
           # The self-hosted pool never hits this: its jobs run in
           # privileged containers, which are unconfined. That is exactly
