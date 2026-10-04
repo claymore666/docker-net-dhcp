@@ -383,4 +383,101 @@ func TestKea6PD_APluginRestartRebindsAndKeepsTheAggregate(t *testing.T) {
 	if got := aggregatesOf(t, ctx, id)(); !samePrefixes(held)(got) {
 		t.Errorf("the container routes %v after the restart, want the unchanged %v", got, held)
 	}
+	// The route survives a restart in the sandbox with no plugin action, so only the new process's own lease events,
+	// which fill delegated_prefixes, show that it holds the prefix again (#214).
+	var h *harness.HealthResponse
+	reported := false
+	for stop := time.Now().Add(15 * time.Second); !reported && time.Now().Before(stop); time.Sleep(250 * time.Millisecond) {
+		if got, err := harness.PluginHealth(ctx, cli); err == nil {
+			h = got
+			reported = healthReports(h, held[0])
+		}
+	}
+	if !reported {
+		t.Errorf("15s after the Rebind no endpoint in Plugin.Health of the restarted plugin reports %s: %+v", held[0], h)
+	}
+}
+
+// foreignAggregate is outside harness.Kea6PDPrefix and keaPDMovedPool, so no delegation Kea makes can be it.
+var foreignAggregate = netip.MustParsePrefix("fd00:77:0:5::/64")
+
+// ownAggregates are the aggregates of routes other than the foreign one.
+func ownAggregates(t *testing.T, ctx context.Context, id string) []netip.Prefix {
+	var out []netip.Prefix
+	for _, p := range harness.DelegatedAggregates(harness.ContainerV6Routes(t, ctx, id)) {
+		if p != foreignAggregate {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// TestKea6PD_AnEndpointLeavesAnotherOwnersAggregateAlone checks that a renewal and a release of an ipv6_pd endpoint
+// leave an unreachable proto dhcp route that it did not install, as a second endpoint's or a PD client's, in the shared
+// sandbox (#214). The pool lane has one v6 segment, and libnetwork refuses a second interface in a subnet the container
+// already routes (#847), so a second plugin network cannot join this container; TestReconcilePrefixRoutes_
+// AnEndpointTouchesOnlyTheAggregatesItInstalled drives two endpoints on one table.
+func TestKea6PD_AnEndpointLeavesAnotherOwnersAggregateAlone(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	cli := dockerClientFor(t)
+	const netName = "dh-itest-pdown"
+	f, kea := keaPDSegment(t, harness.WithKea6PD(), harness.WithKea6Timers(10, 16), harness.WithKea6Lifetimes(60, 40))
+	id, _, duid := startPDContainer(t, ctx, cli, f, kea, onV6Bridge, netName, map[string]string{"release_lease": "on_stop"})
+	held := awaitDelegation(t, ctx, kea, id, duid)
+	rows, _ := keaPDRows(kea, duid)
+	expireBefore := rows[0].Expire
+
+	harness.AddForeignAggregate(t, ctx, id, foreignAggregate)
+	foreignHeld := func() bool {
+		return slices.Contains(harness.DelegatedAggregates(harness.ContainerV6Routes(t, ctx, id)), foreignAggregate)
+	}
+	if !foreignHeld() {
+		t.Fatalf("the foreign aggregate %s is not in the container right after it was added; its routes: %+v",
+			foreignAggregate, harness.ContainerV6Routes(t, ctx, id))
+	}
+
+	// T1 is 10s, so the first Renew follows within the budget; the route is read every poll until Kea's row moves, then
+	// for a settle window past it, because the plugin handles the Reply after Kea writes the row.
+	renewedAt := time.Time{}
+	for stop := time.Now().Add(45 * time.Second); time.Now().Before(stop); time.Sleep(250 * time.Millisecond) {
+		if !foreignHeld() {
+			t.Fatalf("the foreign aggregate %s was removed from the container; the plugin took a route it did not install; "+
+				"its routes: %+v", foreignAggregate, harness.ContainerV6Routes(t, ctx, id))
+		}
+		if r, _ := keaPDRows(kea, duid); len(r) == 1 && r[0].Expire > expireBefore && renewedAt.IsZero() {
+			renewedAt = time.Now()
+		}
+		if !renewedAt.IsZero() && time.Since(renewedAt) > 3*time.Second {
+			break
+		}
+	}
+	if renewedAt.IsZero() {
+		t.Fatalf("Kea's IA_PD row for DUID %s did not move past %d within 45s: no Renew happened, so the survival above "+
+			"shows nothing; Kea's lease file:\n%s", duid, expireBefore, kea.LeaseFileText())
+	}
+	if got := ownAggregates(t, ctx, id); !samePrefixes(held)(got) {
+		t.Errorf("after the Renew the endpoint's own aggregates are %v, want the delegation %v", got, held)
+	}
+
+	before := kea.CountLogLines("DHCP6_RELEASE_PD_EXPIRED")
+	if err := cli.NetworkDisconnect(ctx, netName, id, false); err != nil {
+		t.Fatalf("NetworkDisconnect: %v", err)
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for kea.CountLogLines("DHCP6_RELEASE_PD_EXPIRED") <= before && time.Now().Before(deadline) {
+		time.Sleep(250 * time.Millisecond)
+	}
+	if kea.CountLogLines("DHCP6_RELEASE_PD_EXPIRED") <= before {
+		t.Fatalf("Kea logged no DHCP6_RELEASE_PD_EXPIRED within 15s of the disconnect: the release the withdrawal belongs to never ran")
+	}
+	// The control for the absence below: the endpoint's own aggregate must be the one that went.
+	if got, ok := pollPrefixes(5*time.Second, func() []netip.Prefix { return ownAggregates(t, ctx, id) },
+		func(p []netip.Prefix) bool { return len(p) == 0 }); !ok {
+		t.Errorf("the endpoint's own aggregates are %v after it left the network, want none", got)
+	}
+	if !foreignHeld() {
+		t.Errorf("the foreign aggregate %s is gone after the endpoint left the network; its routes: %+v",
+			foreignAggregate, harness.ContainerV6Routes(t, ctx, id))
+	}
 }

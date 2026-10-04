@@ -7,6 +7,7 @@ package harness
 
 import (
 	"context"
+	"net"
 	"net/netip"
 	"testing"
 
@@ -25,9 +26,8 @@ type ContainerRoute struct {
 	Dev         string
 }
 
-// ContainerV6Routes reads the routes through a netlink socket in the container's namespace: busybox ip neither
-// filters on nor prints the protocol, and the plugin's delegated-prefix routes are told apart by it (#214).
-func ContainerV6Routes(t *testing.T, ctx context.Context, containerID string) []ContainerRoute {
+// containerHandle opens a netlink handle in the container's own network namespace; the caller closes it.
+func containerHandle(t *testing.T, ctx context.Context, containerID string) *netlink.Handle {
 	t.Helper()
 	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
 	if err != nil {
@@ -50,6 +50,14 @@ func ContainerV6Routes(t *testing.T, ctx context.Context, containerID string) []
 	if err != nil {
 		t.Fatalf("netlink handle in container %s: %v", containerID, err)
 	}
+	return h
+}
+
+// ContainerV6Routes reads the routes through a netlink socket in the container's namespace: busybox ip neither
+// filters on nor prints the protocol, and the plugin's delegated-prefix routes are told apart by it (#214).
+func ContainerV6Routes(t *testing.T, ctx context.Context, containerID string) []ContainerRoute {
+	t.Helper()
+	h := containerHandle(t, ctx, containerID)
 	defer h.Close()
 	routes, err := util.DumpResult(h.RouteListFiltered(netlink.FAMILY_V6, &netlink.Route{Table: unix.RT_TABLE_MAIN},
 		netlink.RT_FILTER_TABLE))
@@ -85,4 +93,18 @@ func DelegatedAggregates(routes []ContainerRoute) []netip.Prefix {
 		}
 	}
 	return out
+}
+
+// AddForeignAggregate installs, inside the container, an unreachable proto dhcp route for prefix: what a DHCPv6-PD
+// client running in the container would leave, and what the plugin must never claim as its own (#214).
+func AddForeignAggregate(t *testing.T, ctx context.Context, containerID string, prefix netip.Prefix) {
+	t.Helper()
+	h := containerHandle(t, ctx, containerID)
+	defer h.Close()
+	dst := &net.IPNet{IP: prefix.Addr().AsSlice(), Mask: net.CIDRMask(prefix.Bits(), 128)}
+	err := h.RouteAdd(&netlink.Route{Dst: dst, Type: unix.RTN_UNREACHABLE, Protocol: unix.RTPROT_DHCP,
+		Family: netlink.FAMILY_V6, Table: unix.RT_TABLE_MAIN, Scope: unix.RT_SCOPE_UNIVERSE})
+	if err != nil {
+		t.Fatalf("add the foreign aggregate %s in container %s: %v", prefix, containerID, err)
+	}
 }
