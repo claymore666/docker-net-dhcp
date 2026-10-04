@@ -15,7 +15,7 @@ import (
 )
 
 // dnsmasq --dhcp-fqdn registers only clients that send option 81 and ignores a bare option 12 hostname, so a resolved
-// name proves the option was sent; the default-off case is in TestRenderConfig_FQDN and TestFQDNMode (#261).
+// name proves the option was sent; the default-off half is pkg/plugin's TestFQDNMode (fqdnMode() empty) (#261).
 
 // TestFQDN_RegistersInDNS checks that register_dns=true makes the container resolvable by name in the server's DNS (#261).
 func TestFQDN_RegistersInDNS(t *testing.T) {

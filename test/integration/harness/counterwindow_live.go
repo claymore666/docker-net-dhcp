@@ -14,7 +14,7 @@ import (
 )
 
 // CounterWindow brackets two /Plugin.Health reads and refuses a delta across a plugin restart: counters are in-memory
-// per process, and three tests end the process on purpose (#405).
+// per process, and tests that disable and re-enable the plugin or restart dockerd end the process on purpose (#405).
 type CounterWindow struct {
 	t             *testing.T
 	ctx           context.Context

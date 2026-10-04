@@ -54,7 +54,7 @@ func TestCounterWindow_NoDirectHealthReadsInSuite(t *testing.T) {
 				"Use harness.BeginCounterWindow(...) and End(), or Await() for a "+
 				"poll-until-condition. A hand-rolled before/after pair subtracts two "+
 				"numbers that may come from different plugin processes: the counters "+
-				"are in-memory and reset with the plugin, and three tests in this suite "+
+				"are in-memory and reset with the plugin, and tests in this suite "+
 				"end it on purpose. Such a delta reads as \"no change\" (#405). "+
 				"For a bare readiness poll after a deliberate recycle, use "+
 				"harness.WaitPluginHealth, which makes no claim about counters.",
