@@ -2064,8 +2064,16 @@ start compacts any file of 256 KiB or more. A closed record is dropped 60
 seconds after its last line. A held record, one kept so a restarted
 container gets its address back, is dropped once its restart window has
 run out and its server lease expired more than 60 seconds ago; a record
-whose lease never expires is kept. Every other line is copied unchanged,
-unreadable lines too. The new file is written beside the old one as
+whose lease never expires is kept. A kept record's superseded renewal
+lines are folded into its newest one, which saves about 600 bytes per
+renewal; the record's renewal and change counts then count from the
+compaction, and the log of the sweep at `debug` level says how many lines
+it folded (v2.5.0, #1192). A line is folded only when the line after it
+replaces the lease too and it carries nothing else the record needs, such
+as the parameter snapshot; the plugin checks that the thinned lines fold
+to the same record and keeps the record whole, with a warning naming it,
+when they do not. Every other line is copied unchanged, unreadable lines
+too. The new file is written beside the old one as
 `lease-records.jsonl.compact`, flushed to disk and renamed over it, so a
 crash leaves one whole file, and a leftover `.compact` file is removed at
 the next start. If the plugin cannot reopen the file after the rename, it
