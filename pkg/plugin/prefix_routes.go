@@ -26,7 +26,6 @@ func prefixAggregate(dst *net.IPNet) *netlink.Route {
 	return &netlink.Route{Dst: dst, Type: unix.RTN_UNREACHABLE, Protocol: unix.RTPROT_DHCP, Family: netlink.FAMILY_V6}
 }
 
-// installedPrefixRoutes lists the aggregates in the container's main table, keyed by destination.
 func (m *dhcpManager) installedPrefixRoutes() (map[string]*net.IPNet, error) {
 	filter := &netlink.Route{Type: unix.RTN_UNREACHABLE, Protocol: unix.RTPROT_DHCP}
 	routes, err := nlHandleRouteListFiltered(m.netHandle, netlink.FAMILY_V6, filter,
@@ -43,8 +42,7 @@ func (m *dhcpManager) installedPrefixRoutes() (map[string]*net.IPNet, error) {
 	return out, nil
 }
 
-// reconcilePrefixRoutes makes the container's aggregates exactly prefixes: a dropped or changed prefix is deleted, a new
-// one added. skip_routes does not apply: it governs routes a server advertises, and this one is the plugin's (#214).
+// reconcilePrefixRoutes makes the aggregates exactly prefixes; skip_routes governs a server's routes, not this one (#214).
 func (m *dhcpManager) reconcilePrefixRoutes(prefixes []dhcp.V6Addr) error {
 	if m.netHandle == nil {
 		return nil
@@ -219,8 +217,7 @@ func (m *dhcpManager) prefixHealth(now time.Time) ([]DelegatedPrefixHealth, bool
 	return out, m.prefixOverlap
 }
 
-// dropPrefixRoutes empties the aggregates when the v6 lease is lost or refused or the container leaves; only a loss
-// forgets the prefixes, since a Leave without a release leaves them held on the server for the tombstone (#214).
+// dropPrefixRoutes empties the aggregates; only a loss forgets the prefixes, a Leave keeps them for the tombstone (#214).
 func (m *dhcpManager) dropPrefixRoutes(v6 bool, why string) {
 	if !v6 {
 		return

@@ -42,8 +42,7 @@ func keaPDSegment(t *testing.T, opts ...harness.Kea6Option) (*harness.V6Fixture,
 	return f, kea
 }
 
-// startPDContainer starts a container on an ipv6_mode=dhcp, ipv6_pd=64 network and returns it with its address and the
-// DUID Kea files it under.
+// startPDContainer starts a container on an ipv6_pd=64 network and returns it with its address and DUID (#214).
 func startPDContainer(t *testing.T, ctx context.Context, cli *docker.Client, f *harness.V6Fixture, kea *harness.Kea6Fixture,
 	at v6Attach, netName string, extra map[string]string) (id, addr, duid string) {
 	t.Helper()

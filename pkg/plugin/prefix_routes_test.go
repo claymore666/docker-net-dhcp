@@ -95,7 +95,6 @@ func mustMode6(t *testing.T, o DHCPNetworkOptions) proto.Mode6 {
 	return m
 }
 
-// v6Wiring is the one point every v6 client passes, the one-shot and the persistent one (#214).
 func TestV6Wiring_CarriesTheDelegatedPrefixLength(t *testing.T) {
 	id6 := dhcp.Identity6{DUID: []byte{0, 4, 1, 2, 3, 4}, IAID: 0x11223344}
 	for _, want := range []int{0, 56, 64} {
@@ -123,8 +122,7 @@ func pdInfo(prefixes ...string) dhcp.Info {
 	return info
 }
 
-// Two prefixes both routed, a dropped one deleted by its full key, and a RIO or connected route that shares a
-// destination left alone (RFC 3633 section 12.1, #214).
+// A RIO or connected route sharing a destination is left alone (RFC 3633 section 12.1, #214).
 func TestReconcilePrefixRoutes_MakesTheAggregatesMatchTheLease(t *testing.T) {
 	m, p, f := v6Manager(t)
 	rio := netlink.Route{Dst: cidr(t, "fd00:98:0:2::/64"), Protocol: unix.RTPROT_RA, Type: unix.RTN_UNICAST, LinkIndex: 3}
@@ -174,7 +172,6 @@ func TestReconcilePrefixRoutes_AFailedDeleteIsReportedAndTheRestStillApplied(t *
 	}
 }
 
-// renew is where a bound or renewed v6 lease reaches the container; skip_routes does not reach the aggregate (#214).
 func TestRenew_RoutesTheDelegatedPrefixesEvenOnSkipRoutes(t *testing.T) {
 	for _, skip := range []bool{false, true} {
 		m, _, f := v6Manager(t)
@@ -205,7 +202,6 @@ func hasAggregate(routes []netlink.Route, dst string) bool {
 	return false
 }
 
-// A lost or refused v6 lease takes its prefix with it, so the aggregate goes and health forgets it (#214).
 func TestHandleEvent_AV6LossWithdrawsTheAggregates(t *testing.T) {
 	for _, ev := range []string{"leasefail", "nak"} {
 		t.Run(ev, func(t *testing.T) {
@@ -323,8 +319,7 @@ func TestReleaseLease_ThePrefixRouteGoesBeforeTheRelease(t *testing.T) {
 	}
 }
 
-// A Leave takes the routes out, and the prefixes stay on the fingerprint for the tombstone, since nothing was
-// released (#214).
+// Nothing was released on a Leave, so the prefixes stay on the fingerprint for the tombstone (#214).
 func TestStopLeaving_WithdrawsTheAggregatesAndKeepsThePrefixesForTheTombstone(t *testing.T) {
 	p := &Plugin{endpointFingerprints: map[string]endpointFingerprint{"ep1": {MAC: "02:42:ac:11:00:02"}}}
 	m := stoppingManager(t, p, DHCPNetworkOptions{IPv6: true, Bridge: "br0"}, nil, nil)

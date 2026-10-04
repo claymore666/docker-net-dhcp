@@ -226,8 +226,7 @@ type DHCPNetworkOptions struct {
 	IPv6MainPrefix string `mapstructure:"ipv6_main_prefix"`
 	// IPv6Temporary puts an IA_TA (RFC 8415 section 21.5) beside the IA_NA in every Solicit and Request (#927).
 	IPv6Temporary bool `mapstructure:"ipv6_temporary"`
-	// IPv6PD asks for a delegated prefix of this length (RFC 8415 section 21.21 IA_PD) beside the address; 0 asks
-	// for none (#214).
+	// IPv6PD asks for an IA_PD prefix of this length beside the address, 0 for none (RFC 8415 section 21.21, #214).
 	IPv6PD int `mapstructure:"ipv6_pd"`
 	// IPv6IID is how SLAAC forms the interface identifier: eui64 (unset) from the MAC, or stable-privacy per RFC 7217
 	// from a secret in STATE_DIR (#1032).
@@ -825,8 +824,7 @@ type Plugin struct {
 	// counting removals since a shutting-down router sends several (section 6.2.5) (#821). Not healthy-affecting.
 	ipv6RouterWithdrawn atomic.Int32
 
-	// ipv6PrefixRoutes* count the unreachable aggregates of delegated prefixes put into and taken out of containers,
-	// and ipv6PrefixOverlaps endpoints whose prefix overlapped another endpoint's on the network (#214).
+	// The delegated prefix aggregates put into and taken out of containers, and overlapping endpoints (#214).
 	ipv6PrefixRoutesInstalled atomic.Int32
 	ipv6PrefixRoutesWithdrawn atomic.Int32
 	ipv6PrefixOverlaps        atomic.Int32

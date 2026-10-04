@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"testing"
 
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 	docker "github.com/docker/docker/client"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
@@ -50,7 +51,8 @@ func ContainerV6Routes(t *testing.T, ctx context.Context, containerID string) []
 		t.Fatalf("netlink handle in container %s: %v", containerID, err)
 	}
 	defer h.Close()
-	routes, err := h.RouteListFiltered(netlink.FAMILY_V6, &netlink.Route{Table: unix.RT_TABLE_MAIN}, netlink.RT_FILTER_TABLE)
+	routes, err := util.DumpResult(h.RouteListFiltered(netlink.FAMILY_V6, &netlink.Route{Table: unix.RT_TABLE_MAIN},
+		netlink.RT_FILTER_TABLE))
 	if err != nil {
 		t.Fatalf("list the routes of container %s: %v", containerID, err)
 	}

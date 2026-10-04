@@ -91,8 +91,7 @@ type dhcpManager struct {
 	tempV6 v6TempRecord
 	// nat64 is the PREF64 list of the last v6 event with router state (#1028).
 	nat64 []string
-	// delegated is the IA_PD prefixes of the last v6 lease event, and prefixOverlap whether another endpoint of the
-	// network held an overlapping one then (#214).
+	// delegated is the last v6 lease event's IA_PD prefixes, prefixOverlap whether they overlapped another endpoint's (#214).
 	delegated     []v6PrefixRecord
 	prefixOverlap bool
 

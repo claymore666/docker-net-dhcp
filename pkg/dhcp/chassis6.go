@@ -165,9 +165,8 @@ func newLibClient6(iface string, params proto.Params6, opts *DHCPClientOptions) 
 	return client, nil
 }
 
-// resumeFor drops a resumed record's prefixes when the network no longer asks for one, so the client Confirms the
-// address and installs no prefix it was not asked for (RFC 8415 section 18.2.12, #214). The record is shared, so a
-// copy is changed.
+// resumeFor drops a shared record's prefixes, on a copy, when no prefix is asked for, so the client Confirms rather
+// than Rebinds (RFC 8415 section 18.2.12, #214).
 func resumeFor(r *lease.Lease, prefixHint int) *lease.Lease {
 	if r == nil || prefixHint != 0 || len(r.Prefixes) == 0 {
 		return r

@@ -120,8 +120,7 @@ func validateIPv6Options(opts DHCPNetworkOptions, set map[string]bool) error {
 	return nil
 }
 
-// validateIPv6PD refuses ipv6_pd where no Solicit carries it and on ipvlan, whose slaves the LAN router cannot route a
-// prefix to (#214).
+// validateIPv6PD refuses ipv6_pd where no Solicit carries it, and on ipvlan, which shares the parent's link (#214).
 func validateIPv6PD(opts DHCPNetworkOptions, mode proto.Mode6) error {
 	if opts.IPv6PD == 0 {
 		return nil

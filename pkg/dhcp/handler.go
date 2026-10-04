@@ -92,8 +92,7 @@ type Info struct {
 	// (#927).
 	TempAddrs []V6Addr `json:",omitempty"`
 
-	// DelegatedPrefixes is the IA_PD prefixes beside Addrs, IP holding the prefix in CIDR form with the length the
-	// server chose; never an address of the link (RFC 3633 section 12.1, #214).
+	// DelegatedPrefixes is the IA_PD prefixes in CIDR form, never an address of the link (RFC 3633 section 12.1, #214).
 	DelegatedPrefixes []V6Addr `json:",omitempty"`
 
 	// SLAAC says the addresses were formed from an advertisement (RFC 4862 section 5.5.3), not granted by a server

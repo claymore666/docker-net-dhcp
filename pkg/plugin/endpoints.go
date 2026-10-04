@@ -513,11 +513,10 @@ type HealthResponse struct {
 	RouterAdvertGuardFailures int32 `json:"router_advert_guard_failures"`
 	// IPv6RouterWithdrawn counts container v6 default routes removed for a Router Lifetime of 0 (#821).
 	IPv6RouterWithdrawn int32 `json:"ipv6_router_withdrawn"`
-	// IPv6PrefixRoutesInstalled and IPv6PrefixRoutesWithdrawn count delegated prefix aggregates added and removed (#214).
+	// The delegated prefix aggregates added and removed, and endpoints whose prefix overlapped another's (#214).
 	IPv6PrefixRoutesInstalled int32 `json:"ipv6_prefix_routes_installed"`
 	IPv6PrefixRoutesWithdrawn int32 `json:"ipv6_prefix_routes_withdrawn"`
-	// IPv6PrefixOverlaps counts endpoints whose delegated prefix overlapped another endpoint's on the network (#214).
-	IPv6PrefixOverlaps int32 `json:"ipv6_prefix_overlaps"`
+	IPv6PrefixOverlaps        int32 `json:"ipv6_prefix_overlaps"`
 
 	// RouterSolicitsSent and the router counters below are the library's RFC 4861 counters folded across every
 	// DHCPv6 manager, solicitations under section 6.3.7 (#814).

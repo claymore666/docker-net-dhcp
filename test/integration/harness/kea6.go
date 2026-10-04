@@ -271,8 +271,7 @@ func (k *Kea6Fixture) Stop() {
 	k.cmd = nil
 }
 
-// Restart stops the server, applies opts to its configuration and starts it again on the same lease file and server
-// DUID, as an operator's reconfiguration would.
+// Restart stops the server and starts it with opts applied, on the same lease file and server DUID (#214).
 func (k *Kea6Fixture) Restart(opts ...Kea6Option) {
 	k.t.Helper()
 	k.Stop()
