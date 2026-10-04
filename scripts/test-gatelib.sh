@@ -137,6 +137,9 @@ for g in "$HERE"/check-*.sh; do
     grep -qxF '. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2' "$g" || missing="$missing ${g##*/}"
 done
 [ "$n" -gt 0 ] || no "no scripts/check-*.sh found beside the library"
+# A refusal inside $(...) or <(...) ends only the subshell, and the gate goes on.
+wrapped=$(grep -lE '[$<]\([[:space:]]*gate_(subjects|refuse)' "$HERE"/check-*.sh | sed 's|.*/||' | tr '\n' ' ')
+expect "no gate calls gate_subjects or gate_refuse inside a subshell" "" "$wrapped"
 expect "every scripts/check-*.sh sources gatelib.sh ($n gates)" "" "$missing"
 
 echo
