@@ -424,9 +424,10 @@ contract.
   update, a refactor.
 
 **Not part of the contract:** log lines (their text, level and fields),
-any counter or state that `/Plugin.Health` does not show, the internal
-dependencies, the test suites, CI and the test lab. These change in any
-release.
+counters the plugin keeps but `/Plugin.Health` does not show, the
+internal dependencies, the test suites, CI and the test lab. These change
+in any release. The files in `STATE_DIR` stay in the contract, as listed
+above.
 
 The rule binds from v2.5.0 onward. The case that prompted it: v1.5.0, a
 minor release, moved `STATE_DIR` to a host bind mount that every existing
