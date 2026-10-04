@@ -63,6 +63,7 @@ SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 REENTRANT_FLAG=--reentrant
 SPAWNED_REENTRANT=0
 guarded_tmpdir TMP
+cp "${CHECK%/*}/gatelib.sh" "$TMP/"
 fails=0
 
 check() {

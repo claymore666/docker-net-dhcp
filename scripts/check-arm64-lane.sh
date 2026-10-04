@@ -45,6 +45,8 @@
 # NOT fail-open. An unreadable API is reported as unreadable; it is
 # never allowed to look like a runner that showed up.
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 RUN_ID="${1:-}"
 WAIT_MIN="${2:-25}"

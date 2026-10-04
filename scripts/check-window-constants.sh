@@ -120,6 +120,8 @@
 #        1 a statement disagrees
 #        2 cannot see -- refuse rather than pass
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 while [ "$#" -gt 0 ]; do

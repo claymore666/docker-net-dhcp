@@ -76,6 +76,8 @@
 # 2 refused (the gate could not see its subject -- never silent).
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 # Pinned for the whole script, not per command (#554). Every comparison
 # below -- sort, uniq, comm, and the regex classes -- has to agree about
@@ -96,8 +98,7 @@ SUITE_DIR="$ROOT/test/integration"
 WORKFLOWS="integration.yml integration-hosted.yml"
 
 refuse() {
-    echo "::error title=$1::$2" >&2
-    exit 2
+    GATE_TITLE="$1" gate_refuse "$2"
 }
 
 [ -d "$WF" ] || refuse "No workflow directory" "$WF is not a directory, so no lane can be read."

@@ -61,6 +61,8 @@
 # Usage: check-plugin-set-order.sh [<file>...]   (default: tracked *.md)
 # Exit:  0 every snippet is in the right order, 1 one is not.
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 if [ "$#" -gt 0 ]; then
     files=("$@")

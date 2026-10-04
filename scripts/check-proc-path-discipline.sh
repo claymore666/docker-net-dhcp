@@ -51,6 +51,8 @@
 # Usage: check-proc-path-discipline.sh [<tree>]
 # Exit: 0 clean, 1 violation, 2 cannot check.
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 cd "$(dirname "$0")/.." || exit 2
 cd "${1:-.}" || exit 2
@@ -98,7 +100,11 @@ grep -qE "^func $ALLOWED_FUNC\\(" "$ALLOWED_FILE" || {
 # Test files are included on purpose: a test that reaches a live /proc
 # path by PID is doing the unsafe thing to prove something, and should
 # say so with an explicit allow comment.
-hits=$(grep -rnE '"/proc/(%[a-z]|" *\+)' --include='*.go' pkg cmd 2>/dev/null || true)
+gate_subjects gofiles go
+mapfile -t gofiles < <(printf '%s\n' "${gofiles[@]}" | grep -E '^(pkg|cmd)/')
+[ "${#gofiles[@]}" -gt 0 ] || gate_refuse "no Go file under pkg/ or cmd/; a pass here would have read nothing"
+hits=$(grep -HnE '"/proc/(%[a-z]|" *\+)' -- "${gofiles[@]}")
+[ $? -le 1 ] || gate_refuse "grep failed over the Go files"
 
 fail=0
 while IFS= read -r line; do

@@ -425,7 +425,7 @@ mkrepo() {
         git config user.email t@t; git config user.name t
         git config commit.gpgsign false
         mkdir scripts
-        cp "$GATE" scripts/check-release-notes-symbols.sh
+        cp "$GATE" scripts/check-release-notes-symbols.sh && cp "$HERE/gatelib.sh" scripts/gatelib.sh
         printf 'package fixture\n\nfunc renameMe() {}\n' > src.go
         cat > RELEASE_NOTES.md <<'MD'
 ## v9.9.0

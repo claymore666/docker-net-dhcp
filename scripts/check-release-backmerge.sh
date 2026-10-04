@@ -73,6 +73,8 @@
 #        2 cannot see — refs missing, shallow clone, not a repo
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 DIR="${BACKMERGE_GIT_DIR:-$(cd "$HERE/.." && pwd)}"

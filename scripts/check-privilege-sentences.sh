@@ -79,6 +79,8 @@
 #        file, missing block markers, empty set on either side).
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 ROOT="${1:-.}"
 MANIFEST="$ROOT/config.json"

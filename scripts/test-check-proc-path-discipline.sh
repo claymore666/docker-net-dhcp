@@ -53,6 +53,7 @@ fixture() {
     local name="$1"; shift
     local d="$TMP/$name"
     mkdir -p "$d"
+    git init -q "$d"
     cp -r "$REPO/pkg" "$REPO/cmd" "$d/"
     if [ "$#" -gt 0 ]; then
         local before

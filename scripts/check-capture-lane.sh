@@ -46,6 +46,8 @@
 # Usage: bash scripts/check-capture-lane.sh [workflow-file]
 # Exit: 0 in order, 1 the property is broken, 2 cannot check.
 set -u
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 WF="${1:-.github/workflows/capture-fixtures.yml}"
 

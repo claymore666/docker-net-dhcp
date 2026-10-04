@@ -57,6 +57,8 @@
 # Usage: check-pi-watchdog-wiring.sh [<netboot-dir>]
 # Exit: 0 wired, 1 drift, 2 cannot check.
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 cd "$(dirname "$0")/.." || exit 2
 DIR="${1:-test/arm64-netboot}"

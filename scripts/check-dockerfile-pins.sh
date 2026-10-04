@@ -34,6 +34,8 @@
 #                        discovery (the seam the self-test drives).
 # Exit:  0 every FROM is pinned, 1 one or more are not, 2 cannot check.
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 ROOT="${1:-.}"
 

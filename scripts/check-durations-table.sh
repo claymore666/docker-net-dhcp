@@ -77,6 +77,8 @@
 #          it must not read as a table with nothing wrong with it.
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 # Same reason as integration-shard.sh (#554): the sort and the numeric
 # parse below must not depend on who runs this.
@@ -96,8 +98,9 @@ TABLE="$SUITE_DIR/testdata/suite-durations.tsv"
 SHARDER="$ROOT/scripts/integration-shard.sh"
 
 cannot_see() {
-    echo "::error title=durations-table gate cannot see::$*" >&2
-    exit 2
+
+    GATE_TITLE='durations-table gate cannot see' gate_refuse "$*"
+
 }
 
 [ -d "$SUITE_DIR" ] || cannot_see "$SUITE_DIR is not a directory"

@@ -73,6 +73,8 @@
 #        1 unarmed, held by something else, or on terms that cannot work
 #        2 cannot check (no watchdog device, or the ring buffer wrapped)
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 SYSFS="${HOST_WATCHDOG_SYSFS:-/sys/class/watchdog/watchdog0}"
 KMSG="${HOST_WATCHDOG_KMSG:-/dev/kmsg}"

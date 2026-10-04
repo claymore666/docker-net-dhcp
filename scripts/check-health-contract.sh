@@ -96,6 +96,8 @@
 #                                 [<other-pages-dir>]
 # Exit:  0 they all agree, 1 they disagree, 2 cannot check.
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 DOC="${1:-docs/reference.md}"
 SRC="${2:-pkg/plugin/endpoints.go}"

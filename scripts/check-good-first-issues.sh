@@ -185,6 +185,8 @@
 #               against a stub without touching the network.
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 MODE="${1:-}"
 case "$MODE" in

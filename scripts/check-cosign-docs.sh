@@ -27,6 +27,8 @@
 #   bash scripts/check-cosign-docs.sh
 #   DOCS_ROOT=path TOOLING_SCRIPT=path bash scripts/check-cosign-docs.sh
 set -u
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 ROOT="${DOCS_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 TOOLING="${TOOLING_SCRIPT:-$ROOT/scripts/check-release-tooling.sh}"
@@ -52,21 +54,13 @@ WANT="cosign v${MAJOR} or newer"
 # verification command. Discovered, not listed — a new page that copies the
 # snippet is in scope the moment it lands, which a hand-maintained list
 # would miss.
-# .claude/ is excluded for the same reason .dockerignore excludes it
-# (#530): per-instance git worktrees live there, so a repo-root walk finds
-# every OTHER branch's copy of these pages and judges the current tree by
-# them. A worktree on a branch predating this gate made it fail on a dev
-# checkout where all four real pages passed, and a worktree that ever ran
-# `sudo make create` adds root-owned paths the walk cannot even read.
-#
-# CI never sees either: checkouts are fresh and have no worktrees. This
-# gate is therefore broken precisely where a maintainer runs it by hand,
-# and green where it is automated — the worst way round.
-mapfile -t PAGES < <(
-    cd "$ROOT" && grep -rl --include='*.md' --exclude-dir='.claude' --exclude-dir='.git' \
-        -E '^[[:space:]]*cosign verify' . \
-        | sed 's|^\./||' | sort
-)
+# Git's view (#744) leaves out .claude/ worktrees (#530) and every other
+# ignored or nested copy of these pages, here and in CI alike.
+mdfiles=()
+gate_subjects mdfiles md "$ROOT"
+hits="$(grep -lE '^[[:space:]]*cosign verify' -- "${mdfiles[@]}")"
+[ $? -le 1 ] || gate_refuse "grep failed over the Markdown files under $ROOT"
+mapfile -t PAGES < <(printf '%s\n' "$hits" | sed "s|^${ROOT%/}/||" | grep -v '^$')
 
 if [ "${#PAGES[@]}" -eq 0 ]; then
     echo "no page prints a cosign verify command — nothing to check." >&2
