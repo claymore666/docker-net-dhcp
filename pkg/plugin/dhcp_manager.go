@@ -94,6 +94,9 @@ type dhcpManager struct {
 	// delegated is the last v6 lease event's IA_PD prefixes, prefixOverlap whether they overlapped another endpoint's (#214).
 	delegated     []v6PrefixRecord
 	prefixOverlap bool
+	// prefixRoutes is the aggregates this endpoint installed, so a renewal or withdrawal never touches another
+	// endpoint's in a shared sandbox; it is seeded from the endpoint's own lease record, which outlives a restart (#214).
+	prefixRoutes map[string]*net.IPNet
 
 	// recordID is the durable lease record (#899); empty in unit tests and adopted endpoints, where record calls no-op.
 	recordID string
@@ -1690,6 +1693,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		// The v6 record gives both the preferred address and the DUID; RFC 9915 section 18.2.12's Confirm needs the
 		// DUID the binding was made with (#911).
 		m.recordID6, resumption, identity6 = m.resumeFromRecord6()
+		m.seedPrefixRoutes(resumption.Lease)
 		recordID = m.recordID6
 		preferredV6 = resumption.Prefer
 		if resumption.Lease == nil && preferredV6 == "" {

@@ -5,6 +5,7 @@ package plugin
 
 import (
 	"errors"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -61,7 +62,7 @@ func TestValidateIPv6Options_IPv6PDNeedsASolicitAndItsOwnLink(t *testing.T) {
 		{"slaac without the key", DHCPNetworkOptions{Bridge: "br0", IPv6Mode: "slaac"}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validateIPv6PD(tc.opts, mustMode6(t, tc.opts))
+			err := validateIPv6PD(tc.opts, map[string]bool{"IPv6PD": tc.opts.IPv6PD != 0}, mustMode6(t, tc.opts))
 			if tc.wantErr == nil {
 				if err != nil {
 					t.Fatalf("validateIPv6PD = %v, want accepted", err)
@@ -114,6 +115,16 @@ func aggregate(t *testing.T, s string) netlink.Route {
 	return *prefixAggregate(cidr(t, s))
 }
 
+// ownAggregates puts aggregates in the table as this endpoint's own, installed by an earlier event.
+func ownAggregates(t *testing.T, m *dhcpManager, f *fakeRouteTable, prefixes ...string) {
+	t.Helper()
+	for _, s := range prefixes {
+		r := aggregate(t, s)
+		f.routes = append(f.routes, r)
+		m.ownPrefixRoute(r.Dst.String(), r.Dst)
+	}
+}
+
 func pdInfo(prefixes ...string) dhcp.Info {
 	info := dhcp.Info{IP: "fd00:6470::1000/128"}
 	for _, p := range prefixes {
@@ -122,13 +133,16 @@ func pdInfo(prefixes ...string) dhcp.Info {
 	return info
 }
 
-// A RIO, connected or operator's route is left alone, the first two sharing a destination (RFC 3633 section 12.1, #214).
+// A RIO, connected, operator's or another endpoint's route is left alone, the first two sharing a destination (RFC 3633
+// section 12.1, #214).
 func TestReconcilePrefixRoutes_MakesTheAggregatesMatchTheLease(t *testing.T) {
 	m, p, f := v6Manager(t)
 	rio := netlink.Route{Dst: cidr(t, "fd00:98:0:2::/64"), Protocol: unix.RTPROT_RA, Type: unix.RTN_UNICAST, LinkIndex: 3}
 	kernel := netlink.Route{Dst: cidr(t, "fd00:98:0:3::/64"), Protocol: unix.RTPROT_KERNEL, Type: unix.RTN_UNICAST, LinkIndex: 3}
 	operator := netlink.Route{Dst: cidr(t, "fd00:98:0:4::/64"), Protocol: unix.RTPROT_STATIC, Type: unix.RTN_UNREACHABLE}
-	f.routes = []netlink.Route{aggregate(t, "fd00:98:0:1::/64"), aggregate(t, "fd00:98:0:2::/64"), rio, kernel, operator}
+	otherEndpoint := aggregate(t, "fd00:98:0:5::/64")
+	f.routes = []netlink.Route{rio, kernel, operator, otherEndpoint}
+	ownAggregates(t, m, f, "fd00:98:0:1::/64", "fd00:98:0:2::/64")
 
 	info := pdInfo("fd00:98:0:2::/64", "fd00:98:0:3::/64")
 	if err := m.applyPrefixes(info.DelegatedPrefixes); err != nil {
@@ -177,7 +191,7 @@ func TestInstalledPrefixRoutes_ListsByTypeAndProtocol(t *testing.T) {
 
 func TestReconcilePrefixRoutes_AFailedDeleteIsReportedAndTheRestStillApplied(t *testing.T) {
 	m, _, f := v6Manager(t)
-	f.routes = []netlink.Route{aggregate(t, "fd00:98:0:1::/64")}
+	ownAggregates(t, m, f, "fd00:98:0:1::/64")
 	f.delErr = errors.New("netlink: operation not permitted")
 	err := m.reconcilePrefixRoutes(pdInfo("fd00:98:0:2::/64").DelegatedPrefixes)
 	if err == nil || !strings.Contains(err.Error(), "fd00:98:0:1::/64") {
@@ -294,16 +308,15 @@ func TestNotePrefixes_AnOverlapIsFlaggedNotRefused(t *testing.T) {
 	}
 }
 
-// RFC 8415 section 18.2.7: the prefix is out of use before the Release leaves, and a failed withdrawal sends nothing.
+// RFC 8415 section 18.2.7: the recorded prefix's route is out before the Release leaves; a failed delete leaves an unreachable
+// route that forwards nothing, so it does not hold the Release (#214).
 func TestReleaseLease_ThePrefixRouteGoesBeforeTheRelease(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
-		delErr    error
-		wantCalls int
-		want      releaseOutcome
+		name   string
+		delErr error
 	}{
-		{"the route came out", nil, 1, releaseSent},
-		{"the route could not be taken out", errors.New("netlink: operation not permitted"), 0, releaseWithdrawFailed},
+		{"the route came out", nil},
+		{"the route could not be taken out, and the Release still goes", errors.New("netlink: operation not permitted")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			prev := nlAddrDel
@@ -313,11 +326,16 @@ func TestReleaseLease_ThePrefixRouteGoesBeforeTheRelease(t *testing.T) {
 			p := &Plugin{}
 			sender := installSender(t, nil)
 			m := releasingManager(t, p, ReleaseOnStop, true)
+			ev := acquired6("fd00::50/64", time.Hour)
+			ev.Lease.Prefixes = []lease.Addr6{{Addr: netip.MustParsePrefix("fd00:98:0:8::/64")}}
+			if err := p.records.Observed(m.recordID6, ev, nil); err != nil {
+				t.Fatalf("Observed: %v", err)
+			}
 			f := &fakeRouteTable{routes: []netlink.Route{aggregate(t, "fd00:98:0:8::/64")}, delErr: tc.delErr}
 			f.install(t, m)
 			var order []string
 			nlHandleRouteDel = func(_ *netlink.Handle, r *netlink.Route) error {
-				order = append(order, "route")
+				order = append(order, "route "+r.Dst.String())
 				return tc.delErr
 			}
 			sendPrev := rtSendRelease
@@ -326,14 +344,14 @@ func TestReleaseLease_ThePrefixRouteGoesBeforeTheRelease(t *testing.T) {
 				return sendPrev(rec, cfg)
 			}
 
-			if got := m.releaseHeldLease(true); got != tc.want {
-				t.Errorf("releaseHeldLease(v6) = %q, want %q", got, tc.want)
+			if got := m.releaseHeldLease(true); got != releaseSent {
+				t.Errorf("releaseHeldLease(v6) = %q, want %q", got, releaseSent)
 			}
-			if got := sender.callCount(); got != tc.wantCalls {
-				t.Fatalf("the wire saw %d release(s), want %d", got, tc.wantCalls)
+			if got := sender.callCount(); got != 1 {
+				t.Fatalf("the wire saw %d release(s), want 1", got)
 			}
-			if tc.wantCalls == 1 && strings.Join(order, ",") != "route,release" {
-				t.Errorf("order %v, want the route out before the release", order)
+			if got := strings.Join(order, ","); got != "route fd00:98:0:8::/64,release" {
+				t.Errorf("order %q, want the recorded prefix's route out before the release", got)
 			}
 		})
 	}
@@ -343,8 +361,9 @@ func TestReleaseLease_ThePrefixRouteGoesBeforeTheRelease(t *testing.T) {
 func TestStopLeaving_WithdrawsTheAggregatesAndKeepsThePrefixesForTheTombstone(t *testing.T) {
 	p := &Plugin{endpointFingerprints: map[string]endpointFingerprint{"ep1": {MAC: "02:42:ac:11:00:02"}}}
 	m := stoppingManager(t, p, DHCPNetworkOptions{IPv6: true, Bridge: "br0"}, nil, nil)
-	f := &fakeRouteTable{routes: []netlink.Route{aggregate(t, "fd00:98:0:9::/64")}}
+	f := &fakeRouteTable{}
 	f.install(t, m)
+	ownAggregates(t, m, f, "fd00:98:0:9::/64")
 	m.notePrefixes(pdInfo("fd00:98:0:9::/64").DelegatedPrefixes, time.Now())
 
 	if err := m.StopForLeave(); err != nil {
@@ -381,5 +400,87 @@ func TestTombstone_CarriesTheDelegatedPrefixes(t *testing.T) {
 	}
 	if len(ts) != 1 || len(ts[0].DelegatedPrefixes) != 1 || ts[0].DelegatedPrefixes[0] != "fd00:98:0:a::/64" {
 		t.Errorf("tombstones = %+v, want the delegated prefix carried", ts)
+	}
+}
+
+// One container on two of the plugin's networks: B, without ipv6_pd, never deletes A's aggregate on renewal, loss,
+// Leave or release, and A still withdraws its own (#214).
+func TestReconcilePrefixRoutes_AnEndpointTouchesOnlyTheAggregatesItInstalled(t *testing.T) {
+	a, pa, f := v6Manager(t)
+	b := newDHCPManager(nil, JoinRequest{NetworkID: "net-2", EndpointID: "ep-2"}, DHCPNetworkOptions{IPv6: true}).withPlugin(&Plugin{})
+	f.install(t, b)
+	if err := a.applyPrefixes(pdInfo("fd00:98:0:1::/64").DelegatedPrefixes); err != nil {
+		t.Fatalf("A applyPrefixes: %v", err)
+	}
+	f.routes = append(f.routes, f.replace...)
+
+	if err := b.applyPrefixes(nil); err != nil {
+		t.Fatalf("B renew: %v", err)
+	}
+	b.dropPrefixRoutes(true, "leasefail")
+	b.dropPrefixRoutes(true, "leave")
+	if err := b.withdrawPrefixRoutes(); err != nil {
+		t.Fatalf("B release: %v", err)
+	}
+	if len(f.deleted) != 0 {
+		t.Fatalf("B deleted %v, want A's aggregate left alone", destinations(f.deleted))
+	}
+	if err := a.withdrawPrefixRoutes(); err != nil {
+		t.Fatalf("A withdraw: %v", err)
+	}
+	if got := destinations(f.deleted); len(got) != 1 || got[0] != "fd00:98:0:1::/64" {
+		t.Errorf("A deleted %v, want its own aggregate", got)
+	}
+	if got := pa.ipv6PrefixRoutesWithdrawn.Load(); got != 1 {
+		t.Errorf("withdrawn counter %d, want 1", got)
+	}
+}
+
+// After a restart the manager knows its aggregates only from its lease record, so the seed is what lets it withdraw them.
+func TestSeedPrefixRoutes_ARestartedEndpointWithdrawsWhatItsRecordHeld(t *testing.T) {
+	m, _, f := v6Manager(t)
+	f.routes = []netlink.Route{aggregate(t, "fd00:98:0:3::/64"), aggregate(t, "fd00:98:0:4::/64")}
+	m.seedPrefixRoutes(&lease.Lease{Prefixes: []lease.Addr6{{Addr: netip.MustParsePrefix("fd00:98:0:3::1/64")}}})
+
+	if err := m.withdrawPrefixRoutes(); err != nil {
+		t.Fatalf("withdraw: %v", err)
+	}
+	if got := destinations(f.deleted); len(got) != 1 || got[0] != "fd00:98:0:3::/64" {
+		t.Errorf("deleted %v, want only the aggregate the record held", got)
+	}
+}
+
+// A failed install is neither counted nor owned, so the next event retries it and a withdrawal deletes nothing (#214).
+func TestReconcilePrefixRoutes_AFailedInstallIsNotCountedOrOwned(t *testing.T) {
+	m, p, f := v6Manager(t)
+	f.addErr = errors.New("netlink: operation not permitted")
+	if err := m.applyPrefixes(pdInfo("fd00:98:0:6::/64").DelegatedPrefixes); err == nil {
+		t.Fatal("applyPrefixes reported no error for a failed install")
+	}
+	if got := p.ipv6PrefixRoutesInstalled.Load(); got != 0 {
+		t.Errorf("installed counter %d after a failed install, want 0", got)
+	}
+	if got := m.ownedPrefixRoutes(); len(got) != 0 {
+		t.Errorf("owned %v after a failed install, want none", got)
+	}
+}
+
+// ipv6_pd=0 is refused at create, as the reference says; an empty value stays unset (#214).
+func TestValidateIPv6Options_IPv6PDZeroIsRefusedAndEmptyIsUnset(t *testing.T) {
+	for _, tc := range []struct {
+		value   string
+		refused bool
+	}{{"0", true}, {"", false}} {
+		opts, set, err := decodeOptsSet(map[string]interface{}{"ipv6": "true", "ipv6_pd": tc.value})
+		if err != nil {
+			t.Fatalf("ipv6_pd=%q: decode: %v", tc.value, err)
+		}
+		err = validateIPv6Options(opts, set)
+		if tc.refused && !errors.Is(err, util.ErrIPAM) {
+			t.Errorf("ipv6_pd=%q: validate = %v, want refused", tc.value, err)
+		}
+		if !tc.refused && err != nil {
+			t.Errorf("ipv6_pd=%q: validate = %v, want accepted as unset", tc.value, err)
+		}
 	}
 }

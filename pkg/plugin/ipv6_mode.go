@@ -100,7 +100,7 @@ func validateIPv6Options(opts DHCPNetworkOptions, set map[string]bool) error {
 			"or ipv6_mode=auto, or drop ipv6_temporary. See issue #927", util.ErrIPAM, mode)
 	}
 
-	if err := validateIPv6PD(opts, mode); err != nil {
+	if err := validateIPv6PD(opts, set, mode); err != nil {
 		return err
 	}
 
@@ -121,8 +121,9 @@ func validateIPv6Options(opts DHCPNetworkOptions, set map[string]bool) error {
 }
 
 // validateIPv6PD refuses ipv6_pd where no Solicit carries it, and on ipvlan, which shares the parent's link (#214).
-func validateIPv6PD(opts DHCPNetworkOptions, mode proto.Mode6) error {
-	if opts.IPv6PD == 0 {
+// An empty value never reaches set, so ipv6_pd=0 is the only way to be in set at zero.
+func validateIPv6PD(opts DHCPNetworkOptions, set map[string]bool, mode proto.Mode6) error {
+	if opts.IPv6PD == 0 && !set["IPv6PD"] {
 		return nil
 	}
 	if opts.IPv6PD < 1 || opts.IPv6PD > 128 {

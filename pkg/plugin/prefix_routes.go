@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"time"
 
+	"github.com/claymore666/dhcp-golib/lease"
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
@@ -42,7 +43,8 @@ func (m *dhcpManager) installedPrefixRoutes() (map[string]*net.IPNet, error) {
 	return out, nil
 }
 
-// reconcilePrefixRoutes makes the aggregates exactly prefixes; skip_routes governs a server's routes, not this one (#214).
+// reconcilePrefixRoutes makes this endpoint's aggregates exactly prefixes, leaving every route it did not install alone;
+// skip_routes governs a server's routes, not this one (#214).
 func (m *dhcpManager) reconcilePrefixRoutes(prefixes []dhcp.V6Addr) error {
 	if m.netHandle == nil {
 		return nil
@@ -62,9 +64,12 @@ func (m *dhcpManager) reconcilePrefixRoutes(prefixes []dhcp.V6Addr) error {
 		return err
 	}
 	var firstErr error
-	for key, dst := range installed {
+	for key, dst := range m.ownedPrefixRoutes() {
 		if _, keep := want[key]; keep {
-			delete(want, key)
+			continue
+		}
+		if _, present := installed[key]; !present {
+			m.disownPrefixRoute(key)
 			continue
 		}
 		if err := nlHandleRouteDel(m.netHandle, prefixAggregate(dst)); err != nil {
@@ -73,22 +78,73 @@ func (m *dhcpManager) reconcilePrefixRoutes(prefixes []dhcp.V6Addr) error {
 			}
 			continue
 		}
+		m.disownPrefixRoute(key)
 		m.countPrefixRoute(false)
 		log.WithFields(m.logFields(true)).WithField("prefix", key).
 			Info("The delegated prefix is no longer held; removed its route from the container")
 	}
+	owned := m.ownedPrefixRoutes()
 	for key, dst := range want {
+		if _, present := installed[key]; present {
+			if _, ours := owned[key]; !ours {
+				log.WithFields(m.logFields(true)).WithField("prefix", key).
+					Warn("The container already has an unreachable route for the delegated prefix that this " +
+						"endpoint did not install; leaving it to whoever did")
+			}
+			continue
+		}
 		if err := nlHandleRouteReplace(m.netHandle, prefixAggregate(dst)); err != nil {
 			if firstErr == nil {
 				firstErr = fmt.Errorf("failed to install the delegated prefix route %v: %w", key, err)
 			}
 			continue
 		}
+		m.ownPrefixRoute(key, dst)
 		m.countPrefixRoute(true)
 		log.WithFields(m.logFields(true)).WithField("prefix", key).
 			Info("Installed the delegated prefix as an unreachable route in the container")
 	}
 	return firstErr
+}
+
+func (m *dhcpManager) ownedPrefixRoutes() map[string]*net.IPNet {
+	m.ipMu.Lock()
+	defer m.ipMu.Unlock()
+	out := make(map[string]*net.IPNet, len(m.prefixRoutes))
+	for k, v := range m.prefixRoutes {
+		out[k] = v
+	}
+	return out
+}
+
+func (m *dhcpManager) ownPrefixRoute(key string, dst *net.IPNet) {
+	m.ipMu.Lock()
+	defer m.ipMu.Unlock()
+	if m.prefixRoutes == nil {
+		m.prefixRoutes = make(map[string]*net.IPNet, 1)
+	}
+	m.prefixRoutes[key] = dst
+}
+
+func (m *dhcpManager) disownPrefixRoute(key string) {
+	m.ipMu.Lock()
+	defer m.ipMu.Unlock()
+	delete(m.prefixRoutes, key)
+}
+
+// seedPrefixRoutes claims the prefixes the endpoint's own record held, which a previous plugin process routed.
+func (m *dhcpManager) seedPrefixRoutes(l *lease.Lease) {
+	if l == nil {
+		return
+	}
+	for _, p := range l.Prefixes {
+		pfx := p.Addr.Masked()
+		if !pfx.IsValid() || !pfx.Addr().Is6() || pfx.Addr().Is4In6() {
+			continue
+		}
+		dst := &net.IPNet{IP: pfx.Addr().AsSlice(), Mask: net.CIDRMask(pfx.Bits(), 128)}
+		m.ownPrefixRoute(dst.String(), dst)
+	}
 }
 
 func (m *dhcpManager) countPrefixRoute(installed bool) {
@@ -102,7 +158,7 @@ func (m *dhcpManager) countPrefixRoute(installed bool) {
 	m.plugin.ipv6PrefixRoutesWithdrawn.Add(1)
 }
 
-// withdrawPrefixRoutes removes every aggregate; a release calls it before the Release is sent (RFC 8415 section 18.2.7).
+// withdrawPrefixRoutes removes every aggregate this endpoint installed; a release calls it before the Release is sent (RFC 8415 section 18.2.7).
 func (m *dhcpManager) withdrawPrefixRoutes() error {
 	return m.reconcilePrefixRoutes(nil)
 }
