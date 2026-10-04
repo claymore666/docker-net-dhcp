@@ -241,7 +241,7 @@ func TestHandleEvent_AV6LossWithdrawsTheAggregates(t *testing.T) {
 		t.Run(ev, func(t *testing.T) {
 			m, _, f := v6Manager(t)
 			m.notePrefixes(pdInfo("fd00:98:0:5::/64").DelegatedPrefixes, time.Now())
-			f.routes = []netlink.Route{aggregate(t, "fd00:98:0:5::/64")}
+			ownAggregates(t, m, f, "fd00:98:0:5::/64")
 			m.handleEvent(dhcp.Event{Type: ev}, true)
 			if got := destinations(f.deleted); len(got) != 1 || got[0] != "fd00:98:0:5::/64" {
 				t.Errorf("deleted %v after a v6 %s, want the aggregate", got, ev)
