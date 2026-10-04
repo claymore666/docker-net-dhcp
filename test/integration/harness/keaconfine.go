@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // Debian and Ubuntu ship a kea-dhcp4 AppArmor profile: config /etc/kea/**, log /var/log/kea/kea-dhcp4.log, leases
@@ -74,6 +76,8 @@ var (
 	keaProfilePath = "/etc/apparmor.d/usr.sbin.kea-dhcp4"
 	// readKernelLog returns the kernel ring buffer, root-only under Debian's kernel.dmesg_restrict=1.
 	readKernelLog = func() (string, error) { return firstKernelLog(kernelLogSources) }
+	// readKeaDirs is the owner and mode of the directories Kea uses.
+	readKeaDirs = func() []keaDirState { return statKeaDirs(kea4Default) }
 )
 
 // kernelLogSources: dmesg reads /dev/kmsg; journalctl -k is the fallback when that is closed to the process (#680).
@@ -148,7 +152,7 @@ func keaDenialRecord(kernelLog, before string) string {
 }
 
 // isDACDenial reports a capability denial that carries no path: root Kea denied dac_read_search or dac_override, which
-// the packaged profile never grants, so it cannot open a config under /etc/kea (shipped 0750 _kea:_kea) (#680).
+// the packaged profile never grants, so a 0750 _kea directory (all five on a stock host) is closed to it (#680).
 func isDACDenial(line string) bool {
 	return strings.Contains(line, `operation="capable"`) &&
 		(strings.Contains(line, `capname="dac_read_search"`) || strings.Contains(line, `capname="dac_override"`))
@@ -181,6 +185,80 @@ func (d kea4Dirs) needs(name string) bool {
 	return false
 }
 
+// keaDirState is a fixture directory's owner and mode as stat reported them; write is set where Kea creates files.
+type keaDirState struct {
+	path     string
+	owner    string
+	uid, gid uint32
+	mode     os.FileMode
+	write    bool
+}
+
+// states lists the directories Kea must enter (/etc/kea, above the fixture's conf dir) or write (#680).
+func (d kea4Dirs) states() []keaDirState {
+	return []keaDirState{{path: filepath.Dir(d.conf)}, {path: d.lease, write: true}, {path: d.log, write: true},
+		{path: d.pid, write: true}, {path: d.lock, write: true}}
+}
+
+// statKeaDirs reads owner and mode of each of d.states; an absent one is skipped, the fixture creates it as root.
+func statKeaDirs(d kea4Dirs) []keaDirState {
+	var out []keaDirState
+	for _, s := range d.states() {
+		fi, err := os.Stat(s.path)
+		if err != nil {
+			continue
+		}
+		st, ok := fi.Sys().(*syscall.Stat_t)
+		if !ok {
+			continue
+		}
+		s.uid, s.gid, s.mode = st.Uid, st.Gid, fi.Mode()
+		uid, gid := strconv.Itoa(int(st.Uid)), strconv.Itoa(int(st.Gid))
+		if u, err := user.LookupId(uid); err == nil {
+			uid = u.Username
+		}
+		if g, err := user.LookupGroupId(gid); err == nil {
+			gid = g.Name
+		}
+		s.owner = uid + ":" + gid
+		out = append(out, s)
+	}
+	return out
+}
+
+// rootCannotUse reports whether root Kea, holding neither dac_override nor dac_read_search, lacks x (and w where Kea
+// creates files) on s: the kernel picks the owner, group or other bits by uid 0 and gid 0 (#680).
+func rootCannotUse(s keaDirState) bool {
+	bits := s.mode.Perm()
+	switch {
+	case s.uid == 0:
+		bits >>= 6
+	case s.gid == 0:
+		bits >>= 3
+	}
+	need := os.FileMode(1)
+	if s.write {
+		need |= 2
+	}
+	return bits&need != need
+}
+
+// keaDirFix is the command that gives root the owner bits on s, with the owner and mode it sets.
+func keaDirFix(s keaDirState) string {
+	return "sudo install -d -o root -g root -m 0755 " + s.path
+}
+
+// keaDirsClosed is the states root Kea cannot use.
+func keaDirsClosed(dirs []keaDirState) []keaDirState {
+	var out []keaDirState
+	for _, s := range dirs {
+		if rootCannotUse(s) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // keaConfinement is what the fixture measured about AppArmor when Kea failed, each read with its own outcome flag (#869).
 type keaConfinement struct {
 	// mode is the kernel-reported mode, "" when not loaded; meaningful only if listRead.
@@ -194,6 +272,8 @@ type keaConfinement struct {
 	denial string
 	// logEmpty is whether the Kea log the caller prints is empty.
 	logEmpty bool
+	// dirs is the owner and mode of the directories Kea uses, read when Kea failed.
+	dirs []keaDirState
 }
 
 // keaConfinementHint explains why AppArmor did or may have stopped Kea, or returns "" when it does not. A denial record
@@ -218,19 +298,16 @@ func keaConfinementHint(c keaConfinement) string {
 		"  the PID file in /run/kea and the lock in /run/lock/kea.\n"
 	const differs = "the profile loaded on this host differs from the packaged one (a site override or another version).\n"
 
-	const dacCause = "  This is a capability denial with no path: Kea runs as root, the kea packages ship /etc/kea\n" +
-		"  as 0750 _kea:_kea, and the packaged profile grants no dac_read_search or dac_override, so\n" +
-		"  Kea cannot read its config. That is the packaged profile working as shipped, not a site\n" +
-		"  override. Fix on this host: sudo chmod 0755 /etc/kea (the CI runner image does the same).\n"
+	dacCause := dacCauseOf(keaDirsClosed(c.dirs))
 
 	switch {
 	case isDACDenial(c.denial):
 		return fmt.Sprintf(
 			"APPARMOR: the kernel logged a kea-dhcp4 denial after this fixture started Kea,\n"+
 				"  so that is why Kea never started:\n"+
-				"    %s\n"+dacCause+
+				"    %s\n%s"+
 				"  Kea exits before writing a line%s.\n"+remedy,
-			c.denial, emptyLog)
+			c.denial, dacCause, emptyLog)
 
 	case c.denial != "":
 		return fmt.Sprintf(
@@ -269,9 +346,29 @@ func keaConfinementHint(c keaConfinement) string {
 	}
 }
 
+// dacCauseOf names the directories closed to root Kea, each with its owner and mode and a command that opens it.
+func dacCauseOf(closed []keaDirState) string {
+	const head = "  This is a capability denial with no path: Kea runs as root and the packaged profile grants no\n" +
+		"  dac_read_search or dac_override"
+	if len(closed) == 0 {
+		return head + ". None of the directories Kea uses is closed to root (owner and mode read just\n" +
+			"  now), so the cause is not one of them.\n"
+	}
+	var b strings.Builder
+	b.WriteString(head + ", and these directories are closed to root (owner and mode read just now):\n")
+	for _, s := range closed {
+		fmt.Fprintf(&b, "    %s  %s %04o\n", s.path, s.owner, s.mode.Perm())
+	}
+	b.WriteString("  A stock kea install makes them _kea 0750, which the packaged profile enforces as shipped. Fix, once:\n")
+	for _, s := range closed {
+		b.WriteString("    " + keaDirFix(s) + "\n")
+	}
+	return b.String()
+}
+
 // keaConfinementEvidence performs the reads and reports what each established (#680).
 func keaConfinementEvidence(before string, beforeRead, logEmpty bool) keaConfinement {
-	c := keaConfinement{logEmpty: logEmpty}
+	c := keaConfinement{logEmpty: logEmpty, dirs: readKeaDirs()}
 
 	if data, err := os.ReadFile(apparmorProfilesPath); err == nil {
 		c.listRead = true

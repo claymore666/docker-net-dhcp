@@ -264,6 +264,38 @@ func TestKeaConfinementHint(t *testing.T) {
 	})
 }
 
+// stockKeaDirs is the five directories on a Debian host where the packaged service ran once: _kea:_kea 0750 (#680).
+func stockKeaDirs() []keaDirState {
+	out := kea4Default.states()
+	for i := range out {
+		out[i].owner, out[i].uid, out[i].gid, out[i].mode = "_kea:_kea", 107, 107, 0o750
+	}
+	return out
+}
+
+func rootOwns(s *keaDirState) { s.owner, s.uid, s.gid, s.mode = "root:root", 0, 0, 0o755 }
+
+// withDirs applies fix to the directories named by path; the key "" means every directory.
+func withDirs(dirs []keaDirState, fixes map[string]func(*keaDirState)) []keaDirState {
+	for i := range dirs {
+		for path, fix := range fixes {
+			if path == "" || path == dirs[i].path {
+				fix(&dirs[i])
+			}
+		}
+	}
+	return dirs
+}
+
+// stockDirHintWants is what a hint over dirs must say for each: the path with owner and mode, and the fix command.
+func stockDirHintWants(dirs []keaDirState) []string {
+	want := []string{"so that is why Kea never started", `capname="dac_read_search"`, "_kea:_kea 0750"}
+	for _, d := range dirs {
+		want = append(want, d.path+"  _kea:_kea 0750", "sudo install -d -o root -g root -m 0755 "+d.path+"\n")
+	}
+	return want
+}
+
 func TestAppArmorKeaHint(t *testing.T) {
 	writeTemp := func(t *testing.T, name, content string) string {
 		t.Helper()
@@ -287,6 +319,7 @@ func TestAppArmorKeaHint(t *testing.T) {
 		kernelLog           string
 		kernelLogUnreadable bool
 		logEmpty            bool
+		dirs                []keaDirState
 		wantContains        []string
 		wantNotContains     []string
 		wantEmpty           bool
@@ -316,13 +349,40 @@ func TestAppArmorKeaHint(t *testing.T) {
 			wantNotContains: []string{"so that is why Kea never started", "Therefore", "file_inherit"},
 		},
 		{
-			name:            "the only new denial is a dac_read_search capability line: named, not blamed on a site override",
-			profiles:        sampleProfiles,
-			profileFile:     true,
-			kernelLog:       capDenialFor(16, "dac_read_search"),
-			logEmpty:        true,
-			wantContains:    []string{"so that is why Kea never started", `capname="dac_read_search"`, "0750 _kea:_kea", "chmod 0755 /etc/kea"},
-			wantNotContains: []string{"differs from the packaged", "candidate cause"},
+			name:         "a dac_read_search line on a stock host names all five 0750 _kea directories and a fix for each",
+			profiles:     sampleProfiles,
+			profileFile:  true,
+			kernelLog:    capDenialFor(16, "dac_read_search"),
+			logEmpty:     true,
+			dirs:         stockKeaDirs(),
+			wantContains: stockDirHintWants(stockKeaDirs()),
+			wantNotContains: []string{
+				"differs from the packaged", "candidate cause", "None of the directories", "chmod 0755 /etc/kea",
+			},
+		},
+		{
+			name:        "a dac_override line with only two directories closed names those two and no other",
+			profiles:    sampleProfiles,
+			profileFile: true,
+			kernelLog:   capDenialFor(17, "dac_override"),
+			logEmpty:    true,
+			dirs: withDirs(stockKeaDirs(), map[string]func(*keaDirState){
+				"/etc/kea": rootOwns, "/var/log/kea": rootOwns, "/run/lock/kea": rootOwns,
+			}),
+			wantContains:    []string{"/var/lib/kea  _kea:_kea 0750", "/run/kea  _kea:_kea 0750", "-m 0755 /var/lib/kea", "-m 0755 /run/kea"},
+			wantNotContains: []string{"/etc/kea  ", "/var/log/kea  ", "/run/lock/kea  ", "-m 0755 /etc/kea", "None of the directories"},
+		},
+		{
+			name:         "a dac line with every directory open to root says the cause is elsewhere and offers no fix",
+			profiles:     sampleProfiles,
+			profileFile:  true,
+			kernelLog:    capDenialFor(18, "dac_read_search"),
+			logEmpty:     true,
+			dirs:         withDirs(stockKeaDirs(), map[string]func(*keaDirState){"": rootOwns}),
+			wantContains: []string{"so that is why Kea never started", "None of the directories Kea uses is closed to root"},
+			wantNotContains: []string{
+				"install -d", "differs from the packaged", "candidate cause",
+			},
 		},
 		{
 			name:            "no before snapshot: a denial cannot be told from an old one, so none is blamed",
@@ -405,10 +465,11 @@ func TestAppArmorKeaHint(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			origProfiles, origKea, origKernel := apparmorProfilesPath, keaProfilePath, readKernelLog
+			origProfiles, origKea, origKernel, origDirs := apparmorProfilesPath, keaProfilePath, readKernelLog, readKeaDirs
 			t.Cleanup(func() {
-				apparmorProfilesPath, keaProfilePath, readKernelLog = origProfiles, origKea, origKernel
+				apparmorProfilesPath, keaProfilePath, readKernelLog, readKeaDirs = origProfiles, origKea, origKernel, origDirs
 			})
+			readKeaDirs = func() []keaDirState { return tc.dirs }
 
 			if tc.profilesUnreadable {
 				apparmorProfilesPath = absent
@@ -514,6 +575,88 @@ func TestKea6ConfinementHint(t *testing.T) {
 	} {
 		if got := tc.c.String(); !strings.Contains(got, tc.want) {
 			t.Errorf("String() = %q, want %q", got, tc.want)
+		}
+	}
+}
+
+func TestRootCannotUse(t *testing.T) {
+	kea := func(mode os.FileMode, write bool) keaDirState {
+		return keaDirState{uid: 107, gid: 107, mode: mode, write: write}
+	}
+	tests := []struct {
+		name string
+		s    keaDirState
+		want bool
+	}{
+		{"stock _kea 0750 conf dir", kea(0o750, false), true},
+		{"stock _kea 0750 write dir", kea(0o750, true), true},
+		{"_kea 0755 conf dir: other bits give root x", kea(0o755, false), false},
+		{"_kea 0755 write dir: other bits give root no w", kea(0o755, true), true},
+		{"_kea 0777 write dir", kea(0o777, true), false},
+		{"_kea 0700 conf dir", kea(0o700, false), true},
+		{"root 0750 write dir: owner bits", keaDirState{mode: 0o750, write: true}, false},
+		{"root 0555 write dir: owner has no w", keaDirState{mode: 0o555, write: true}, true},
+		{"root 0555 conf dir", keaDirState{mode: 0o555}, false},
+		{"root 0055 conf dir: owner bits win over the open group and other bits", keaDirState{mode: 0o055}, true},
+		{"gid 0 owned by _kea, 0070: group bits", keaDirState{uid: 107, mode: 0o070, write: true}, false},
+		{"gid 0 owned by _kea, 0750: group r-x lacks w", keaDirState{uid: 107, mode: 0o750, write: true}, true},
+		{"gid 0 owned by _kea, 0705: other bits are not read", keaDirState{uid: 107, mode: 0o705}, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := rootCannotUse(tc.s); got != tc.want {
+				t.Errorf("rootCannotUse(%+v) = %v, want %v", tc.s, got, tc.want)
+			}
+		})
+	}
+}
+
+// The advised command must leave no closed directory closed: the model of what it sets is checked against the predicate.
+func TestKeaDirFixGivesRootEveryDirectory(t *testing.T) {
+	for _, s := range stockKeaDirs() {
+		fix := keaDirFix(s)
+		if want := "sudo install -d -o root -g root -m 0755 " + s.path; fix != want {
+			t.Errorf("fix for %s = %q, want %q", s.path, fix, want)
+		}
+		after := s
+		rootOwns(&after)
+		if rootCannotUse(after) {
+			t.Errorf("a root-owned 0755 %s is still closed to root Kea", s.path)
+		}
+	}
+}
+
+func TestKeaDirStatesAreTheFixtureDirectories(t *testing.T) {
+	var got []string
+	for _, s := range kea4Default.states() {
+		got = append(got, fmt.Sprintf("%s write=%v", s.path, s.write))
+	}
+	want := []string{"/etc/kea write=false", "/var/lib/kea write=true", "/var/log/kea write=true",
+		"/run/kea write=true", "/run/lock/kea write=true"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("states = %v, want %v", got, want)
+	}
+}
+
+func TestStatKeaDirs_ReadsModeAndSkipsWhatIsAbsent(t *testing.T) {
+	root := t.TempDir()
+	d := kea4Dirs{conf: filepath.Join(root, "etc", "dh-itest-v4"), lease: filepath.Join(root, "lease"),
+		log: filepath.Join(root, "log"), pid: filepath.Join(root, "pid"), lock: filepath.Join(root, "lock")}
+	for _, p := range []string{filepath.Dir(d.conf), d.lease} {
+		if err := os.Mkdir(p, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(p, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := statKeaDirs(d)
+	if len(got) != 2 || got[0].path != filepath.Dir(d.conf) || got[1].path != d.lease {
+		t.Fatalf("statKeaDirs = %+v, want the two directories that exist, conf parent first", got)
+	}
+	for _, s := range got {
+		if s.mode.Perm() != 0o750 || s.uid != uint32(os.Getuid()) || s.gid != uint32(os.Getgid()) || s.owner == "" {
+			t.Errorf("%s read as %+v, want mode 0750 owned by the test user", s.path, s)
 		}
 	}
 }
