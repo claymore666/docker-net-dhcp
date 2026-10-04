@@ -39,6 +39,8 @@
 # Exit:  0 clean, 1 a marker found, 2 cannot check.
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 if ! root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
     echo "FAIL  not inside a git repository, so there is no tracked tree to read" >&2

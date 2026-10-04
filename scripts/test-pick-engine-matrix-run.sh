@@ -99,6 +99,20 @@ picks "order in the list does not decide it" \
 $(run 30 "$SHA" completed success 2026-09-18T09:00:00Z)]" \
       "31 completed failure"
 
+# #1205: two runs of one commit, the branch push's finished and the tag
+# push's still going. The newest still answers, so the gate waits for it.
+# Taking the finished older run instead would let a green from earlier
+# answer for a run still measuring a moving engine tag (`29-dind`).
+picks "a newer run still in flight wins over an older completed one" \
+      "[$(run 14 "$SHA" completed success 2026-09-18T09:00:00Z),\
+$(run 15 "$SHA" in_progress "" 2026-09-18T09:00:20Z)]" \
+      "15 in_progress "
+
+picks "an older run still in flight does not hide a newer completed one" \
+      "[$(run 16 "$SHA" in_progress "" 2026-09-18T09:00:00Z),\
+$(run 17 "$SHA" completed success 2026-09-18T09:00:20Z)]" \
+      "17 completed success"
+
 picks "another commit's run is never chosen" \
       "[$(run 40 "$OTHER" completed success 2026-09-18T12:00:00Z),\
 $(run 41 "$SHA" completed success 2026-09-18T10:00:00Z)]" \
@@ -123,6 +137,74 @@ cannot_check "unparseable input is a cannot-check" 'not json' "$SHA"
 cannot_check "no argument is a cannot-check" "[]"
 cannot_check "an empty sha is a cannot-check" "[]" ""
 cannot_check "two arguments is a cannot-check" "[]" "$SHA" extra
+
+# THE GATE'S WAIT BOUND (#1205). The tag's engine-matrix run queues behind
+# the branch push's run of the same commit, so the gate may wait for two
+# lanes in a row. The slowest lane measured is 31 min (run 37142752845,
+# 40 runs read 2026-10-04). The bound lives in release.yml, so it is read
+# from there: reverting to the old 1800 s must turn this red.
+SLOWEST_LANE_SECONDS=1860
+RELEASE_YML="${RELEASE_YML:-$(cd "$(dirname "$0")/.." && pwd)/.github/workflows/release.yml}"
+
+bound_case() { # what file want(0|1)
+    local what="$1" file="$2" want="$3"
+    n=$((n + 1))
+    local out rc
+    out="$(python3 - "$file" "$SLOWEST_LANE_SECONDS" <<'PY' 2>&1
+import re, sys, yaml
+doc = yaml.safe_load(open(sys.argv[1]))
+lane = int(sys.argv[2])
+job = doc["jobs"]["production-shape"]
+wait = int(job["env"]["ENGINE_WAIT_SECONDS"])
+ceiling = int(job["timeout-minutes"]) * 60
+find = [s for s in job["steps"] if s.get("id") == "run"][0]["run"]
+bad = []
+if not re.search(r"deadline=.*\+ *\$?\{?ENGINE_WAIT_SECONDS", find):
+    bad.append("the wait step does not derive its deadline from ENGINE_WAIT_SECONDS")
+# The job value is the one number; a step-level env or an assignment in
+# the script would shadow it where this check does not look.
+for st in job["steps"]:
+    if "ENGINE_WAIT_SECONDS" in (st.get("env") or {}):
+        bad.append("step %r sets its own ENGINE_WAIT_SECONDS" % st.get("name"))
+    if re.search(r"(^|\s)ENGINE_WAIT_SECONDS=", st.get("run") or ""):
+        bad.append("step %r assigns ENGINE_WAIT_SECONDS in its script" % st.get("name"))
+if wait < 2 * lane:
+    bad.append("wait %d s is under two serialised lanes (%d s)" % (wait, 2 * lane))
+if wait + 300 > ceiling:
+    bad.append("wait %d s leaves under 300 s of the %d s job ceiling" % (wait, ceiling))
+print("; ".join(bad))
+sys.exit(1 if bad else 0)
+PY
+)"
+    rc=$?
+    if [ "$rc" -eq "$want" ]; then
+        echo "PASS: $what"
+    else
+        echo "FAIL: $what: want exit $want, got $rc: $out"
+        failures=$((failures + 1))
+    fi
+}
+
+bound_case "the shipped gate waits for two serialised lanes inside its job ceiling" "$RELEASE_YML" 0
+
+sed 's/ENGINE_WAIT_SECONDS: .3900./ENGINE_WAIT_SECONDS: '"'1800'"'/' "$RELEASE_YML" > "$TMP/release-old-bound.yml"
+bound_case "the old 1800 s bound is refused" "$TMP/release-old-bound.yml" 1
+
+sed 's/timeout-minutes: 75/timeout-minutes: 45/' "$RELEASE_YML" > "$TMP/release-low-ceiling.yml"
+bound_case "a wait that fills the job ceiling is refused" "$TMP/release-low-ceiling.yml" 1
+
+sed 's/+ ENGINE_WAIT_SECONDS ))/+ 3900 ))/' "$RELEASE_YML" > "$TMP/release-hardcoded.yml"
+bound_case "a wait step that ignores the declared bound is refused" "$TMP/release-hardcoded.yml" 1
+
+python3 - "$RELEASE_YML" "$TMP/release-step-env.yml" <<'PY'
+import sys, yaml
+doc = yaml.safe_load(open(sys.argv[1]))
+for st in doc["jobs"]["production-shape"]["steps"]:
+    if st.get("id") == "run":
+        st.setdefault("env", {})["ENGINE_WAIT_SECONDS"] = "600"
+yaml.safe_dump(doc, open(sys.argv[2], "w"))
+PY
+bound_case "a step-level ENGINE_WAIT_SECONDS that shadows the job value is refused" "$TMP/release-step-env.yml" 1
 
 echo
 if [ "$failures" -ne 0 ]; then

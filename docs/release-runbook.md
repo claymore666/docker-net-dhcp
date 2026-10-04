@@ -211,6 +211,15 @@ have gone names the run that measured it and reports that it keeps no
 rows any more. Re-running the matrix on the tag records a fresh row and
 clears the second.
 
+**A tag's gate can wait up to 65 minutes (#1205).** The gate waits for
+the engine-matrix run of the tag's own commit. A tag push starts a second
+run of the commit the branch push already started, the two share one
+concurrency group, and the tag's run queues until the first one ends, so
+two lanes of 15 to 31 minutes each (measured 2026-10-03/04) can run back to back. The gate waits
+`ENGINE_WAIT_SECONDS` (3900) before refusing with "The engine-matrix run
+has not finished"; that refusal means the lane was slow, not that the tag
+is wrong, and rerunning the failed jobs once the lane reports clears it.
+
 **Use an rc tag instead.** [The rc dry-run](#pre-release-dry-run-rc-tags)
 runs the identical chain and touches no bare release tag and no
 `:latest`, which is what every recovery step in this file now points
@@ -519,6 +528,12 @@ be true.
    (plus [`docs/index.md`](index.md), the site home) is what the
    versioned documentation site publishes for this tag, so the review
    *is* the site review; there's no separate wiki to reconcile.
+
+   **Check the version number against the contract.** Read the release
+   notes against [Versioning](reference.md#versioning): the number this
+   release takes is the one its largest change to the contract calls
+   for. A removed or renamed option, setting, Health field or tag is a
+   major, whatever the milestone says.
 
    **Read the pages whole, and aim at the ungated prose.** The
    reference material defends itself: `check-option-docs.sh`,

@@ -138,13 +138,15 @@
 # Usage: check-release-digest-fixed-point.sh [TREE] [WORKFLOW] [DOC] [DOCKERFILE]
 # Exit:  0 pass, 1 a claim is violated, 2 cannot run.
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 TREE="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 WF="${2:-$TREE/.github/workflows/release.yml}"
 DOC="${3:-$TREE/docs/verifying-releases.md}"
 DOCKERFILE="${4:-$TREE/Dockerfile}"
 
-die() { echo "check-release-digest-fixed-point: $*" >&2; exit 2; }
+die() { gate_refuse "$*"; }
 note() { echo "FAIL  $*" >&2; failed=1; }
 failed=0
 

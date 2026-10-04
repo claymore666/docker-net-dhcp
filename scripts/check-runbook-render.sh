@@ -34,6 +34,8 @@
 # Usage: bash scripts/check-runbook-render.sh [runbook] [mkdocs.yml]
 
 set -euo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/.." && pwd)"

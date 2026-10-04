@@ -73,7 +73,7 @@ check() { # <name> <want-exit> <root> <want-grep>
 d=$(tree nosuite); rm -rf "$d/test/integration"
 check "no suite directory is 'cannot see', not a pass" 2 "$d" "not a directory"
 
-d=$(tree nosharder); table "$d" "TestAlpha_One	1.00"; rm "$d/scripts/integration-shard.sh" "TestFailure_Costed	4.00"
+d=$(tree nosharder); table "$d" "TestAlpha_One	1.00" "TestFailure_Costed	4.00"; rm "$d/scripts/integration-shard.sh"
 check "no partitioner is 'cannot see', not a pass" 2 "$d" "does not exist"
 
 d=$(tree notable); rm -f "$d/test/integration/testdata/suite-durations.tsv"
@@ -86,7 +86,7 @@ check "an unreadable table (a directory) is 'cannot see'" 2 "$d" "not a regular 
 d=$(tree commentsonly); printf '# nothing but prose\n# and more prose\n' > "$d/test/integration/testdata/suite-durations.tsv"
 check "a table of only comments is 'cannot see', not a pass" 2 "$d" "holds no rows"
 
-d=$(tree notests); table "$d" "TestAlpha_One	1.00"; rm -f "$d"/test/integration/*_test.go "TestFailure_Costed	4.00"
+d=$(tree notests); table "$d" "TestAlpha_One	1.00" "TestFailure_Costed	4.00"; rm -f "$d"/test/integration/*_test.go
 check "no test files at all is 'cannot see', not a pass" 2 "$d" "refused"
 
 d=$(tree refuser); table "$d" "TestAlpha_One	1.00" "TestFailure_Costed	4.00"

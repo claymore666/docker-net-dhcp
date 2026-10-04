@@ -130,6 +130,8 @@
 #        1 an undeclared or stale entry,
 #        2 cannot check at all.
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 WF_DIR="${1:-.github/workflows}"
 ALLOWLIST="${2:-.github/dispatch-pending.txt}"

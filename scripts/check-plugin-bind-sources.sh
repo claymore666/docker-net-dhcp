@@ -20,6 +20,8 @@
 # manifest with jq fed to `xargs mkdir`. Sockets under /var/run are excluded deliberately:
 # mkdir -p over a socket replaces it with a directory.
 set -euo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 cd "$(dirname "$0")/.."
 

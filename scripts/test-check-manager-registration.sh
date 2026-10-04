@@ -46,7 +46,7 @@ run() {
     esac
 }
 
-mk() { local d="$TMP/$1"; mkdir -p "$d"; echo "$d"; }
+mk() { local d="$TMP/$1"; mkdir -p "$d"; git init -q "$d"; echo "$d"; }
 
 # --- the real tree must pass -------------------------------------------
 got=$(run pkg/plugin)

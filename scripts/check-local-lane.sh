@@ -66,6 +66,8 @@
 # Usage: check-local-lane.sh [<workflow>] [<lane script>] [<scripts dir>]
 # Exit: 0 in sync, 1 drift, 2 cannot check.
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 cd "$(dirname "$0")/.." || exit 2
 
@@ -172,7 +174,9 @@ all_wf_invoked=$(workflow_shell_lines --raw "$WF_DIR" | shell_command_words \
     | sed 's|.*/||' \
     | grep -E '^[A-Za-z0-9_.-]+\.sh$' \
     | sort -u)
-on_disk=$(find "$SCRIPTS_DIR" -maxdepth 1 -name 'check-*.sh' -printf '%f\n' 2>/dev/null | sort -u)
+gatefiles=()
+gate_subjects --may-be-empty gatefiles gates "$SCRIPTS_DIR"
+on_disk=$(printf '%s\n' ${gatefiles[@]+"${gatefiles[@]##*/}"} | grep -v '^$' | sort -u)
 if [ -z "$on_disk" ]; then
     echo "check-local-lane: no ${SCRIPTS_DIR}/check-*.sh found — cannot judge orphans." >&2
     exit 2

@@ -279,7 +279,8 @@ and are mirrored to Docker Hub under two names,
 `claymore666/net-dhcp:vX.Y.Z` and
 `claymore666/docker-net-dhcp:vX.Y.Z`. The two Hub names are the same
 image at the same digest; install from either. Pin a version for
-reproducibility.
+reproducibility. What a major, minor or patch release may change is in
+[Versioning](reference.md#versioning).
 
 Published builds are **`linux/amd64`** on the bare tag and
 **`linux/arm64`** as `:vX.Y.Z-arm64` / `:latest-arm64` (v1.7.0 onward).

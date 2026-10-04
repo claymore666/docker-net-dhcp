@@ -380,6 +380,62 @@ docker plugin rm ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z
 
 ---
 
+## Versioning
+
+Releases are numbered `vMAJOR.MINOR.PATCH` in the sense of
+[Semantic Versioning](https://semver.org/). The numbers describe one
+thing: what an operator depends on, called the contract below. The
+project ships as a plugin image, and its Go packages are not part of the
+contract.
+
+**The contract** is:
+
+- the driver options and the values each one accepts, with their
+  defaults
+  ([network-level](#driver-options-network-level),
+  [per-endpoint](#driver-options-per-endpoint));
+- what a network does in each mode, bridge, macvlan and ipvlan
+  ([Creating networks](#creating-networks), [Behaviour](#behaviour));
+- the plugin settings, among them `STATE_DIR`: its location on the host,
+  `/var/lib/net-dhcp`, and the names and formats of the files the plugin
+  keeps in it ([Plugin settings](#plugin-settings),
+  [State persistence](#state-persistence));
+- the fields and counter names of [`/Plugin.Health`](#pluginhealth),
+  and the [`/metrics`](#metrics) series rendered from them;
+- the image names and the tag scheme: `vX.Y.Z` for `linux/amd64`,
+  `vX.Y.Z-arm64` for `linux/arm64`, and the floating `latest` and
+  `latest-arm64` ([Install, upgrade, uninstall](#install-upgrade-uninstall));
+- the minimum Docker Engine, 20.10 today
+  ([Requirements](index.md#requirements), #672).
+
+**Which number moves:**
+
+- **Major:** something in the contract is removed, renamed or changes
+  meaning, so an install, a Compose file or a monitor that worked on the
+  previous release needs a change from the operator. Examples: an option
+  or an accepted value is removed, a default changes what it does,
+  `STATE_DIR` moves or a file in it changes so the new release cannot
+  read the old one, a Health field or counter is removed or renamed, the
+  tag scheme changes, the minimum engine goes up.
+- **Minor:** something is added to the contract and nothing in it
+  changes. Examples: a new option, a new accepted value, a new Health
+  field or counter, a new architecture tag, a lower minimum engine.
+- **Patch:** the contract is unchanged. Examples: a fix that makes the
+  plugin do what this page already says, a security fix, a dependency
+  update, a refactor.
+
+**Not part of the contract:** log lines (their text, level and fields),
+counters the plugin keeps but `/Plugin.Health` does not show, the
+internal dependencies, the test suites, CI and the test lab. These change
+in any release. The files in `STATE_DIR` stay in the contract, as listed
+above.
+
+The rule binds from v2.5.0 onward. The case that prompted it: v1.5.0, a
+minor release, moved `STATE_DIR` to a host bind mount that every existing
+install had to create before upgrading, which under this rule is a major.
+
+---
+
 ## Creating networks
 
 All modes share two invariants:
@@ -1483,9 +1539,10 @@ in every mode:
 #### Options captured from the server
 
 Everything the server returns is captured. Some is applied, most of the rest
-is logged; DHCPv6 option 17 is captured but not logged yet. The
-vendor-specific options 43 and 125 are logged but never applied
-([#1034](https://github.com/claymore666/docker-net-dhcp/issues/1034)):
+is logged. The vendor-specific options 43 and 125, and DHCPv6 option 17, are
+logged but never applied
+([#1034](https://github.com/claymore666/docker-net-dhcp/issues/1034),
+[#1203](https://github.com/claymore666/docker-net-dhcp/issues/1203)):
 
 **Applied**, when the matching option is enabled: option 6 (DNS servers)
 and option 119 (search list, falling back to option 15) into
@@ -1507,10 +1564,9 @@ the first event, and the next Reply's own options replace them.
 The plugin logs the timezone options 41 and 42 and the NTP Server option
 56, as described below
 ([#1033](https://github.com/claymore666/docker-net-dhcp/issues/1033),
-[#859](https://github.com/claymore666/docker-net-dhcp/issues/859)); it
-does not read or log option 17 yet
-([#1203](https://github.com/claymore666/docker-net-dhcp/issues/1203)).
-The DHCPv4 vendor options 43 and 125 are logged, as described below.
+[#859](https://github.com/claymore666/docker-net-dhcp/issues/859)). The
+vendor options, DHCPv4 43 and 125 and DHCPv6 17, are logged as described
+below.
 
 **Logged** at info level on every bind and renew, and only when at least
 one is present, so plain LANs get no extra noise: option 42 (NTP; 56 on
@@ -1536,16 +1592,26 @@ dnsmasq's `dhcp-option=option6:ntp-server,[a],[b]` packs both sources into
 one instance, which RFC 5908 does not allow and which is not read today:
 `ntp` is absent and the warning is logged.
 
-The vendor-specific options of DHCPv4 are logged the same way, hex-encoded
-and never interpreted ([#1034](https://github.com/claymore666/docker-net-dhcp/issues/1034)):
-option 43 (RFC 2132 section 8.4) as `vendor_43`, and option 125 (RFC 3925
-section 4) as `vendor_125`, one `enterprise-number:hex` entry per
-enterprise in the order they arrived. An option 43 of zero octets and a
-malformed option 125 are left out.
+The vendor-specific options are logged the same way, hex-encoded
+and never interpreted ([#1034](https://github.com/claymore666/docker-net-dhcp/issues/1034),
+[#1203](https://github.com/claymore666/docker-net-dhcp/issues/1203)):
+DHCPv4 option 43 (RFC 2132 section 8.4) as `vendor_43`, DHCPv4 option 125
+(RFC 3925 section 4) as `vendor_125`, and DHCPv6 option 17 (RFC 8415 section
+21.17) as `vendor_17`. The last two are one `enterprise-number:hex` entry per
+enterprise in the order they arrived; for option 17 that is one entry per
+instance of the option, and the hex is the instance's encapsulated
+sub-options. An option 43 of zero octets and a malformed option 125 are left
+out. An instance of option 17 shorter than the four octets of its enterprise
+number leaves the whole option out, the well-formed instances included,
+because the client library returns no list beside the error. A value
+longer than 256 bytes is logged as its first 256 bytes followed by
+`...(+N bytes, T total)`, which states how many bytes were cut and the full length.
 
 ```text
 level=info msg="DHCP options received" vendor_43=0104c0a86301
   vendor_125="[9:aabb 3561:]" ...
+level=info msg="DHCP options received" is_ipv6=true
+  vendor_17="[9:00010002aabb 3561:]" ...
 ```
 
 These are not auto-applied because the consuming application owns those
@@ -2083,8 +2149,16 @@ start compacts any file of 256 KiB or more. A closed record is dropped 60
 seconds after its last line. A held record, one kept so a restarted
 container gets its address back, is dropped once its restart window has
 run out and its server lease expired more than 60 seconds ago; a record
-whose lease never expires is kept. Every other line is copied unchanged,
-unreadable lines too. The new file is written beside the old one as
+whose lease never expires is kept. A kept record's superseded renewal
+lines are folded into its newest one, which saves about 600 bytes per
+renewal; the record's renewal and change counts then count from the
+compaction, and the log of the sweep at `debug` level says how many lines
+it folded (v2.5.0, #1192). A line is folded only when the line after it
+replaces the lease too and it carries nothing else the record needs, such
+as the parameter snapshot; the plugin checks that the thinned lines fold
+to the same record and keeps the record whole, with a warning naming it,
+when they do not. Every other line is copied unchanged, unreadable lines
+too. The new file is written beside the old one as
 `lease-records.jsonl.compact`, flushed to disk and renamed over it, so a
 crash leaves one whole file, and a leftover `.compact` file is removed at
 the next start. If the plugin cannot reopen the file after the rename, it

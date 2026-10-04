@@ -51,17 +51,15 @@
 # Usage: check-manager-registration.sh [<dir>]
 # Exit:  0 clean, 1 violation, 2 cannot check.
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 cd "$(dirname "$0")/.." || exit 2
 DIR="${1:-pkg/plugin}"
 [ -d "$DIR" ] || { echo "check-manager-registration: $DIR is not a directory" >&2; exit 2; }
 
-mapfile -t files < <(find "$DIR" -maxdepth 1 -name '*.go' ! -name '*_test.go' | sort)
-if [ "${#files[@]}" -eq 0 ]; then
-    echo "::error title=No Go files inspected::check-manager-registration found no production Go files in ${DIR}." >&2
-    echo "This gate would otherwise pass having read nothing." >&2
-    exit 2
-fi
+files=()
+GATE_TITLE='No Go files inspected' gate_subjects --shallow files go-src "$DIR"
 
 # Comments are stripped before matching: this gate's rule gets explained
 # in prose next to the code it governs, and a scan that counted prose

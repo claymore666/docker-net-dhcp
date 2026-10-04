@@ -34,7 +34,7 @@ check() {
 run() { ( cd "$REPO" && bash "$CHECK" "$1" >"$TMP/log" 2>&1 ) && echo pass || echo fail; }
 
 mk() {
-    local d="$TMP/$1"; mkdir -p "$d"
+    local d="$TMP/$1"; mkdir -p "$d"; git init -q "$d"
     cat > "$d/tombstone_store.go" <<'GO'
 package plugin
 
@@ -121,7 +121,7 @@ got=$(run "$d")
 check "prose naming p.mu does not trip the reach-back check" pass "$got"
 
 # --- inspecting nothing is not a pass ----------------------------------
-mkdir -p "$TMP/empty"
+mkdir -p "$TMP/empty"; git init -q "$TMP/empty"
 got=$(cd "$REPO" && bash "$CHECK" "$TMP/empty" >/dev/null 2>&1; echo $?)
 check "a directory with no Go files exits 2" 2 "$got"
 

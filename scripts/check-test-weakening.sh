@@ -43,6 +43,8 @@
 # is. That is the difference between "it cannot happen silently" and
 # "it cannot happen while you happen to be working on a ticket".
 set -u
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
     echo "usage: $0 <commit-range> [pr-body-file]" >&2

@@ -32,6 +32,8 @@
 # Usage: check-version-pins.sh [<file>...]
 #   defaults: README.md docs/*.md (run from the repo root)
 set -u
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 IMAGE="ghcr.io/claymore666/docker-net-dhcp"
 
@@ -54,13 +56,8 @@ allowed_tag() {
 
 files=("$@")
 if [ "${#files[@]}" -eq 0 ]; then
-    for f in README.md docs/*.md; do
-        [ -f "$f" ] && files+=("$f")
-    done
-fi
-if [ "${#files[@]}" -eq 0 ]; then
-    echo "usage: $0 [<file>...]  (no README.md / docs/*.md found)" >&2
-    exit 2
+    # The pages readers copy snippets from: the docs class (#744).
+    gate_subjects files docs
 fi
 
 # --- 1. Every image reference must be runnable ------------------------

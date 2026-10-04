@@ -151,6 +151,8 @@
 #          classify, or fewer than two publishing jobs, which would
 #          make the rule vacuous)
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 WF="${1:-.github/workflows/release.yml}"
 

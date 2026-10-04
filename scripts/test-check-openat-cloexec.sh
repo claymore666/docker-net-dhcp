@@ -36,6 +36,7 @@ REPO="$(cd "$HERE/.." && pwd)"
 GATE="$HERE/check-openat-cloexec.sh"
 
 guarded_tmpdir TMP
+cp "$HERE/gatelib.sh" "$TMP/"
 pass=0
 fail=0
 
@@ -211,6 +212,7 @@ verdict() {
     local gate="$1" builder="$2"
     local d
     guarded_tmpdir d "$TMP/fx.XXXXXX"
+    git init -q "$d"
     "$builder" "$d"
     bash "$gate" "$d" >/dev/null 2>&1
     local rc=$?
@@ -242,15 +244,15 @@ done
 # equally consistent with the `cmd` half of the find doing the work and
 # with the fixture being broken in some unrelated way. Only running the
 # NARROWED gate over the same fixture separates them -- if it also goes
-# red, the case below proves nothing about which half of `find pkg cmd`
+# red, the case below proves nothing about which half of `pkg|cmd`
 # earned the verdict.
 #
 # The narrowing is applied to the real gate by sed, not to a copy of its
-# find line pasted here: a copy drifts from the original silently and
+# domain line pasted here: a copy drifts from the original silently and
 # then tests itself.
 narrowed="$TMP/narrowed-openat.sh"
-sed -e "s|^FILES=\$(find pkg cmd |FILES=\$(find pkg |" "$GATE" > "$narrowed"
-if ! grep -q 'find pkg -type f' "$narrowed"; then
+sed -e "s/grep -E '^(pkg|cmd)\/')\$/grep -E '^pkg\/')/" "$GATE" > "$narrowed"
+if ! grep -qF "grep -E '^pkg/')" "$narrowed"; then
     no "the narrowing sed did not match — the orthogonality check below would" \
        "pass vacuously against an unmodified gate"
 elif [ "$(verdict "$narrowed" fx_violation_only_in_cmd)" = "0" ]; then
@@ -274,6 +276,7 @@ rm -f "$narrowed"
 # before the fix. "It would have caught it" is a claim; this is the
 # claim executed.
 guarded_tmpdir d "$TMP/fx.XXXXXX"
+git init -q "$d"
 fx_flag_removed "$d"
 out=$(bash "$GATE" "$d" 2>&1)
 # grep without -q, redirected: under pipefail a -q exits at the first

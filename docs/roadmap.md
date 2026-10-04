@@ -71,9 +71,9 @@ below decide what is in a release; this page follows them.
   the lease
 - [#859], the whole DHCPv6 NTP server list, option 56, in the same log
   line, one entry per instance
-- [#1034], the vendor-specific options logged. The DHCPv6 half's library
-  side comes with the v1.4.0 pin ([#1177]): option 17 on the lease. The
-  plugin's log line for option 17 is [#1203], planned for v2.5.0
+- [#1034], the DHCPv4 vendor-specific options 43 and 125 logged. The
+  DHCPv6 half's library side comes with the v1.4.0 pin ([#1177]): option 17
+  on the lease
 - [#1038], an `ipv6_mode=auto` network remembers a silent DHCPv6 server
   for `DHCPV6_ABSENCE_MEMORY` (default ten minutes, `0` turns it off):
   further endpoints form their address from the advertised prefix without
@@ -88,6 +88,8 @@ below decide what is in a release; this page follows them.
   the server for a prefix beside the address and installs it in the
   container as one unreachable route, for software there that routes; the
   Kea DHCPv6 test fixture shipped in v2.4.0
+- [#1203], the DHCPv6 option 17 logged as `vendor_17`, the plugin half of
+  [#1034]
 - [#733], the tracking issue for the CI consolidation programme
 - [#744], one subject discovery, one refusal and one collation in a
   shared shell library

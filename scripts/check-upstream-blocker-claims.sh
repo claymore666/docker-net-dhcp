@@ -68,6 +68,8 @@
 #          blocked-upstream table declares nothing
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(dirname "$HERE")"

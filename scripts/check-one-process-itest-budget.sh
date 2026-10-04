@@ -90,13 +90,14 @@
 #          read, a value this gate cannot judge, or an empty population)
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 WF_DIR="${1:-.github/workflows}"
 MAKEFILE="${2:-Makefile}"
 
 refuse() {
-    echo "::error title=One-process budget gate cannot check::$1" >&2
-    exit 2
+    GATE_TITLE='One-process budget gate cannot check' gate_refuse "$1"
 }
 
 [ -d "$WF_DIR" ] || refuse "no workflow directory '$WF_DIR'."

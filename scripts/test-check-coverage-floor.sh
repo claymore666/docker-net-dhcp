@@ -380,6 +380,7 @@ run_pkg_case "with no rename, a dropped floor on a live package is still a decre
 # passing.
 PREFIX_DIR=
 guarded_tmpdir PREFIX_DIR
+cp "${GATE%/*}/gatelib.sh" "$PREFIX_DIR/"
 PREFIX="$PREFIX_DIR/check-coverage-floor-prefix.sh"
 if python3 - "$GATE" "$PREFIX" <<'SURGERY'
 import sys
@@ -473,6 +474,7 @@ run_func_case "an unknown kind refuses" "$FTWO" "$FTWO" "pkg/a" "pkg/a" 2 "COVER
 
 FPREFIX_DIR=
 guarded_tmpdir FPREFIX_DIR
+cp "${GATE%/*}/gatelib.sh" "$FPREFIX_DIR/"
 FPREFIX="$FPREFIX_DIR/check-coverage-floor-nofunc.sh"
 if python3 - "$GATE" "$FPREFIX" <<'SURGERY'
 import sys
