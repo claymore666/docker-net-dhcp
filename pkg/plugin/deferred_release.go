@@ -4,10 +4,15 @@
 package plugin
 
 import (
+	"context"
+	"errors"
+	"io/fs"
 	"net/netip"
 	"time"
 
 	"github.com/claymore666/dhcp-golib/lease"
+	cerrdefs "github.com/containerd/errdefs"
+	dNetwork "github.com/docker/docker/api/types/network"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
@@ -50,7 +55,11 @@ func (p *Plugin) handRetainedRecordsBack(networkID string, due func(lease.Record
 		return 0, 0
 	}
 
+	// DeleteNetwork runs inside the daemon's own removal call, so only the periodic pass asks Docker (#1158).
+	askDocker := networkID == ""
 	opts := map[string]*DHCPNetworkOptions{}
+	removed := map[string]bool{}
+	closed := map[string]int{}
 	for _, rec := range rb.Records {
 		if rec.Phase != lease.PhaseRetained {
 			continue
@@ -64,8 +73,13 @@ func (p *Plugin) handRetainedRecordsBack(networkID string, due func(lease.Record
 		}
 		o, known := opts[id]
 		if !known {
-			o = loadReleaseOptions(id)
+			o, removed[id] = p.releaseOptions(id, askDocker)
 			opts[id] = o
+		}
+		if removed[id] {
+			p.closeRecord(rec.ID)
+			closed[id]++
+			continue
 		}
 		if o == nil {
 			undecided++
@@ -78,19 +92,40 @@ func (p *Plugin) handRetainedRecordsBack(networkID string, due func(lease.Record
 			sent++
 		}
 	}
+	for id, n := range closed {
+		log.WithFields(log.Fields{
+			"network": shortID(id),
+			"closed":  n,
+		}).Info("These held addresses belong to a network Docker no longer has, so their records are closed and nothing is sent")
+	}
 	return sent, undecided
 }
 
-// loadReleaseOptions returns nil when the options cannot be read, which leaves the record for a later pass, not
-// `never` (#984).
-func loadReleaseOptions(networkID string) *DHCPNetworkOptions {
-	o, err := loadOptions(networkID)
-	if err != nil {
-		log.WithError(err).WithField("network", shortID(networkID)).
-			Debug("A held address belongs to a network whose options cannot be read; leaving the record as it is")
-		return nil
+// releaseOptions returns nil when the options cannot be read, which leaves the record for a later pass, not `never`
+// (#984). An absent file is not a removal on its own: a null-mode network outlives a failed write or backfill
+// (network.go saveNetworkAndBind, netOptionsRaw), so removed needs Docker's not-found as well (#1158).
+func (p *Plugin) releaseOptions(networkID string, askDocker bool) (o *DHCPNetworkOptions, removed bool) {
+	stored, err := loadOptions(networkID)
+	if err == nil {
+		return &stored, false
 	}
-	return &o
+	if askDocker && errors.Is(err, fs.ErrNotExist) && p.networkGone(networkID) {
+		return nil, true
+	}
+	log.WithError(err).WithField("network", shortID(networkID)).
+		Debug("A held address belongs to a network whose options cannot be read; leaving the record as it is")
+	return nil, false
+}
+
+// networkGone counts only not-found, as recovery does; an unreachable or slow daemon leaves the record (#1158).
+func (p *Plugin) networkGone(networkID string) bool {
+	if p.docker == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), recoveryPerNetworkTimeout)
+	defer cancel()
+	_, err := p.docker.NetworkInspect(ctx, networkID, dNetwork.InspectOptions{})
+	return cerrdefs.IsNotFound(err)
 }
 
 // handOneRecordBack makes one attempt and then closes the record whatever happened, as on_stop does (#962, #984).
@@ -198,6 +233,23 @@ func acquisitionInFlight(rb lease.Rebuilt, rec lease.Record) (string, claimKind)
 func (p *Plugin) sweepRecords(now time.Time) {
 	p.sweepIPAMReservations(now)
 	p.sweepDeferredReleases(now)
+	p.compactRecords(now)
+}
+
+// compactRecords runs last, so the records this tick closed are counted from now; tombstoneTTL is the age past
+// which no reader of a closed or expired record is still in flight (#1182).
+func (p *Plugin) compactRecords(now time.Time) {
+	if p.records == nil {
+		return
+	}
+	done, err := p.records.CompactIfDue(now, tombstoneTTL)
+	if err != nil {
+		log.WithError(err).WithField("file", p.records.Path()).Error("Could not compact the lease record file; the next sweep retries")
+		return
+	}
+	if done {
+		log.Debug("Compacted the lease record file")
+	}
 }
 
 func (p *Plugin) recordSweeper(stop <-chan struct{}) {

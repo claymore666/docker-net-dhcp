@@ -102,6 +102,16 @@ const (
 	TestClasslessRoute       = "192.168.123.0/24"
 	TestClasslessRouteGW     = "192.168.99.249"
 	dnsmasqCSRTag            = "dh-itest-csr"
+
+	TestClassless249VendorClass = "docker-net-dhcp-test-249"
+	TestClassless249Route       = "192.168.124.0/24"
+	TestClassless249RouteGW     = "192.168.99.247"
+	dnsmasqCSR249Tag            = "dh-itest-csr249"
+
+	TestUserClass          = "docker-net-dhcp-test-uc"
+	TestUserClassGateway   = "192.168.99.248"
+	dnsmasqUCTag           = "dh-itest-uc"
+	BridgeUserClassGateway = "192.168.100.248"
 )
 
 // DefaultGateway is the gateway untagged clients receive, dnsmasq's own address.
@@ -270,9 +280,14 @@ func (f *Fixture) startDnsmasq() error {
 		// Vendor-class tagging: the tag overrides option 3 only for clients sending TestVendorClass.
 		"--dhcp-vendorclass=set:"+dnsmasqVCTag+","+TestVendorClass,
 		"--dhcp-option=tag:"+dnsmasqVCTag+",3,"+TestTaggedGateway,
+		"--dhcp-userclass=set:"+dnsmasqUCTag+","+TestUserClass,
+		"--dhcp-option=tag:"+dnsmasqUCTag+",3,"+TestUserClassGateway,
+		"--dhcp-rapid-commit",
 		// Option 121 only for clients tagged via TestClasslessVendorClass (#260), to a non-default destination.
 		"--dhcp-vendorclass=set:"+dnsmasqCSRTag+","+TestClasslessVendorClass,
 		"--dhcp-option=tag:"+dnsmasqCSRTag+",121,"+TestClasslessRoute+","+TestClasslessRouteGW,
+		"--dhcp-vendorclass=set:"+dnsmasqCSR249Tag+","+TestClassless249VendorClass,
+		"--dhcp-option=tag:"+dnsmasqCSR249Tag+",249,"+TestClassless249Route+","+TestClassless249RouteGW,
 		// No --dhcp-broadcast: dnsmasq honours the client's BROADCAST flag, which ipvlan L2 needs because children share the
 		// parent's MAC (#243). Forcing it here would mask a regression in the client-side flag.
 		"--log-dhcp",
@@ -319,11 +334,13 @@ func (f *Fixture) Teardown() error {
 	return firstErr
 }
 
-// addParentVeth creates the veth pair name<->peer, enslaves peer to the segment and returns the parent end.
+// addParentVeth creates the veth pair name<->peer with set MACs (#1147), enslaves peer to the segment, returns the parent.
 func addParentVeth(segment netlink.Link, name, peer string) (netlink.Link, error) {
 	la := netlink.NewLinkAttrs()
 	la.Name = name
-	if err := netlink.LinkAdd(&netlink.Veth{LinkAttrs: la, PeerName: peer}); err != nil {
+	la.HardwareAddr = macForName(name)
+	veth := &netlink.Veth{LinkAttrs: la, PeerName: peer, PeerHardwareAddr: macForName(peer)}
+	if err := netlink.LinkAdd(veth); err != nil {
 		return nil, fmt.Errorf("LinkAdd veth %s: %w", name, err)
 	}
 	parent, err := netlink.LinkByName(name)
@@ -524,7 +541,8 @@ func (v *VlanFixture) start() error {
 	cleanupVlan()
 	la := netlink.NewLinkAttrs()
 	la.Name = VlanParent
-	if err := netlink.LinkAdd(&netlink.Veth{LinkAttrs: la, PeerName: vlanPeer}); err != nil {
+	la.HardwareAddr = macForName(VlanParent)
+	if err := netlink.LinkAdd(&netlink.Veth{LinkAttrs: la, PeerName: vlanPeer, PeerHardwareAddr: macForName(vlanPeer)}); err != nil {
 		return fmt.Errorf("LinkAdd vlan veth: %w", err)
 	}
 	host, err := netlink.LinkByName(VlanParent)

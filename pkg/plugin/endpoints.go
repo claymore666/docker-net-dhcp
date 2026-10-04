@@ -269,6 +269,9 @@ type HealthResponse struct {
 	RecoveryAbortedContainerGone int32 `json:"recovery_aborted_container_gone"`
 	// RecoveryNetworkGone counts networks removed between NetworkList and NetworkInspect (#648); not Healthy-affecting.
 	RecoveryNetworkGone int32 `json:"recovery_network_gone"`
+	// StaleNetworksDropped counts persisted networks Docker no longer had at start, whose file and pool binding were
+	// removed (#1174); not Healthy-affecting.
+	StaleNetworksDropped int32 `json:"stale_networks_dropped"`
 	// RecoveryFingerprintsSkipped counts adopted endpoints with no hostname to fingerprint, so no tombstone (#721);
 	// not Healthy-affecting.
 	RecoveryFingerprintsSkipped int32 `json:"recovery_fingerprints_skipped"`
@@ -502,6 +505,8 @@ type HealthResponse struct {
 	// DHCPv6AutoFallbacks counts `ipv6_mode=auto` endpoints that formed a SLAAC address after DHCPv6 went silent
 	// (#817).
 	DHCPv6AutoFallbacks int32 `json:"dhcpv6_auto_fallbacks"`
+	// DHCPv6AbsenceRemembered counts auto attaches that skipped the Solicit on a network remembered silent (#1038).
+	DHCPv6AbsenceRemembered int32 `json:"dhcpv6_absence_remembered"`
 	// IPv6LinkEnableFailures counts container links IPv6 could not be enabled on before the DHCPv6 client started.
 	IPv6LinkEnableFailures int32 `json:"ipv6_link_enable_failures"`
 	// RouterAdvertGuardFailures counts RA guard sysctl steps that failed or read back wrong on a container link (#875).
@@ -520,6 +525,15 @@ type HealthResponse struct {
 	// RouterTableEntriesDropped and RouterTableEntriesEvicted count the router table caps in force (RFC 8106 6.2 (d)).
 	RouterTableEntriesDropped int32 `json:"router_table_entries_dropped"`
 	RouterTableEntriesEvicted int32 `json:"router_table_entries_evicted"`
+
+	// The FORCERENEW and Reconfigure counters, folded across every DHCP client, persistent and one-shot (#1119). The
+	// refused ones describe the server's messages, not a fault, and are not healthy-affecting.
+	ForcerenewsRenewed         int32 `json:"forcerenews_renewed"`
+	ForcerenewsAlreadyRenewing int32 `json:"forcerenews_already_renewing"`
+	ForcerenewsRefused         int32 `json:"forcerenews_refused"`
+	ForcerenewsAckRefused      int32 `json:"forcerenews_ack_refused"`
+	ReconfiguresAccepted       int32 `json:"reconfigures_accepted"`
+	ReconfiguresRefused        int32 `json:"reconfigures_refused"`
 
 	// Checks is one single-element array per named check, as the health-check draft's section 4 asks.
 	Checks map[string][]HealthCheck `json:"checks"`
@@ -617,6 +631,7 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		RecoveryDeferred:             p.recoveryDeferred.Load(),
 		RecoveryAbortedContainerGone: p.recoveryAbortedContainerGone.Load(),
 		RecoveryNetworkGone:          p.recoveryNetworkGone.Load(),
+		StaleNetworksDropped:         p.staleNetworksDropped.Load(),
 		RecoveryFingerprintsSkipped:  p.recoveryFingerprintsSkipped.Load(),
 		RecoveryAlreadyManaged:       p.recoveryAlreadyManaged.Load(),
 		JoinAbortedContainerGone:     p.joinAbortedContainerGone.Load(),
@@ -723,6 +738,7 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		IPv6SLAACPrefixesIgnored:     p.ipv6SLAACPrefixesIgnored.Load(),
 		IPv6MainPrefixUnmatched:      p.ipv6MainPrefixUnmatched.Load(),
 		DHCPv6AutoFallbacks:          p.dhcpv6AutoFallbacks.Load(),
+		DHCPv6AbsenceRemembered:      p.dhcpv6AbsenceRemembered.Load(),
 		IPv6LinkEnableFailures:       p.ipv6LinkEnableFailures.Load(),
 		RouterAdvertGuardFailures:    p.routerAdvertGuardFailures.Load(),
 		IPv6RouterWithdrawn:          p.ipv6RouterWithdrawn.Load(),
@@ -732,6 +748,12 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		RouterAdvertOptionsIgnored:   p.routerAdvertOptionsIgnored.Load(),
 		RouterTableEntriesDropped:    p.routerTableEntriesDropped.Load(),
 		RouterTableEntriesEvicted:    p.routerTableEntriesEvicted.Load(),
+		ForcerenewsRenewed:           p.forcerenewsRenewed.Load(),
+		ForcerenewsAlreadyRenewing:   p.forcerenewsAlreadyRenewing.Load(),
+		ForcerenewsRefused:           p.forcerenewsRefused.Load(),
+		ForcerenewsAckRefused:        p.forcerenewsAckRefused.Load(),
+		ReconfiguresAccepted:         p.reconfiguresAccepted.Load(),
+		ReconfiguresRefused:          p.reconfiguresRefused.Load(),
 		Version:                      buildinfo.Version,
 		Commit:                       buildinfo.Commit,
 		Library:                      buildinfo.Library,

@@ -30,6 +30,14 @@
             ]
         },
         {
+            "description": "How long an ipv6_mode=auto network remembers that no DHCPv6 server answered (0 disables)",
+            "name": "DHCPV6_ABSENCE_MEMORY",
+            "value": "10m",
+            "settable": [
+                "value"
+            ]
+        },
+        {
             "description": "Directory where per-network options are persisted",
             "name": "STATE_DIR",
             "value": "/var/lib/net-dhcp",

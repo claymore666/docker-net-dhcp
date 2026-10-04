@@ -101,11 +101,10 @@ jobs:
   cell:
     needs: rows
     runs-on: ubuntu-latest
-    # Hosted half pass 411 to 439 s, stopped at option 14 of 29 (run
-    # 35946749955). Local full pass 576 s on engine 29.8.1. No hosted
-    # full pass measured as of 2026-09-24. 30 min is twice a hosted full
-    # pass extrapolated from the half pass: 2 x 439 s = 878 s, doubled
-    # is 1756 s, to the next minute (#1015).
+    # Hosted full pass, every option entry driven: the baseline step 667
+    # to 691 s, the job 715 to 747 s over eight cells (run 36979152434).
+    # The half pass that stopped at option 14 of 29 was 411 to 439 s (run
+    # 35946749955). 30 min is 2.4 times the slowest measured job (#1141).
     timeout-minutes: 30
     env:
       # Same shape as integration.yml and capture-fixtures.yml: a

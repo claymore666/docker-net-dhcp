@@ -393,3 +393,69 @@ func TestAppArmorKeaHint(t *testing.T) {
 		})
 	}
 }
+
+const bothProfiles = `kea-dhcp4 (enforce)
+kea-dhcp6 (complain)
+kea-lfc (enforce)
+`
+
+func TestKea6ProfileModeIsNotTheDhcp4Mode(t *testing.T) {
+	if got := kea6ProfileMode(bothProfiles); got != "complain" {
+		t.Errorf("kea6ProfileMode = %q, want complain", got)
+	}
+	if got := keaProfileMode(bothProfiles); got != "enforce" {
+		t.Errorf("keaProfileMode = %q, want enforce: the dhcp6 line must not be read as dhcp4", got)
+	}
+	for _, none := range []string{"", "kea-dhcp4 (enforce)\n", "kea-dhcp6-custom (enforce)\n", "kea-lfc (enforce)\n"} {
+		if got := kea6ProfileMode(none); got != "" {
+			t.Errorf("kea6ProfileMode(%q) = %q, want not loaded", none, got)
+		}
+	}
+}
+
+func TestKea6DenialRecordNamesOnlyTheDhcp6Profile(t *testing.T) {
+	log := `audit: apparmor="DENIED" operation="open" profile="kea-dhcp4" name="/tmp/x"` + "\n" +
+		`audit: apparmor="DENIED" operation="mknod" profile="kea-dhcp6" name="/var/lib/kea/other.csv"` + "\n" +
+		`audit: apparmor="ALLOWED" operation="open" profile="kea-dhcp6" name="/etc/kea/a"` + "\n"
+	got := kea6DenialRecord(log)
+	if !strings.Contains(got, "/var/lib/kea/other.csv") {
+		t.Errorf("kea6DenialRecord = %q, want the dhcp6 denial", got)
+	}
+	if kea6DenialRecord(`apparmor="DENIED" profile="kea-dhcp4" name="/tmp/x"`) != "" {
+		t.Error("a dhcp4 denial was read as a dhcp6 denial")
+	}
+}
+
+func TestKea6ConfinementHint(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		c    kea6Confinement
+		want string
+	}{
+		{"enforce with a denial", kea6Confinement{mode: "enforce", listRead: true, kernelLogRead: true, denial: "DENIED x"}, "DENIED x"},
+		{"enforce, log unreadable", kea6Confinement{mode: "enforce", listRead: true}, "could not be read"},
+		{"enforce, nothing logged", kea6Confinement{mode: "enforce", listRead: true, kernelLogRead: true}, "does not clear it"},
+		{"list unreadable, profile installed", kea6Confinement{installed: true}, "could not be read"},
+		{"complain says nothing", kea6Confinement{mode: "complain", listRead: true}, ""},
+		{"not loaded says nothing", kea6Confinement{listRead: true}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := kea6ConfinementHint(tc.c)
+			if tc.want == "" && got != "" || !strings.Contains(got, tc.want) {
+				t.Errorf("hint = %q, want it to contain %q", got, tc.want)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		c    kea6Confinement
+		want string
+	}{
+		{kea6Confinement{mode: "complain", listRead: true}, "complain"},
+		{kea6Confinement{listRead: true}, "not loaded"},
+		{kea6Confinement{}, "unreadable"},
+	} {
+		if got := tc.c.String(); !strings.Contains(got, tc.want) {
+			t.Errorf("String() = %q, want %q", got, tc.want)
+		}
+	}
+}

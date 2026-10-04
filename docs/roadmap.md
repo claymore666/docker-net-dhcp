@@ -13,8 +13,8 @@ below decide what is in a release; this page follows them.
 | --- | --- | --- | --- |
 | v2.3.0 | released | The host plumbing an operator does by hand today, and the gaps the IPAM shape still refuses | [milestone 31](https://github.com/claymore666/docker-net-dhcp/milestone/31) |
 | v2.3.1 | released | IPv6 routes at Join, the fixed-MAC hand-over in IPAM mode, and diagrams of the plugin and the lab | [milestone 38](https://github.com/claymore666/docker-net-dhcp/milestone/38) |
-| v2.4.0 | planned | The rest of IPv6, and the DHCP options the client does not read yet | [milestone 34](https://github.com/claymore666/docker-net-dhcp/milestone/34) |
-| v2.5.0 | planned | CI consolidation and code debt; nothing a user sees | [milestone 35](https://github.com/claymore666/docker-net-dhcp/milestone/35) |
+| v2.4.0 | released | The rest of IPv6, and the DHCP options the client does not read yet | [milestone 34](https://github.com/claymore666/docker-net-dhcp/milestone/34) |
+| v2.5.0 | planned | CI consolidation and code debt, and DHCPv6 prefix delegation, designed first | [milestone 35](https://github.com/claymore666/docker-net-dhcp/milestone/35) |
 
 ### v2.3.0, released
 
@@ -46,31 +46,46 @@ below decide what is in a release; this page follows them.
 - [#1126], an architecture page with a diagram and a picture of the
   real-server lab in the testing page
 
-### v2.4.0
+### v2.4.0, released
 
-- [#1027], IPv6-Only Preferred, DHCPv4 option 108
 - [#1028], PREF64 from the Router Advertisement, the NAT64 prefix
 - [#1030], Microsoft classless static routes, option 249, where 121 is
-  absent
+  absent. The library half comes with the `dhcp-golib` v1.3.0 pin
+  ([#1157]): option 249 directly after 121 in the request list, and its
+  routes read when 121 is absent; what stays is the plugin's `[Join]` log
+  line naming the option and its test against a server that sends 249 alone
 - [#1031], DHCPv4 Rapid Commit
 - [#1119], DHCPv4 FORCERENEW with nonce authentication (RFC 3203,
-  RFC 6704); an unauthenticated FORCERENEW is discarded and counted
+  RFC 6704): the plugin's own log lines and health counters. The library
+  half comes with the `dhcp-golib` v1.2.0 pin ([#1137]): option 145 in
+  every Discover and Request, and a renewal on an authenticated
+  DHCPFORCERENEW, with any other discarded and counted in the library's
+  statistics
 - [#1120], `user_class=`, the DHCPv4 User Class option 77 (RFC 3004)
 - [#1032], `ipv6_iid=stable-privacy`, the RFC 7217 interface identifier,
-  with modified EUI-64 kept as the default
-- [#1033], the DHCPv6 timezone options logged as the v4 ones are
-- [#1034], the vendor-specific options logged
-- [#1038], a network with no DHCPv6 server remembered for a bounded time,
-  so a SLAAC-only segment stops paying a full solicitation per attach
+  with modified EUI-64 kept as the default. The library half comes with the
+  `dhcp-golib` v1.4.0 pin ([#1177]): `Params6.IID`, off by default; what
+  stays is the plugin's option and the identifier inputs it passes
+- [#1033], the DHCPv6 timezone options logged as the v4 ones are. The
+  library half comes with the v1.4.0 pin ([#1177]): the Reply's options on
+  the lease
+- [#859], the whole DHCPv6 NTP server list, option 56, in the same log
+  line, one entry per instance
+- [#1034], the vendor-specific options logged. The DHCPv6 half's library
+  side comes with the v1.4.0 pin ([#1177]): option 17 on the lease. The
+  plugin's log line for option 17 is [#1203], planned for v2.5.0
+- [#1038], an `ipv6_mode=auto` network remembers a silent DHCPv6 server
+  for `DHCPV6_ABSENCE_MEMORY` (default ten minutes, `0` turns it off):
+  further endpoints form their address from the advertised prefix without
+  soliciting, counted in `dhcpv6_absence_remembered`; a granted DHCPv6
+  address, removing the network or a restart clears it
 - [#926], DHCPv6 Rapid Commit, the two-message exchange
 - [#927], DHCPv6 temporary addresses (IA_TA)
-- [#214], DHCPv6 prefix delegation (IA_PD), designed first
-- [#859], the whole DHCPv6 NTP server list
-- [#1035], one multi-architecture manifest list per tag, which also
-  settles the arm64 claim in the table below
 
 ### v2.5.0
 
+- [#214], DHCPv6 prefix delegation (IA_PD), designed first; only its Kea
+  DHCPv6 test fixture is in v2.4.0
 - [#733], the tracking issue for the CI consolidation programme
 - [#744], one subject discovery, one refusal and one collation in a
   shared shell library
@@ -108,14 +123,14 @@ flowchart LR
     v22["v2.2<br/>IPv6 modes and<br/>router discovery"]
     v23["v2.3<br/>host plumbing"]
     v24["v2.4<br/>the rest of IPv6"]
-    v25["v2.5<br/>CI and code debt"]
+    v25["v2.5<br/>CI, code debt and<br/>prefix delegation"]
     v20 --> v21 --> v22 --> v23 --> v24 --> v25
     classDef planned stroke-dasharray: 6 4
-    class v24,v25 planned
+    class v25 planned
 ```
 
-v2.0, v2.1, v2.2 and v2.3 are released, and v2.4 and v2.5 are planned in
-that order; the planned ones are the dashed nodes. There are no dates. Every
+v2.0 to v2.4 are released and v2.5 is planned; the planned one is the
+dashed node. There are no dates. Every
 release, patches included, is in
 [the release notes](https://github.com/claymore666/docker-net-dhcp/blob/main/RELEASE_NOTES.md).
 
@@ -183,8 +198,10 @@ settled the DHCPv6 half: an ipvlan endpoint now gets a DUID of its own
 ([#531]). Per-architecture tags (`vX.Y.Z-arm64`, `latest-arm64`) were
 first published with v1.7.0 ([#507]). This page long held that a Docker
 plugin cannot be installed from a multi-architecture manifest list at
-all, so the architecture lives in the tag. That claim is contested by a
-registry that serves one, and [#1035] measures it.
+all, so the architecture lives in the tag. A third-party
+registry serves one, and [#1035] measured it: `docker plugin install`
+refuses a manifest list, and an OCI image index, on every engine from 20.10 to
+29.8, by tag and by digest, while the per-architecture tags install.
 
 **A test substrate that cannot lie.** This is infrastructure work with a
 user-visible reason: on this project, every timing crutch removed from CI
@@ -220,7 +237,7 @@ The second upstream dependency has moved. The `interface_name`
 pass-through ([moby/moby#52866]) merged and shipped in moby engine
 29.8.0, and [#125] closed with it. Engines below that boundary ignore a
 remote driver's requested interface name, the integration lane runs
-29.8.0, and the plugin counts `ifname_unsupported` below it.
+an engine above it, and the plugin counts `ifname_unsupported` below it.
 
 ## Out of scope
 
@@ -238,6 +255,7 @@ read it before writing the PR.
 | It will not run its arm64 verification under qemu-user or binfmt | measured: the emulated plugin could not acquire a lease at all, and arm64 verification runs on real hardware | [#531] |
 | It will not backport security fixes | only the latest release is supported, and upgrading is one `docker plugin install` | [SECURITY.md](https://github.com/claymore666/docker-net-dhcp/blob/main/SECURITY.md) |
 | It will not carry AI-assistant attribution in its history | commits and PRs are signed by a person who stands behind them, and a CI check enforces it | n/a |
+| It will not ask for IPv6-Only Preferred (option 108) | an endpoint on a network with an IPv4 pool must hold an IPv4 address, which makes it an IPv4-requiring host, and RFC 8925 section 3.2 forbids such a host from asking | [#1027] |
 
 <details markdown="1">
 <summary>The reasoning behind the refusals</summary>
@@ -288,6 +306,15 @@ acquire a lease at all. The 2.0 client is a different program and has not
 been re-measured under emulation; the conclusion is unchanged either way,
 because arm64 verification runs on real hardware and there is nothing to
 be gained by finding out which syscall the emulator drops next.
+
+**IPv6-Only Preferred.** An endpoint on a network with an IPv4 pool must
+hold an IPv4 address: Docker's IPAM path refuses an answer with none, and
+the driver's own endpoint creation fails without one. That makes every
+DHCPv4 client of the plugin an IPv4-requiring host, and RFC 8925 section
+3.2 says such a host must not put option 108 in its parameter request
+list. The plugin sets nothing and has no option for it; the DHCP library
+implements the option for consumers whose endpoints can live on IPv6
+alone ([#1027]).
 
 </details>
 
@@ -358,6 +385,10 @@ project does, that review is where it gets corrected.
 [#1118]: https://github.com/claymore666/docker-net-dhcp/issues/1118
 [#1125]: https://github.com/claymore666/docker-net-dhcp/issues/1125
 [#1126]: https://github.com/claymore666/docker-net-dhcp/issues/1126
+[#1137]: https://github.com/claymore666/docker-net-dhcp/issues/1137
+[#1157]: https://github.com/claymore666/docker-net-dhcp/issues/1157
+[#1177]: https://github.com/claymore666/docker-net-dhcp/issues/1177
+[#1203]: https://github.com/claymore666/docker-net-dhcp/issues/1203
 [moby/moby#52866]: https://github.com/moby/moby/pull/52866
 [moby/moby#52870]: https://github.com/moby/moby/issues/52870
 [moby/moby#52871]: https://github.com/moby/moby/pull/52871

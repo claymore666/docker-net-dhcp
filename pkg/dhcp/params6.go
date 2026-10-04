@@ -45,6 +45,20 @@ func buildParams6(opts *DHCPClientOptions, once bool) (proto.Params6, error) {
 	if opts.StrictAuto6 {
 		p.AutoFallback = strictAutoFallback
 	}
+	// RFC 8415 section 18.2.1: option 14 rides in the Solicit only, so slaac sends none; the library never puts it on
+	// another message (#926).
+	p.RapidCommit = opts.RapidCommit
+	// RFC 8415 section 21.5: the IA_TA rides in the Solicit and the Request, never in a Renew or Rebind, so slaac sends
+	// none; the library never puts it on another message (#927).
+	p.Temporary = opts.IPv6Temporary
+	// RFC 7217 section 5's F() takes the interface's MAC as Net_Iface, the Docker network id as Network_ID and the
+	// secret; eui64 leaves all three empty so its address is the one #818 shipped (#1032).
+	if opts.IPv6IID == proto.IIDModeStablePrivacy {
+		p.IID = opts.IPv6IID
+		p.IIDSecret = append([]byte(nil), opts.IPv6IIDSecret...)
+		p.IIDNetIface = append([]byte(nil), opts.MAC...)
+		p.IIDNetworkID = append([]byte(nil), opts.IPv6IIDNetworkID...)
+	}
 
 	// The library adds the mandatory codes itself, so this is the caller's RFC 3646 half. DefaultParams6 leaves ORO
 	// nil, and dnsmasq answers an Information-request with only what was requested, so a stateless client would get no

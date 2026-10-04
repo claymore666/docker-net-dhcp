@@ -4,6 +4,7 @@
 package plugin
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"unicode"
 
 	log "github.com/sirupsen/logrus"
@@ -128,7 +130,7 @@ func writeContainerResolvConf(pid int, ctrID string, dns []string, searchList []
 		return fmt.Errorf("setns into container mnt ns: %w", err)
 	}
 
-	writeErr := os.WriteFile("/etc/resolv.conf", buildResolvConf(dns, searchList, searchDomain, iface), 0644)
+	writeErr := writeResolvConfFile(ctrID, "/etc/resolv.conf", buildResolvConf(dns, searchList, searchDomain, iface))
 
 	if err := unix.Setns(int(origMnt.Fd()), unix.CLONE_NEWNS); err != nil {
 		// The thread is now in the container's mount namespace, so it is not unlocked.
@@ -136,6 +138,102 @@ func writeContainerResolvConf(pid int, ctrID string, dns []string, searchList []
 	}
 	runtime.UnlockOSThread()
 	return writeErr
+}
+
+// resolvRewriteStep is a test seam: it runs after the open, after a growing write's extension and after the write (#1188).
+var resolvRewriteStep = func(stage string) {}
+
+// resolvPadTo extends content with blank or comment filler to size bytes, so a half-rewritten file is never the new
+// head over an old tail (#1188). Content that does not end in a newline is returned as it is.
+func resolvPadTo(content []byte, size int) []byte {
+	n := size - len(content)
+	if n <= 0 || len(content) == 0 || content[len(content)-1] != '\n' {
+		return content
+	}
+	out := make([]byte, 0, size)
+	out = append(out, content...)
+	if n > 1 {
+		out = append(out, strings.Repeat("#", n-1)...)
+	}
+	return append(out, '\n')
+}
+
+// resolvLocks holds one mutex per container with a writer in flight (#1188). The path is /etc/resolv.conf in every
+// mount namespace, so the container id is the key; a write that never returns stalls only its own container.
+var resolvLocks = struct {
+	mu sync.Mutex
+	m  map[string]*resolvLock
+}{m: map[string]*resolvLock{}}
+
+type resolvLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
+// lockResolv takes ctrID's lock and returns its release; the entry is dropped with its last holder or waiter.
+func lockResolv(ctrID string) func() {
+	resolvLocks.mu.Lock()
+	l := resolvLocks.m[ctrID]
+	if l == nil {
+		l = &resolvLock{}
+		resolvLocks.m[ctrID] = l
+	}
+	l.refs++
+	resolvLocks.mu.Unlock()
+	l.mu.Lock()
+	return func() {
+		l.mu.Unlock()
+		resolvLocks.mu.Lock()
+		if l.refs--; l.refs == 0 {
+			delete(resolvLocks.m, ctrID)
+		}
+		resolvLocks.mu.Unlock()
+	}
+}
+
+// writeResolvConfFile rewrites path without an empty window (#1188). Docker bind-mounts the file, so rename is out and
+// os.WriteFile truncates first. Equal bytes are not written. Otherwise the new bytes go in at offset 0, then Truncate;
+// until then the file is never shorter than old or new: a growing write extends it with filler first, a shrinking one
+// carries filler (resolvPadTo). A reader's own copy can still interleave with a write's.
+func writeResolvConfFile(ctrID, path string, content []byte) error {
+	defer lockResolv(ctrID)()
+
+	old, readErr := os.ReadFile(path)
+	if readErr == nil && bytes.Equal(old, content) {
+		return nil
+	}
+
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0644)
+	if err != nil {
+		return err
+	}
+	resolvRewriteStep("opened")
+
+	buf := content
+	if fi, err := f.Stat(); err == nil {
+		size := int(fi.Size())
+		if readErr == nil && size == len(old) && len(content) > size {
+			if ext := resolvPadTo(old, len(content)); len(ext) > size {
+				if _, err := f.WriteAt(ext[size:], int64(size)); err != nil {
+					f.Close()
+					return err
+				}
+				resolvRewriteStep("extended")
+				size = len(ext)
+			}
+		}
+		buf = resolvPadTo(content, size)
+	}
+	if _, err := f.Write(buf); err != nil {
+		f.Close()
+		return err
+	}
+	resolvRewriteStep("written")
+	if err := f.Truncate(int64(len(content))); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // buildResolvConf renders the DNS list; option 119 takes precedence over option 15 (RFC 3397, #101).

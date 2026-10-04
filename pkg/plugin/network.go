@@ -20,6 +20,7 @@ import (
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
+	dContainer "github.com/docker/docker/api/types/container"
 	dNetwork "github.com/docker/docker/api/types/network"
 	"github.com/mitchellh/mapstructure"
 	log "github.com/sirupsen/logrus"
@@ -129,6 +130,8 @@ func kernelIfaceName(name string) string {
 	return name
 }
 
+const maxUserClassOctets = 254
+
 // validateModeOptions is CreateNetwork's pure validation. Interface names pass ValidIfaceName here, since the
 // daemon forwards a NUL in a driver option verbatim and "br0\x00evil" would slip past ErrBridgeUsed (#705).
 func validateModeOptions(opts DHCPNetworkOptions) error {
@@ -143,6 +146,11 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 	}
 	if err := dhcp.CheckLeaseTimeout(opts.LeaseTimeout, mode); err != nil {
 		return fmt.Errorf("%w: %v", util.ErrIPAM, err)
+	}
+
+	// One instance is 1 to 254 octets (RFC 3004 section 4); the library would refuse more at `docker run` (#1120).
+	if n := len(opts.UserClass); n > maxUserClassOctets {
+		return fmt.Errorf("%w: user_class is %d octets, the most option 77 carries is %d", util.ErrIPAM, n, maxUserClassOctets)
 	}
 
 	// Whether this network hands leases back (#962); every mode sends DHCP.
@@ -312,6 +320,9 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		return err
 	}
 
+	// Left on every return; the sibling checks below read it (#1187).
+	defer p.beginCreate(r.NetworkID, opts)()
+
 	var binding *ipamBinding
 	if ipamDataIsOurs(r.IPv4Data) {
 		if err := ipamRefuseIPvlan(opts.effectiveMode()); err != nil {
@@ -386,6 +397,9 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		}
 		return err
 	}
+	if !opts.ownsBridge() {
+		warnExistingBridgeFirewall(opts)
+	}
 	log.WithFields(log.Fields{
 		"network":   r.NetworkID,
 		"bridge":    opts.Bridge,
@@ -422,6 +436,19 @@ func (p *Plugin) createBridgeNetwork(networkID string, opts DHCPNetworkOptions, 
 			return fmt.Errorf("failed to retrieve IPv6 addresses for %v: %w", opts.Bridge, err)
 		}
 		bridgeAddrs := append(v4Addrs, v6Addrs...)
+
+		// Both before the list: a create returning between the reads would be in neither (#1187).
+		inflight, stored := p.siblingsBeforeList(networkID)
+		for _, other := range inflight {
+			if kernelIfaceName(other.Bridge) == kernelIfaceName(opts.Bridge) {
+				return util.ErrBridgeUsed
+			}
+		}
+		for _, o := range stored {
+			if kernelIfaceName(o.Bridge) == kernelIfaceName(opts.Bridge) {
+				return util.ErrBridgeUsed
+			}
+		}
 
 		nets, err := p.docker.NetworkList(context.Background(), dNetwork.ListOptions{})
 		if err != nil {
@@ -530,6 +557,7 @@ func (p *Plugin) DeleteNetwork(r DeleteNetworkRequest) error {
 	// The binding goes here, not in ReleasePool, which libnetwork also calls for a failed create on a shared PoolID
 	// (#110).
 	p.ipamIndex.unbindNetwork(r.NetworkID)
+	p.v6Absence.forget(r.NetworkID)
 
 	// Read from disk before deleteOptions removes them; an unreadable or refused record keeps its sub-interface (#902).
 	opts, optsErr := loadOptions(r.NetworkID)
@@ -846,8 +874,17 @@ func ipamDriverIsRemote(name string) bool {
 // endpointCallStart is a seam for the link-local budget test, which starts a call late in its budget (#904).
 var endpointCallStart = time.Now
 
-// CreateEndpoint builds the host-side link, runs a one-shot DHCP acquisition and stashes the result for Join.
+// CreateEndpoint builds the host-side link, runs a one-shot DHCP acquisition and stashes the result for Join. A failed
+// create gets no Join or DeleteEndpoint, so the hint is dropped here, where every path returns (#1183).
 func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (CreateEndpointResponse, error) {
+	res, err := p.createEndpoint(ctx, r)
+	if err != nil {
+		p.takeJoinHint(r.EndpointID)
+	}
+	return res, err
+}
+
+func (p *Plugin) createEndpoint(ctx context.Context, r CreateEndpointRequest) (CreateEndpointResponse, error) {
 	// The daemon's deadline on this call comes first; see v6AcquisitionDeadline.
 	callStart := endpointCallStart()
 	log.WithField("options", r.Options).Debug("CreateEndpoint options")
@@ -1036,10 +1073,13 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 
 			base := dhcp.DHCPClientOptions{
 				// .name only: a refused hostname is simply absent from the exchange.
-				Hostname:    hostname.name,
-				FQDN:        opts.fqdnMode(),
-				ClientID:    clientID,
-				VendorClass: opts.VendorClass,
+				Hostname:      hostname.name,
+				FQDN:          opts.fqdnMode(),
+				ClientID:      clientID,
+				VendorClass:   opts.VendorClass,
+				UserClass:     opts.UserClass,
+				RapidCommit:   opts.RapidCommit,
+				IPv6Temporary: opts.IPv6Temporary,
 				// Pin the DUID-LL and IAID to the container veth's MAC, so this one-shot and the persistent client
 				// share one binding (#152).
 				MAC:      ctrLink.Attrs().HardwareAddr,
@@ -1064,7 +1104,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 
 			info, err := p.acquireV4(ctx, opts, callStart, ctrName, pol, timeout, r.EndpointID, base)
 			if err != nil {
-				return fmt.Errorf("failed to get initial IP address via DHCP: %w", err)
+				return fmt.Errorf("failed to get initial IP address via DHCP: %w", withFirewallVerdict(opts.Bridge, callStart, err))
 			}
 			ip, err := netlink.ParseAddr(info.IP)
 			if err != nil {
@@ -1183,6 +1223,9 @@ func (p *Plugin) EndpointOperInfo(ctx context.Context, r InfoRequest) (InfoRespo
 // DeleteEndpoint removes the endpoint's host-side link, best-effort in macvlan mode where the netns reaped it.
 func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) error {
 	p.autoFallbackCounted.Delete(r.EndpointID)
+	p.v6AbsenceServed.Delete(r.EndpointID)
+	// Only Join reads the hint, and a container that never started gets none (#1183).
+	p.takeJoinHint(r.EndpointID)
 	// netMode, not netOptions: teardown must not be blocked by a stored name it never reads (#727).
 	mode, modeKnown, err := p.netMode(ctx, r.NetworkID)
 	if err != nil {
@@ -1362,6 +1405,22 @@ func (p *Plugin) appendDHCPStaticRoutes(opts DHCPNetworkOptions, r JoinRequest, 
 // applyV6JoinHint sets the RA gateway and routes from the hint, and `skip_routes=true` drops the routes but keeps
 // the gateway, as on v4; nothing reads the host's table (#821).
 func (p *Plugin) applyV6JoinHint(opts DHCPNetworkOptions, r JoinRequest, hint joinHint, res *JoinResponse) {
+	routes := hint.RoutesIPv6
+	if !p.engineWaitsForV6Link() {
+		// The persistent client installs both on its first lease or advertisement (#1149).
+		var withheld []*StaticRoute
+		routes, withheld = splitLinkLocalNextHops(routes)
+		if hint.GatewayIPv6 != "" || len(withheld) > 0 {
+			log.WithFields(log.Fields{
+				"network":        shortID(r.NetworkID),
+				"endpoint":       shortID(r.EndpointID),
+				"gateway":        hint.GatewayIPv6,
+				"routes":         describeStaticRoutes(withheld),
+				"engine_version": p.engineSnapshot().Version,
+			}).Info("[Join] Leaving the IPv6 gateway and link-local next hops to the plugin: this engine looks up their route before the link is up")
+		}
+		hint.GatewayIPv6 = ""
+	}
 	if hint.GatewayIPv6 != "" {
 		log.WithFields(log.Fields{
 			"network":  shortID(r.NetworkID),
@@ -1372,20 +1431,34 @@ func (p *Plugin) applyV6JoinHint(opts DHCPNetworkOptions, r JoinRequest, hint jo
 		res.GatewayIPv6 = hint.GatewayIPv6
 	}
 
-	if opts.SkipRoutes || len(hint.RoutesIPv6) == 0 {
+	if opts.SkipRoutes || len(routes) == 0 {
 		return
 	}
 
-	res.StaticRoutes = append(res.StaticRoutes, hint.RoutesIPv6...)
-	p.dhcpRoutesApplied.Add(int32(len(hint.RoutesIPv6)))
+	res.StaticRoutes = append(res.StaticRoutes, routes...)
+	p.dhcpRoutesApplied.Add(int32(len(routes)))
 
 	log.WithFields(log.Fields{
 		"network":  shortID(r.NetworkID),
 		"endpoint": shortID(r.EndpointID),
 		"sandbox":  r.SandboxKey,
-		"routes":   describeStaticRoutes(hint.RoutesIPv6),
+		"routes":   describeStaticRoutes(routes),
 		"gateway":  res.GatewayIPv6,
 	}).Info("[Join] Adding IPv6 routes from the Router Advertisement")
+}
+
+// splitLinkLocalNextHops separates the next-hop routes whose next hop is an IPv6 link-local address.
+func splitLinkLocalNextHops(routes []*StaticRoute) (kept, linkLocal []*StaticRoute) {
+	for _, r := range routes {
+		if r != nil && r.RouteType == RouteTypeNextHop {
+			if nh := net.ParseIP(r.NextHop); nh != nil && nh.To4() == nil && nh.IsLinkLocalUnicast() {
+				linkLocal = append(linkLocal, r)
+				continue
+			}
+		}
+		kept = append(kept, r)
+	}
+	return kept, linkLocal
 }
 
 // A second route to one destination fails the engine's install with EEXIST whatever its next hop (measured
@@ -1640,7 +1713,7 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 			"endpoint": shortID(r.EndpointID),
 			"sandbox":  r.SandboxKey,
 		}).Info("[Join] No hint; attempting endpoint reacquisition (likely container restart)")
-		if err := p.reacquireEndpoint(ctx, r, opts); err != nil {
+		if err := reacquireEndpointFn(p, ctx, r, opts); err != nil {
 			return res, fmt.Errorf("failed to reacquire endpoint after restart: %w", err)
 		}
 		hint, ok = p.takeJoinHint(r.EndpointID)
@@ -1696,6 +1769,8 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 
 	p.appendDHCPStaticRoutes(opts, r, hint, &res)
 	if opts.ipv6Enabled() {
+		// Hint or reacquired, before the engine moves the link in, so no advertisement wins the default route (#1145).
+		p.guardSandboxDefaults(r)
 		p.applyV6JoinHint(opts, r, hint, &res)
 	}
 	res.StaticRoutes = uniqueStaticRoutes(res.StaticRoutes)
@@ -1743,49 +1818,7 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 			}).Debug("Attach completed")
 		}
 		if err != nil {
-			fields := log.Fields{
-				"network":  shortID(r.NetworkID),
-				"endpoint": shortID(r.EndpointID),
-				"sandbox":  r.SandboxKey,
-			}
-			// Per-phase timing rides the failure line, since a bare deadline hides which phase spent the budget
-			// (#401, #406).
-			if m.startPhases != "" {
-				fields["phases"] = m.startPhases
-				fields["phase_total"] = m.startTotal
-			}
-			// An exited container is not join_start_failures, which means a running container without a renewal
-			// client (#373, #367); an attach cancelled because the endpoint left is checked first, being the stronger
-			// evidence (#406).
-			if m.attachAborted.Load() {
-				p.joinAbortedEndpointLeft.Add(1)
-				log.WithError(err).WithFields(fields).
-					Info("Attach cancelled because the endpoint is leaving; no persistent client needed")
-				p.removeDHCPManagerIfSame(r.EndpointID, m)
-				return
-			}
-			if joinAbortedByVanish(err, r.SandboxKey) {
-				p.joinAbortedContainerGone.Add(1)
-				log.WithError(err).WithFields(fields).
-					Info("Container went away during attach; no persistent client needed")
-				p.removeDHCPManagerIfSame(r.EndpointID, m)
-				// No persistent client; the one-shot's address expires on the server (#800).
-				return
-			}
-			// No container claimed the endpoint (#566), not a plugin fault; the address is left to expire (#800).
-			if joinFailureLeavesAddressUnused(err) {
-				p.joinAbortedNoContainer.Add(1)
-				log.WithError(err).WithFields(fields).
-					Info("No container claimed the endpoint; its address is left to expire on the server")
-				p.removeDHCPManagerIfSame(r.EndpointID, m)
-				return
-			}
-
-			p.joinStartFailures.Add(1)
-			log.WithError(err).WithFields(fields).
-				Error("Failed to start persistent DHCP client; lease will not be renewed")
-			// De-register a failed Start, identity-checked, since a fast Leave and Join may have installed a new manager.
-			p.removeDHCPManagerIfSame(r.EndpointID, m)
+			p.settleFailedAttach(r, m, err)
 		}
 	}()
 
@@ -1796,6 +1829,101 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 	}).Info("Joined sandbox to endpoint")
 
 	return res, nil
+}
+
+// vanishConfirmTimeout bounds the daemon question, which dockerd may never answer inside ContainerStart (#406, #1186).
+var vanishConfirmTimeout = 3 * time.Second
+
+// joinVanished confirms the key and ENOENT evidence with the daemon, since engines 26 and 27 create the sandbox key
+// after Join and a slow start looks the same; the daemon's own "no such container" needs no second question (#1186).
+func (p *Plugin) joinVanished(err error, r JoinRequest) bool {
+	if cerrdefs.IsNotFound(err) {
+		return true
+	}
+	if !joinAbortedByVanish(err, r.SandboxKey) {
+		return false
+	}
+	return p.daemonSaysContainerGone(r)
+}
+
+// daemonSaysContainerGone is true only for not-found, exited or dead; any other answer, or none, is a start
+// failure (#1186).
+func (p *Plugin) daemonSaysContainerGone(r JoinRequest) bool {
+	if p.docker == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), vanishConfirmTimeout)
+	defer cancel()
+
+	nw, err := p.docker.NetworkInspect(ctx, r.NetworkID, dNetwork.InspectOptions{})
+	if err != nil {
+		return false
+	}
+	ctrID := ""
+	for id, info := range nw.Containers {
+		if info.EndpointID == r.EndpointID {
+			ctrID = id
+			break
+		}
+	}
+	if ctrID == "" || strings.HasPrefix(ctrID, "ep-") {
+		return false
+	}
+	ctr, err := p.docker.ContainerInspect(ctx, ctrID)
+	if err != nil {
+		return cerrdefs.IsNotFound(err)
+	}
+	if ctr.State == nil {
+		return false
+	}
+	return ctr.State.Status == dContainer.StateExited || ctr.State.Status == dContainer.StateDead
+}
+
+// settleFailedAttach counts a failed attach once: endpoint left, vanished, no container, start failure (#1186).
+func (p *Plugin) settleFailedAttach(r JoinRequest, m *dhcpManager, err error) {
+	fields := log.Fields{
+		"network":  shortID(r.NetworkID),
+		"endpoint": shortID(r.EndpointID),
+		"sandbox":  r.SandboxKey,
+	}
+	// Per-phase timing rides the failure line, since a bare deadline hides which phase spent the budget
+	// (#401, #406).
+	if m.startPhases != "" {
+		fields["phases"] = m.startPhases
+		fields["phase_total"] = m.startTotal
+	}
+	// An exited container is not join_start_failures, which means a running container without a renewal
+	// client (#373, #367); an attach cancelled because the endpoint left is checked first, being the stronger
+	// evidence (#406).
+	if m.attachAborted.Load() {
+		p.joinAbortedEndpointLeft.Add(1)
+		log.WithError(err).WithFields(fields).
+			Info("Attach cancelled because the endpoint is leaving; no persistent client needed")
+		p.removeDHCPManagerIfSame(r.EndpointID, m)
+		return
+	}
+	if p.joinVanished(err, r) {
+		p.joinAbortedContainerGone.Add(1)
+		log.WithError(err).WithFields(fields).
+			Info("Container went away during attach; no persistent client needed")
+		p.removeDHCPManagerIfSame(r.EndpointID, m)
+		// No persistent client; the one-shot's address expires on the server (#800).
+		return
+	}
+	// No container claimed the endpoint (#566), not a plugin fault; the address is left to expire (#800).
+	if joinFailureLeavesAddressUnused(err) {
+		p.joinAbortedNoContainer.Add(1)
+		log.WithError(err).WithFields(fields).
+			Info("No container claimed the endpoint; its address is left to expire on the server")
+		p.removeDHCPManagerIfSame(r.EndpointID, m)
+		return
+	}
+
+	p.joinStartFailures.Add(1)
+	log.WithError(err).WithFields(fields).
+		Error("Failed to start persistent DHCP client; lease will not be renewed")
+	// De-register a failed Start, identity-checked, since a fast Leave and Join may have installed a new manager.
+	p.removeDHCPManagerIfSame(r.EndpointID, m)
 }
 
 // Leave stops the persistent DHCP client for an endpoint

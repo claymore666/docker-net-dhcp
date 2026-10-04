@@ -877,14 +877,18 @@ func TestCreateNetwork_BridgeFromParent(t *testing.T) {
 			t.Errorf("err %v, added %v; want the network created", err, k.added)
 		}
 	})
-	t.Run("a network without parent reads no firewall", func(t *testing.T) {
+	// Superseded by #1116: an existing bridge (no parent) now reads the firewall and logs the verdict at create, and
+	// still creates. The old subtest asserted zero reads; the spec of #1116 item 1 reverses that on purpose.
+	t.Run("a network without parent reads the firewall and creates anyway", func(t *testing.T) {
 		withStateDir(t, t.TempDir())
-		reads := stubFirewall(t, true, errors.New("must not be read"), nfDrop, nil)
+		reads := stubFirewall(t, true, nil, nfDrop, nil)
 		stubBridgeKernel(t, bridgeTestBridgeLink(""))
 		p := newPluginForTest()
 		p.docker = &fakeDocker{}
-		if err := bridgeCreate(p, map[string]interface{}{"bridge": bridgeTestBridge}); err != nil || *reads != 0 {
-			t.Errorf("err %v, reads %d; want today's bridge mode unchanged", err, *reads)
+		var err error
+		logged := captureLog(t, func() { err = bridgeCreate(p, map[string]interface{}{"bridge": bridgeTestBridge}) })
+		if err != nil || *reads != 1 || !strings.Contains(logged, "level=warning") {
+			t.Errorf("err %v, reads %d, log %q; want the check run once, its verdict at warning level, and the create kept", err, *reads, logged)
 		}
 	})
 	t.Run("a failed create removes the bridge it made", func(t *testing.T) {

@@ -185,6 +185,10 @@ func sweepStateDirModes(dir string, failures intCounter) {
 // validNetworkID accepts only a flat token, so a network ID cannot carry a path separator or traversal element.
 var validNetworkID = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`).MatchString
 
+// isDockerNetworkID is what only a network record is named: Docker's 64 lowercase hex characters. validNetworkID also
+// admits an operator's file, and the state directory is documented as lossless across a restart (#440, #1174).
+var isDockerNetworkID = regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString
+
 func stateFilePath(networkID string) (string, error) {
 	if !validNetworkID(networkID) {
 		return "", fmt.Errorf("invalid network id %q", networkID)

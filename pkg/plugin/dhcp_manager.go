@@ -87,6 +87,10 @@ type dhcpManager struct {
 	// seenV4 is the v4 client as its event goroutine last recorded it; the health entry renders its lease from here
 	// because the library marks a lease held before it emits the event (#1044).
 	seenV4 v4Record
+	// tempV6 is the first IA_TA address of the DHCPv6 lease last applied, for the health entry (#927).
+	tempV6 v6TempRecord
+	// nat64 is the PREF64 list of the last v6 event with router state (#1028).
+	nat64 []string
 
 	// recordID is the durable lease record (#899); empty in unit tests and adopted endpoints, where record calls no-op.
 	recordID string
@@ -145,9 +149,9 @@ type dhcpManager struct {
 	errChan   chan error
 	errChanV6 chan error
 
-	// ctrID caches the container ID for ledger entries, resolved once via ctrIDOnce.
-	ctrIDOnce sync.Once
-	ctrID     string
+	// ctrID caches the container ID for ledger entries once a real one was seen; ctrIDMu serialises the lookup (#1189).
+	ctrIDMu sync.Mutex
+	ctrID   string
 
 	// startedCh closes when Start finishes, so Stop can wait out a Start that Join's goroutine is still running.
 	startedCh chan struct{}
@@ -287,6 +291,50 @@ func (m *dhcpManager) noteEvent(event dhcp.Event, v6 bool) {
 	m.seenV4 = rec
 }
 
+// v6TempRecord is the temporary address a DHCPv6 event carried and when its valid lifetime ends, zero meaning no end.
+type v6TempRecord struct {
+	addr       string
+	validUntil time.Time
+}
+
+// noteTempV6 records the v6 lease's first temporary address, or clears it when the lease has none (#927).
+func (m *dhcpManager) noteTempV6(temps []dhcp.V6Addr, now time.Time) {
+	var rec v6TempRecord
+	if len(temps) > 0 {
+		rec.addr = temps[0].IP
+		if temps[0].ValidSeconds > 0 {
+			rec.validUntil = now.Add(time.Duration(temps[0].ValidSeconds) * time.Second)
+		}
+	}
+	m.ipMu.Lock()
+	defer m.ipMu.Unlock()
+	m.tempV6 = rec
+}
+
+// tempV6Address is the recorded temporary address, empty once its valid lifetime has passed (#927).
+func (m *dhcpManager) tempV6Address(now time.Time) string {
+	m.ipMu.Lock()
+	defer m.ipMu.Unlock()
+	if r := m.tempV6; r.validUntil.IsZero() || r.validUntil.After(now) {
+		return r.addr
+	}
+	return ""
+}
+
+// noteNAT64 replaces the recorded PREF64 list, so an event without the option clears it (#1028).
+func (m *dhcpManager) noteNAT64(prefixes []string) {
+	m.ipMu.Lock()
+	defer m.ipMu.Unlock()
+	m.nat64 = append([]string(nil), prefixes...)
+}
+
+// nat64Prefixes is a copy of the recorded PREF64 list.
+func (m *dhcpManager) nat64Prefixes() []string {
+	m.ipMu.Lock()
+	defer m.ipMu.Unlock()
+	return append([]string(nil), m.nat64...)
+}
+
 func (m *dhcpManager) healthSnapshot() (v4Record, joinClient) {
 	m.ipMu.Lock()
 	defer m.ipMu.Unlock()
@@ -339,27 +387,33 @@ func auditSource(info dhcp.Info) string {
 	return ""
 }
 
-// containerID resolves the endpoint's container ID once for ledger entries; a failure leaves the field empty.
+// containerID returns the endpoint's container ID for ledger entries, empty while it is not known. Only a real ID is
+// kept: dockerd lists "ep-<endpoint>" until the sandbox exists and a lookup can fail, and neither is stored, so the
+// next call asks again (#1189).
 func (m *dhcpManager) containerID() string {
-	m.ctrIDOnce.Do(func() {
-		if m.docker == nil {
-			return
+	m.ctrIDMu.Lock()
+	defer m.ctrIDMu.Unlock()
+	if m.ctrID != "" || m.docker == nil {
+		return m.ctrID
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	dockerNet, err := m.docker.NetworkInspect(ctx, m.joinReq.NetworkID, dNetwork.InspectOptions{})
+	if err != nil {
+		log.WithError(err).WithFields(m.logFields(false)).Debug("ledger container lookup failed")
+		return ""
+	}
+	for ctrID, info := range dockerNet.Containers {
+		if info.EndpointID != m.joinReq.EndpointID {
+			continue
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		dockerNet, err := m.docker.NetworkInspect(ctx, m.joinReq.NetworkID, dNetwork.InspectOptions{})
-		if err != nil {
-			log.WithError(err).WithFields(m.logFields(false)).Debug("ledger container lookup failed")
-			return
+		if strings.HasPrefix(ctrID, "ep-") {
+			return ""
 		}
-		for ctrID, info := range dockerNet.Containers {
-			if info.EndpointID == m.joinReq.EndpointID {
-				m.ctrID = ctrID
-				return
-			}
-		}
-	})
-	return m.ctrID
+		m.ctrID = ctrID
+		return ctrID
+	}
+	return ""
 }
 
 // endpointMAC returns the MAC the endpoint's DHCP identity is keyed to, from the join hint or the tombstone, falling
@@ -446,6 +500,9 @@ func (m *dhcpManager) renew(v6 bool, info dhcp.Info) error {
 
 	// Tracked after applyAddressChange, which needs the previous value, so Leave tombstones the current lease (#46).
 	m.setLastIP(v6, ip)
+	if v6 {
+		m.noteTempV6(info.TempAddrs, time.Now())
+	}
 
 	m.propagateDNS(v6, info)
 	m.propagateMTU(v6, info)
@@ -699,6 +756,22 @@ func v6WantedAddrs(main *netlink.Addr, info dhcp.Info) ([]wantedV6Addr, error) {
 		}
 		out = append(out, w)
 	}
+	// The IA_TA addresses come last, so a failure on one never keeps the stable address off the link (#927).
+	held := make(map[string]bool, len(out))
+	for _, w := range out {
+		held[w.key] = true
+	}
+	for _, a := range info.TempAddrs {
+		addr, err := netlink.ParseAddr(a.IP)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse the IPv6 temporary address %q: %w", a.IP, err)
+		}
+		v6AddrAttrs(addr, a.ValidSeconds, a.PreferredSeconds, a.Deprecated)
+		if key := addr.String(); !held[key] {
+			held[key] = true
+			out = append(out, wantedV6Addr{addr: addr, key: key})
+		}
+	}
 	return out, nil
 }
 
@@ -784,7 +857,8 @@ func (m *dhcpManager) forgetV6Addr(key string) {
 // logObservedOptions logs captured options the plugin does not apply, only when at least one is set.
 func (m *dhcpManager) logObservedOptions(v6 bool, info dhcp.Info) {
 	if len(info.NTPServers) == 0 && info.TFTPServer == "" && info.BootFile == "" && len(info.SearchList) == 0 &&
-		info.WPAD == "" && info.PosixTimezone == "" && info.TZDBTimezone == "" && info.TimeOffset == "" {
+		info.WPAD == "" && info.PosixTimezone == "" && info.TZDBTimezone == "" && info.TimeOffset == "" &&
+		len(info.NAT64Prefixes) == 0 && info.VendorSpecific == "" && len(info.VendorIdentifying) == 0 {
 		return
 	}
 
@@ -801,7 +875,7 @@ func (m *dhcpManager) logObservedOptions(v6 bool, info dhcp.Info) {
 	if len(info.SearchList) > 0 {
 		fields["search"] = info.SearchList
 	}
-	// Observe-only extras (#262): WPAD URL (opt 252), RFC 4833 timezone (opt 100/101), time offset (opt 2).
+	// Observe-only extras (#262): WPAD URL (opt 252), RFC 4833 timezone (opt 100/101, DHCPv6 41/42, #1033), time offset (opt 2).
 	if info.WPAD != "" {
 		fields["wpad"] = info.WPAD
 	}
@@ -813,6 +887,20 @@ func (m *dhcpManager) logObservedOptions(v6 bool, info dhcp.Info) {
 	}
 	if info.TimeOffset != "" {
 		fields["time_offset"] = info.TimeOffset
+	}
+	if len(info.NAT64Prefixes) > 0 {
+		fields["nat64"] = info.NAT64Prefixes
+	}
+	// Vendor blobs (options 43 and 125) are hex, 125 as "enterprise:hex" per block; never interpreted (#1034).
+	if info.VendorSpecific != "" {
+		fields["vendor_43"] = info.VendorSpecific
+	}
+	if len(info.VendorIdentifying) > 0 {
+		blocks := make([]string, 0, len(info.VendorIdentifying))
+		for _, b := range info.VendorIdentifying {
+			blocks = append(blocks, fmt.Sprintf("%d:%s", b.Enterprise, b.Data))
+		}
+		fields["vendor_125"] = blocks
 	}
 	log.WithFields(fields).Info("DHCP options received")
 }
@@ -1415,6 +1503,15 @@ func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
 			Warn("DHCP option values dropped before use: they carried control characters")
 	}
 
+	if v6 && m.plugin != nil && (event.Type == "bound" || event.Type == "renew") {
+		m.plugin.v6AbsenceLeaseSeen(m.joinReq.NetworkID, event.Data)
+	}
+
+	// Only events built from a router observation: "config" and v4 Info carry no PREF64 and may not clear it (#1028).
+	if v6 && (event.Type == "bound" || event.Type == "renew" || event.Type == "routeradvert") {
+		m.noteNAT64(event.Data.NAT64Prefixes)
+	}
+
 	switch event.Type {
 	// "deconfig" is ignored: deleting the address would also wipe the routes Join copied off the host bridge (#102).
 	case "bound":
@@ -1615,12 +1712,15 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		// derived from the one-shot's MAC honouring client_id (#371).
 		ClientID:    m.clientID(v4Identity),
 		VendorClass: m.opts.VendorClass,
+		UserClass:   m.opts.UserClass,
+		RapidCommit: m.opts.RapidCommit,
 		// HonorRouterAdverts is required on a persistent v6 client and refused elsewhere (#875, D30 Q3).
 		HonorRouterAdverts: v6,
+		IPv6Temporary:      m.opts.IPv6Temporary,
 	}
 	if v6 {
 		// The v6 record id is restated; what this adds is the mode, which renewals and rebinds run under (#817).
-		if err := m.plugin.v6Wiring(&clientOpts, m.opts, identity6, recordID, preferredV6, m.joinReq.EndpointID); err != nil {
+		if err := m.plugin.v6Wiring(&clientOpts, m.opts, identity6, recordID, preferredV6, m.joinReq.EndpointID, m.joinReq.NetworkID); err != nil {
 			return nil, err
 		}
 	}

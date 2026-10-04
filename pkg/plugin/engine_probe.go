@@ -5,9 +5,11 @@ package plugin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	docker "github.com/docker/docker/client"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -29,6 +31,7 @@ const MinEngineAPIVersion = "1.41"
 // Docker starts the plugin before it serves (#383), and reprobeEngine checks again later (#670).
 func (p *Plugin) probeEngine(ctx context.Context) error {
 	id, err := p.identifyEngine(ctx)
+	p.daemonAnswered.Store(!errors.Is(err, errDaemonUnreachable))
 	if err != nil {
 		p.engine.Store(&engineIdentity{Version: unknownEngineField, APIVersion: unknownEngineField})
 		log.WithError(err).WithField("floor", MinEngineVersion).
@@ -38,6 +41,11 @@ func (p *Plugin) probeEngine(ctx context.Context) error {
 	p.engine.Store(&id)
 	return p.judgeEngine(id)
 }
+
+// errDaemonUnreachable marks a probe that never reached the daemon; an HTTP error status is an answer (#1176).
+var errDaemonUnreachable = errors.New("the Docker daemon is unreachable")
+
+func (p *Plugin) daemonAnsweredAtStart() bool { return p.daemonAnswered.Load() }
 
 // reprobeEngine logs a below-floor engine and does not refuse: the process may already be serving (#670).
 func (p *Plugin) reprobeEngine(ctx context.Context) {
@@ -92,6 +100,10 @@ func (p *Plugin) identifyEngine(ctx context.Context) (engineIdentity, error) {
 	defer cancel()
 
 	if _, err := p.docker.Ping(ctx); err != nil {
+		// Transport failures are connection failures or context errors; a status error is an answer (#383, #1176).
+		if docker.IsErrConnectionFailed(err) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			return engineIdentity{}, fmt.Errorf("pinging the Docker daemon: %w: %w", errDaemonUnreachable, err)
+		}
 		return engineIdentity{}, fmt.Errorf("pinging the Docker daemon: %w", err)
 	}
 	v, err := p.docker.ServerVersion(ctx)
@@ -113,6 +125,16 @@ func (p *Plugin) engineSnapshot() engineIdentity {
 		return *id
 	}
 	return engineIdentity{Version: unknownEngineField, APIVersion: unknownEngineField}
+}
+
+// MinEngineV6GatewayWaitVersion is the first engine line that waits for the link to run before it looks up the IPv6
+// gateway's route; 24.0.9 and 27.5.1 do not and refused 1 start in 20 each, route not found (moby osl, #1149).
+const MinEngineV6GatewayWaitVersion = "28.0"
+
+// engineWaitsForV6Link is false on an unknown engine: withheld, the gateway costs a wait; returned, a start (#1149).
+func (p *Plugin) engineWaitsForV6Link() bool {
+	below, known := engineBelowFloor(p.engineSnapshot().Version, MinEngineV6GatewayWaitVersion)
+	return known && !below
 }
 
 // MinEngineIfnameVersion is the lowest engine measured to apply a requested interface name: 28.5.2 and 29.7.2 ignored

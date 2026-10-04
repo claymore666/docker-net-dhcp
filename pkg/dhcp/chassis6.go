@@ -324,6 +324,8 @@ func runAcquisition6(ctx context.Context, iface string, client v6AcquisitionClie
 			}
 			// Before the record and the step, as in the persistent client's loop (#911).
 			opts.carryResumedConfig6(&ev)
+			opts.carryResumedTemp6(&ev)
+			opts.carryResumedOptions6(&ev)
 			opts.record(ev)
 			opts.reportFQDN6(ev)
 			out := acquireStep6(ev, hint.IsValid(), opts.MainPrefix6)
@@ -341,6 +343,8 @@ func runAcquisition6(ctx context.Context, iface string, client v6AcquisitionClie
 	// Drained in the foreground for the reason GetIP's drain gives (#911).
 	for ev := range client.Events() {
 		opts.carryResumedConfig6(&ev)
+		opts.carryResumedTemp6(&ev)
+		opts.carryResumedOptions6(&ev)
 		opts.record(ev)
 	}
 	if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
@@ -406,6 +410,47 @@ func (o *DHCPClientOptions) carryResumedConfig6(ev *lease.Event) {
 	}
 	ev.Lease.DNS = append([]netip.Addr(nil), o.Resume.DNS...)
 	ev.Lease.DomainSearch = append([]string(nil), o.Resume.DomainSearch...)
+}
+
+// carryResumedTemp6 gives a resumed binding its remembered temporary addresses on every event that has none, until
+// the binding is Lost. The library asks for no IA_TA on a resume (RFC 9915 section 18.2.3: a Confirm), so without this
+// the address never reaches the link; it ends with its own valid lifetime and is never renewed (RFC 8415 section
+// 21.5, #927).
+func (o *DHCPClientOptions) carryResumedTemp6(ev *lease.Event) {
+	if !o.V6 || !o.IPv6Temporary || o.Resume == nil || len(o.Resume.TempAddrs) == 0 || o.resumedTempDropped {
+		return
+	}
+	if ev.Kind == lease.Lost {
+		o.resumedTempDropped = true
+		return
+	}
+	switch ev.Kind {
+	case lease.Acquired, lease.Renewed, lease.Changed:
+	default:
+		return
+	}
+	if len(ev.Lease.TempAddrs) > 0 {
+		return
+	}
+	ev.Lease.TempAddrs = append([]lease.Addr6(nil), o.Resume.TempAddrs...)
+}
+
+// carryResumedOptions6 gives a resumed binding the remembered Reply's options on every event whose own bag is empty: the
+// library builds the confirmed lease from Resume6, which keeps the RFC 3646 lists only, so options 41, 42 and 56 were
+// missing until T1 (RFC 9915 section 18.2.3, measured on the lane 2026-10-03, #1033). The library discards a Reply
+// with no option 2 (RFC 9915 section 16.10), so a bag from the wire is never empty and always wins.
+func (o *DHCPClientOptions) carryResumedOptions6(ev *lease.Event) {
+	switch ev.Kind {
+	case lease.Acquired, lease.Renewed, lease.Changed:
+		o.withResumedOptions6(&ev.Lease)
+	}
+}
+
+func (o *DHCPClientOptions) withResumedOptions6(l *lease.Lease) {
+	if !o.V6 || o.Resume == nil || len(l.OptionsV6) > 0 {
+		return
+	}
+	l.OptionsV6 = o.Resume.OptionsV6.Clone()
 }
 
 // reportFQDN6 logs, once, the server's answer to the first message that carried option 39. S set in the Reply is the

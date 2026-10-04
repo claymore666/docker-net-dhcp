@@ -53,7 +53,7 @@ reads the policy and cannot see the rule:
 
 ```bash
 sudo iptables -I DOCKER-USER -i lan0 -o lan0 -j ACCEPT
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.3.1 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.4.0 \
   --ipam-driver null -o bridge=lan0 -o parent=eth1 -o force_create=true lan-dhcp
 ```
 
@@ -315,12 +315,22 @@ rule needs the distro's own persistence mechanism:
 You only need this if the forwarding policy is `DROP`. Check with `sudo
 iptables -S FORWARD | head -1`.
 
+On an existing bridge the plugin checks this when the network is created and
+logs a warning that names the bridge and the rule if the policy is `DROP`, or
+if the check cannot read it; it logs the same text with the error when the
+first lease attempt times out. The drop only hits frames that cross between
+two ports, so a DHCP server or relay on the bridge's own address leases
+normally beside that warning; only a server or relay behind another port
+needs the rule. Docker gives a plugin call 30 s, so with the
+default 34 s `lease_timeout` look for that line in the plugin log: the error
+`docker run` prints may be Docker's own.
+
 ## 2. Create the network
 
 ```bash
 # On arm64 use the -arm64 tag. A network stores this exact reference
 # as its driver, so it must name the plugin you installed.
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.3.1 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.4.0 \
   --ipam-driver null -o bridge=my-bridge my-dhcp-net
 ```
 
@@ -333,7 +343,7 @@ same day).
 
 ```bash
 # arm64: the -arm64 tag here too.
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.3.1 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.4.0 \
   --ipam-driver null -o bridge=my-bridge -o ipv6_mode=dhcp my-dhcp-net
 ```
 
@@ -415,7 +425,7 @@ services:
 networks:
   dhcp:
     # arm64: the -arm64 tag, matching the plugin you installed.
-    driver: ghcr.io/claymore666/docker-net-dhcp:v2.3.1
+    driver: ghcr.io/claymore666/docker-net-dhcp:v2.4.0
     driver_opts:
       bridge: my-bridge
       ipv6_mode: 'dhcp'

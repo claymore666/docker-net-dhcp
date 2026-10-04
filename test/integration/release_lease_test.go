@@ -7,7 +7,6 @@ package integration
 
 import (
 	"context"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -30,20 +29,13 @@ const releaseVisiblePoll = 250 * time.Millisecond
 // line (rfc2131.c), so only the lease DB says the address was given up (#962). The address is the third field in a
 // v4 line (`<expiry> <mac> <addr> <hostname> <client-id>`) and a v6 line (`<expiry> <iaid> <addr> <hostname> <duid>`).
 
-// leaseFileHolds reports whether dnsmasq's lease DB still has an entry for addr.
 func leaseFileHolds(t *testing.T, leaseFile, addr string) bool {
 	t.Helper()
-	data, err := os.ReadFile(leaseFile)
+	held, err := harness.LeaseFileHolds(leaseFile, addr)
 	if err != nil {
 		t.Fatalf("read lease file %s: %v", leaseFile, err)
 	}
-	for _, line := range strings.Split(string(data), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) >= 5 && strings.EqualFold(fields[2], addr) {
-			return true
-		}
-	}
-	return false
+	return held
 }
 
 func waitLeaseFile(t *testing.T, leaseFile, addr string, want bool) bool {

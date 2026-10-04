@@ -4,8 +4,10 @@
 package plugin
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -205,6 +207,11 @@ func (m *dhcpManager) prepareIPv6Link() (bool, dhcp.RouterAdvertGuardResult, err
 var v6EnterSandbox = (*dhcpManager).enterV6Sandbox
 
 func (m *dhcpManager) enterV6Sandbox(work func(dir string)) error {
+	return runInSandboxWritable(m.nsHandle, m.logFields(true), work)
+}
+
+// runInSandboxWritable runs work in namespace ns on a locked thread with /proc/sys writable, restoring both namespaces (#821).
+func runInSandboxWritable(ns netns.NsHandle, fields log.Fields, work func(dir string)) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
@@ -230,8 +237,8 @@ func (m *dhcpManager) enterV6Sandbox(work func(dir string)) error {
 			return err
 		}
 		// Not a verdict (#868): the write below reports; logged so a host where this always fails is recognisable.
-		log.WithError(err).WithFields(m.logFields(true)).
-			Debug("Could not make /proc/sys writable; attempting the disable_ipv6 write anyway")
+		log.WithError(err).WithFields(fields).
+			Debug("Could not make /proc/sys writable; attempting the write anyway")
 	}
 	defer func() {
 		if err := unix.Setns(int(origMnt.Fd()), unix.CLONE_NEWNS); err != nil {
@@ -241,7 +248,7 @@ func (m *dhcpManager) enterV6Sandbox(work func(dir string)) error {
 		}
 	}()
 
-	if err := netns.Set(m.nsHandle); err != nil {
+	if err := netns.Set(ns); err != nil {
 		return fmt.Errorf("failed to enter network namespace: %w", err)
 	}
 	defer func() {
@@ -253,6 +260,114 @@ func (m *dhcpManager) enterV6Sandbox(work func(dir string)) error {
 
 	work(ipv6DisableSysctlDir)
 	return nil
+}
+
+// v6SandboxDefaultKnobs are the namespace defaults Join writes (#1145); never keep_addr_on_down, which is per-link state,
+// and never all/, which an existing link ignores (#821). Values come from the guard's contract.
+var v6SandboxDefaultKnobs = []string{"accept_ra", "autoconf"}
+
+// v6SandboxDefaultsResult is what one write of the sandbox defaults did.
+type v6SandboxDefaultsResult struct {
+	PriorAcceptRA string
+	Failures      int
+	Err           error
+	// SandboxNotBuilt marks an open that found no namespace file yet: not a failure, not counted (#1145).
+	SandboxNotBuilt bool
+}
+
+// v6SandboxDefaultsWriter is a var so a Join test runs without a namespace (#1145).
+var v6SandboxDefaultsWriter = writeV6SandboxDefaults
+
+// writeV6SandboxDefaultsUnder writes default/accept_ra and default/autoconf under dir and reads each back. Nothing is
+// undone at Leave: the defaults die with the sandbox, and restoring 1 would unguard a second endpoint in it (#1145).
+func writeV6SandboxDefaultsUnder(dir string) v6SandboxDefaultsResult {
+	var (
+		res  v6SandboxDefaultsResult
+		errs []error
+	)
+	contract := dhcp.RouterAdvertGuardContract()
+	for _, knob := range v6SandboxDefaultKnobs {
+		p := filepath.Join(dir, "default", knob)
+		want, ok := contract[knob]
+		if !ok {
+			res.Failures++
+			errs = append(errs, fmt.Errorf("the guard contract has no value for %v", knob))
+			continue
+		}
+		if prior, err := os.ReadFile(p); err == nil && knob == "accept_ra" {
+			res.PriorAcceptRA = strings.TrimSpace(string(prior))
+			log.WithField("accept_ra", res.PriorAcceptRA).Debug("[Join] Sandbox default accept_ra before the write")
+		}
+		werr := os.WriteFile(p, []byte(want+"\n"), 0o644)
+		got, rerr := os.ReadFile(p)
+		switch {
+		case rerr != nil:
+			res.Failures++
+			errs = append(errs, fmt.Errorf("write %v=%v: %v; read back: %w", p, want, werr, rerr))
+		case strings.TrimSpace(string(got)) != want:
+			res.Failures++
+			errs = append(errs, fmt.Errorf("%v reads %q after a write of %q (write: %v)",
+				p, strings.TrimSpace(string(got)), want, werr))
+		}
+	}
+	res.Err = errors.Join(errs...)
+	return res
+}
+
+// writeV6SandboxDefaults enters the sandbox at sandboxKey and writes its defaults. Never an error to the caller: a
+// failure is a counted step, not a Join verdict (#1145).
+func writeV6SandboxDefaults(sandboxKey string) v6SandboxDefaultsResult {
+	ns, err := openSandboxNetNSByKeyIn(sandboxNetnsDirs, sandboxKey)
+	if errors.Is(err, errSandboxKeyPlaceholder) {
+		// Only a placeholder is awaited; an absent entry returns at once above. The context outlasts the bound by one
+		// interval, so the await ends on its own bound (#1185).
+		ctx, cancel := context.WithTimeout(context.Background(), (placeholderBoundIntervals+1)*pollTime)
+		defer cancel()
+		ns, err = awaitSandboxNetNSByKeyIn(ctx, sandboxNetnsDirs, sandboxKey, pollTime)
+	}
+	if err != nil {
+		res := v6SandboxDefaultsResult{Err: fmt.Errorf("open the sandbox: %w", err)}
+		if errors.Is(err, fs.ErrNotExist) {
+			res.SandboxNotBuilt = true
+			return res
+		}
+		res.Failures = 1
+		return res
+	}
+	defer closeNsHandle(ns)
+
+	var res v6SandboxDefaultsResult
+	if eerr := runInSandboxWritable(ns, log.Fields{"sandbox": sandboxKey}, func(dir string) {
+		res = writeV6SandboxDefaultsUnder(dir)
+	}); eerr != nil {
+		return v6SandboxDefaultsResult{Failures: 1, Err: fmt.Errorf("enter the sandbox: %w", eerr)}
+	}
+	return res
+}
+
+// guardSandboxDefaults writes the sandbox defaults at Join and counts what failed (#1145).
+func (p *Plugin) guardSandboxDefaults(r JoinRequest) {
+	res := v6SandboxDefaultsWriter(r.SandboxKey)
+	if res.SandboxNotBuilt {
+		// Engines 26 and 27 call Join before SetKey creates the namespace; the guard cannot run there (#1145).
+		log.WithError(res.Err).WithFields(log.Fields{
+			"network":  shortID(r.NetworkID),
+			"endpoint": shortID(r.EndpointID),
+			"sandbox":  r.SandboxKey,
+		}).Debug("[Join] No sandbox namespace yet: this engine builds it after Join, so the Router Advertisement defaults are not written")
+		return
+	}
+	if res.Failures == 0 {
+		return
+	}
+	p.routerAdvertGuardFailures.Add(int32(res.Failures))
+	log.WithError(res.Err).WithFields(log.Fields{
+		"network":  shortID(r.NetworkID),
+		"endpoint": shortID(r.EndpointID),
+		"sandbox":  r.SandboxKey,
+		"step":     "sandbox_default",
+	}).Warn("The Router Advertisement defaults did not take in the sandbox; " +
+		"a link that arrives in it before the guard can carry a kernel-installed IPv6 default route")
 }
 
 // joinGuardErrors keeps both guard failures in one error, since they share one counter.

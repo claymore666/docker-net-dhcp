@@ -92,8 +92,8 @@ means `docker plugin disable`, `set`, `enable`.
 
 ## Prerequisites
 
-- Linux host with `iproute2`, `dnsmasq`, `kea-dhcp4-server`, and
-  Docker installed.
+- Linux host with `iproute2`, `dnsmasq`, `kea-dhcp4-server`,
+  `kea-dhcp6-server` and Docker installed.
 - The plugin enabled at `ghcr.io/claymore666/docker-net-dhcp:golang`.
   The harness verifies this in `TestMain`; it does **not** install
   the plugin for you (deliberate — installing affects the daemon's
@@ -160,6 +160,18 @@ service on install. The fixture runs its own Kea, so the packaged
 service is not needed; disable it (`sudo systemctl disable --now
 kea-dhcp4-server`) rather than leaving a DHCP server running on a
 machine that sits on a real network.
+
+The DHCPv6 fixture (`harness/kea6.go`, [#214](https://github.com/claymore666/docker-net-dhcp/issues/214))
+runs `kea-dhcp6` in a namespace on a port of a `V6Fixture` bridge. Unlike the
+v4 fixture it keeps its files on the paths the Ubuntu `kea-dhcp6` profile
+allows: the config at `/etc/kea/dh-itest/kea-dhcp6.conf`, leases at
+`/var/lib/kea/kea-leases6.csv`, the log at `/var/log/kea/kea-dhcp6.log`, the
+PID file under `/run/kea` and the lock under `/run/lock/kea`. A unit test pins
+every one of those paths against the profile's rules; no enforcing Ubuntu run
+has measured it yet, so the hosted lane (profile in complain mode) logs the
+profile state it found. It deletes the lease file, server id and log at start
+and end, so stop the packaged `kea-dhcp6-server` service
+before a local run.
 
 ## What's covered
 
@@ -549,7 +561,10 @@ answered first.
 3. `t.Cleanup` is best-effort. If a test panics mid-setup, run
    `sudo bash test/integration/cleanup-orphans.sh` to remove
    leftover `dh-itest-*` interfaces, networks, and the `dnsmasq`
-   process if it's still running.
+   process if it's still running. It first stops a previous run's
+   test binary, `go test`, `make` and fixture servers (a binary left
+   behind by a cancelled job deletes the new job's links when its
+   teardown runs, #1147) and exits non-zero if one survives `KILL`.
 
 ## Coverage harvesting
 

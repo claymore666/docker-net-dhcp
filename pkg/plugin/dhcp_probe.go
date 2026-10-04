@@ -76,7 +76,7 @@ func (p *Plugin) runDHCPProbe(ctx context.Context, opts DHCPNetworkOptions, pol 
 		}
 	}()
 
-	if err := pinPassthruProbe(opts, probeName); err != nil {
+	if err := pinPassthruProbe(opts, parentLink, probeName); err != nil {
 		return fmt.Errorf("validate_dhcp: %w", err)
 	}
 	if err := netlink.LinkSetUp(probeLink); err != nil {
@@ -106,8 +106,9 @@ func (p *Plugin) runDHCPProbe(ctx context.Context, opts DHCPNetworkOptions, pol 
 
 func preflightProbeOptions(probeMAC net.HardwareAddr, pol serverPolicy) *dhcp.DHCPClientOptions {
 	return &dhcp.DHCPClientOptions{
-		// Identity-neutral: no hostname, vendor class or client id, so class-based policy cannot deny the probe alone
-		// (#307).
+		// No hostname or client id is set; the vendor class is the library default, dhcp.VendorID, so option 60 does go
+		// out, as the probe test's fake server measures (#307, #1117). No user class either: this takes no network
+		// options, so option 77 is never in the probe (#1120).
 		MAC: probeMAC,
 		// The network's server policy applies (#111, #669), as flat lists: any acceptable server answers the question.
 		AllowServers: pol.allowList(),
@@ -119,17 +120,18 @@ func preflightProbeOptions(probeMAC net.HardwareAddr, pol serverPolicy) *dhcp.DH
 	}
 }
 
-// pinPassthruProbe sets a passthru probe child's MAC to the one it wears, the parent's, as CreateEndpoint pins an
-// endpoint's: a udev rewrite of an unpinned passthru child would change the parent's MAC (#103, #905).
-func pinPassthruProbe(opts DHCPNetworkOptions, name string) error {
+// pinPassthruProbe pins a passthru probe child to the parent's MAC, read before the child was added and shared with
+// CreateEndpoint's pin: an unpinned passthru child is rewritten by udev and the rewrite lands on the parent, and a pin
+// to a MAC read from the child afterwards would write that rewritten address onto the parent (#103, #905, #1147).
+func pinPassthruProbe(opts DHCPNetworkOptions, parent netlink.Link, name string) error {
 	if !opts.macvlanPassthru() {
 		return nil
 	}
-	link, err := netlink.LinkByName(name)
+	link, err := nlLinkByName(name)
 	if err != nil {
 		return fmt.Errorf("re-fetch probe link: %w", err)
 	}
-	if err := netlink.LinkSetHardwareAddr(link, link.Attrs().HardwareAddr); err != nil {
+	if _, err := pinChildMAC(opts, false, link, parent); err != nil {
 		return fmt.Errorf("pin passthru probe link MAC: %w", err)
 	}
 	return nil

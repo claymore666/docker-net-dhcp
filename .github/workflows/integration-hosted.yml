@@ -132,6 +132,8 @@ jobs:
       - name: Show environment under test
         run: |
           go version
+          uname -r
+          head -2 /etc/os-release
           docker version
           server_major="$(docker version -f '{{.Server.Version}}' | cut -d. -f1)"
           if [ "${server_major}" -lt 28 ]; then
@@ -226,9 +228,10 @@ jobs:
       # inside the suite.
       - name: Verify kea resolves in the PATH the suite will use
         run: |
-          sudo env "PATH=$PATH" sh -c 'command -v kea-dhcp4' \
+          sudo env "PATH=$PATH" sh -c 'command -v kea-dhcp4 && command -v kea-dhcp6' \
             || { echo "::error title=kea not on the suite PATH::installed, but not resolvable under sudo env PATH=$PATH"; exit 1; }
           sudo env "PATH=$PATH" kea-dhcp4 -V | head -1
+          sudo env "PATH=$PATH" kea-dhcp6 -V | head -1
 
       # The check that would have caught the first attempt. Whether a
       # unit is masked is the plugin's own opinion of the situation; what
@@ -258,6 +261,23 @@ jobs:
             exit 1
           fi
           echo "no kea profile in enforce mode — the fixture can write its own temp dir"
+
+      # A stock hosted runner does not load br_netfilter, which the bridge
+      # firewall verdict test reads (#1116) through WithForwardDrop. The lane
+      # establishes it; if the module cannot be loaded the job fails here with
+      # the cause, never as a skipped test (#1148).
+      - name: Load br_netfilter
+        run: |
+          set -euo pipefail
+          if ! out="$(sudo modprobe br_netfilter 2>&1)"; then
+            echo "::error title=br_netfilter cannot be loaded (#1148)::${out}"
+            exit 1
+          fi
+          if ! val="$(cat /proc/sys/net/bridge/bridge-nf-call-iptables 2>&1)"; then
+            echo "::error title=br_netfilter loaded but bridge-nf-call-iptables is unreadable (#1148)::${val}"
+            exit 1
+          fi
+          echo "br_netfilter loaded; bridge-nf-call-iptables=${val}"
 
       # Build + install the plugin from THIS tree, exactly as
       # integration.yml does, just under a hosted-specific tag.

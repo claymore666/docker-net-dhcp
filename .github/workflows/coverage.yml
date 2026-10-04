@@ -348,6 +348,38 @@ jobs:
               fi
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # THE PER-FUNCTION TABLE, BEFORE THE RATCHET (#1117). The package floor
+      # cannot see one function: CreateEndpoint read 17.5 % in the unit
+      # profile under a 90 % package. The merged profile used to be written
+      # only in "Generate coverage reports", below the ratchet, so the check
+      # would have read a file that did not exist yet. It is written here and
+      # the later step reuses it. The table goes to the job summary
+      # (pkg/plugin rows) and to its own artifact, uploaded with
+      # if-no-files-found: error so a missing file is a red step.
+      - name: Merged function table
+        run: |
+          if ! ls coverage-unit/covcounters.* >/dev/null 2>&1; then
+            echo "No unit counters found — the Coverage ratchet step reports it."
+            exit 0
+          fi
+          go tool covdata textfmt -i="${COVER_DIR}",coverage-unit -o coverage-merged.out
+          go tool cover -func=coverage-merged.out > coverage-merged-func.txt
+          {
+            echo "### pkg/plugin per function (merged unit + integration)"
+            echo '```'
+            awk '$1 ~ /\/pkg\/plugin\/[^\/]*\.go:[0-9]+:$/' coverage-merged-func.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload function table artifact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-func-${{ github.run_id }}
+          path: coverage-merged-func.txt
+          if-no-files-found: error
+          retention-days: 30
+
       # The ratchet: merged per-package coverage must hold the floors
       # in .github/coverage-baseline.txt. No `if: always()` on purpose —
       # a failed suite produces partial counters and would false-alarm;
@@ -396,7 +428,11 @@ jobs:
           else
             echo "No pull_request context — ratcheting against the working copy's baseline."
           fi
-          bash scripts/coverage-ratchet.sh /tmp/covdata-percent.txt "$baseline"
+          # The per-function floors (#1117) read the table written above,
+          # from the merge base's copy of .github/coverage-func-baseline.txt.
+          RATCHET_FUNC_PROFILE=coverage-merged-func.txt RATCHET_FUNC_REQUIRED=1 \
+            RATCHET_FUNC_BASE_REF="${BASE_REF:-}" \
+            bash scripts/coverage-ratchet.sh /tmp/covdata-percent.txt "$baseline"
 
       - name: Generate coverage reports
         if: always()
@@ -409,7 +445,8 @@ jobs:
           # merged when unit counters are present.
           go tool covdata textfmt -i="${COVER_DIR}" -o coverage.out
           if ls coverage-unit/covcounters.* >/dev/null 2>&1; then
-              go tool covdata textfmt -i="${COVER_DIR}",coverage-unit -o coverage-merged.out
+              # Written before the ratchet by "Merged function table" (#1117).
+              [ -s coverage-merged.out ] || go tool covdata textfmt -i="${COVER_DIR}",coverage-unit -o coverage-merged.out
               go tool cover -html=coverage-merged.out -o coverage-merged.html
           fi
           go tool cover -html=coverage.out -o coverage.html

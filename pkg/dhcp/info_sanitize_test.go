@@ -208,3 +208,26 @@ func TestInfoFromLease_TruncatesMultiDomain(t *testing.T) {
 		t.Errorf("dropped = %d, want 1", dropped)
 	}
 }
+
+// The bind and renew render warns for each dropped value; only the router-advert watch renders quietly (#703, #1033).
+func TestInfoFromLease_WarnsForEachDroppedValue(t *testing.T) {
+	hook := captureLog(t)
+	l := lease.Lease{
+		Addr:         netip.MustParsePrefix("192.0.2.10/24"),
+		DomainSearch: []string{"ok.example", "bad\n.example"},
+		Options:      wire.Options{wire.OptWPAD: []byte("http://wpad\r")},
+	}
+
+	_, dropped := infoFromLease(l, proto.RouterObservation{}, time.Now(), netip.Prefix{})
+
+	var got []string
+	for _, e := range hook.AllEntries() {
+		if strings.Contains(e.Message, "control character") {
+			got = append(got, e.Data["value"].(string))
+		}
+	}
+	want := []string{quoteForLog("bad\n.example"), quoteForLog("http://wpad\r")}
+	if dropped != 2 || len(got) != 2 || !containsString(got, want[0]) || !containsString(got, want[1]) {
+		t.Errorf("dropped=%d, warned values %q; want 2 and %q", dropped, got, want)
+	}
+}

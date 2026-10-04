@@ -159,11 +159,13 @@ func (p *Plugin) createIPAMEndpointV6(ctx context.Context, callStart time.Time, 
 		return "", err
 	}
 	base := dhcp.DHCPClientOptions{
-		Hostname:    hostname.name,
-		FQDN:        opts.fqdnMode(),
-		VendorClass: opts.VendorClass,
-		MAC:         mac,
-		Records:     p.records,
+		Hostname:      hostname.name,
+		FQDN:          opts.fqdnMode(),
+		VendorClass:   opts.VendorClass,
+		RapidCommit:   opts.RapidCommit,
+		IPv6Temporary: opts.IPv6Temporary,
+		MAC:           mac,
+		Records:       p.records,
 	}
 	return p.acquireInitialV6(ctx, opts, base, v6Acquire{iface: ipamEndpointIface(opts.effectiveMode(), r.EndpointID),
 		networkID: r.NetworkID, endpointID: r.EndpointID, callStart: callStart, timeout: leaseTimeoutFor(opts),

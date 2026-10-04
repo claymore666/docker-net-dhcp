@@ -54,8 +54,16 @@ else
     # so a run that grows a second job does not need this line to change.
     jobs=$(gh run view "$RUN" --repo "$REPO" --json jobs --jq '.jobs[].databaseId' 2>/dev/null)
     [ -n "$jobs" ] || refuse "run $RUN reports no jobs. A run id that resolves to nothing is not a measurement."
+    # gh 2.101 refuses to print a log that carries terminal escape
+    # sequences unless told to, and this reader swallows stderr, so the
+    # refusal read as an empty log. The flag is passed only where the
+    # installed gh has it: an older gh rejects an unknown flag (#1117).
+    apiflags=()
+    if gh api --help 2>&1 | grep -F -e '--allow-escape-sequences' >/dev/null; then
+        apiflags=(--allow-escape-sequences)
+    fi
     for j in $jobs; do
-        gh api "repos/$REPO/actions/jobs/$j/logs" >> "$TMP/log" 2>/dev/null || true
+        gh api "repos/$REPO/actions/jobs/$j/logs" ${apiflags[@]+"${apiflags[@]}"} >> "$TMP/log" 2>/dev/null || true
     done
 fi
 [ -s "$TMP/log" ] || refuse "the log is empty. A log that returns nothing with rc=0 is not a measurement."

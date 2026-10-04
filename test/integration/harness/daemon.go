@@ -6,7 +6,10 @@
 package harness
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -136,6 +139,8 @@ func KillDockerDaemon(t *testing.T, ctx context.Context) {
 }
 
 // DaemonLogCount counts the lines of the running dockerd's stderr that carry every needle, and ok is false when that stderr is not a regular file to read.
+// The file is scanned, never read whole: the arm64 runner's dockerd log was 842 MB and 875 MB at the two kills and the
+// old whole-file read held about 2.1x of it at once (#1180).
 func DaemonLogCount(needles ...string) (n int, path string, ok bool) {
 	pid, err := dockerdPID()
 	if err != nil {
@@ -146,23 +151,76 @@ func DaemonLogCount(needles ...string) (n int, path string, ok bool) {
 	if fi, err := os.Stat(fd); err != nil || !fi.Mode().IsRegular() {
 		return 0, path, false
 	}
-	b, err := os.ReadFile(fd)
+	f, err := os.Open(fd)
 	if err != nil {
 		return 0, path, false
 	}
-	for _, line := range strings.Split(string(b), "\n") {
-		all := true
-		for _, needle := range needles {
-			if !strings.Contains(line, needle) {
-				all = false
-				break
-			}
-		}
-		if all && line != "" {
-			n++
-		}
+	defer f.Close()
+	n, err = countLinesWithNeedles(f, needles...)
+	if err != nil {
+		return 0, path, false
 	}
 	return n, path, true
+}
+
+// logScanBuf is the scan buffer of countLinesWithNeedles; a line longer than it arrives in fragments (#1180).
+const logScanBuf = 64 << 10
+
+// countLinesWithNeedles counts the non-empty lines of r that carry every needle, holding one buffer and never the input.
+// A line longer than the buffer arrives in fragments: each needle is looked for in the fragment and in the last
+// len(needle)-1 bytes of the one before, so a needle on a fragment boundary still counts and the line counts once (#1180).
+func countLinesWithNeedles(r io.Reader, needles ...string) (int, error) {
+	br := bufio.NewReaderSize(r, logScanBuf)
+	keep := 0
+	pats := make([][]byte, len(needles))
+	for i, nd := range needles {
+		pats[i] = []byte(nd)
+		keep = max(keep, len(nd)-1)
+	}
+	seen := make([]bool, len(needles))
+	missing := len(needles)
+	var carry, scratch []byte
+	n, lineLen := 0, 0
+	endLine := func() {
+		if lineLen > 0 && missing == 0 {
+			n++
+		}
+		lineLen, carry, missing = 0, carry[:0], len(needles)
+		clear(seen)
+	}
+	for {
+		frag, err := br.ReadSlice('\n')
+		if err != nil && err != bufio.ErrBufferFull && err != io.EOF {
+			return n, err
+		}
+		complete := len(frag) > 0 && frag[len(frag)-1] == '\n'
+		body := frag
+		if complete {
+			body = frag[:len(frag)-1]
+		}
+		lineLen += len(body)
+		if missing > 0 && len(body) > 0 {
+			win := body
+			if len(carry) > 0 {
+				scratch = append(append(scratch[:0], carry...), body...)
+				win = scratch
+			}
+			for i, pat := range pats {
+				if !seen[i] && bytes.Contains(win, pat) {
+					seen[i] = true
+					missing--
+				}
+			}
+			carry = append(carry[:0], win[max(0, len(win)-keep):]...)
+		}
+		if complete {
+			endLine()
+		}
+		if err == io.EOF {
+			endLine()
+			return n, nil
+		}
+	}
 }
 
 // dockerdPID reads the pidfile, falling back to a /proc comm scan for a non-default --pidfile.

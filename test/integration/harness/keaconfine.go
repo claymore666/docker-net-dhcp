@@ -31,11 +31,16 @@ var (
 
 // keaProfileMode returns the kernel-reported mode of the kea-dhcp4 profile, or "" when not loaded, matching the exact
 // name: kea-lfc and kea-dhcp4-custom are other profiles (#869).
-func keaProfileMode(profiles string) string {
+func keaProfileMode(profiles string) string { return profileModeOf(profiles, "kea-dhcp4") }
+
+// kea6ProfileMode is keaProfileMode for the kea-dhcp6 profile (#214).
+func kea6ProfileMode(profiles string) string { return profileModeOf(profiles, "kea-dhcp6") }
+
+func profileModeOf(profiles, want string) string {
 	for _, line := range strings.Split(profiles, "\n") {
 		line = strings.TrimSpace(line)
 		name, mode, ok := strings.Cut(line, " ")
-		if !ok || name != "kea-dhcp4" {
+		if !ok || name != want {
 			continue
 		}
 		return strings.Trim(mode, "()")
@@ -168,4 +173,56 @@ func keaConfinementEvidence(runDir string, logEmpty bool) keaConfinement {
 // appArmorKeaHint is keaConfinementHint with the reads done; logEmpty is about the log the caller prints.
 func appArmorKeaHint(runDir string, logEmpty bool) string {
 	return keaConfinementHint(keaConfinementEvidence(runDir, logEmpty))
+}
+
+// kea6DenialRecord returns the last AppArmor DENIED record naming profile="kea-dhcp6", or "". The fixture's state sits
+// on the profile's own paths, so unlike the dhcp4 fixture there is no private directory to key the record on (#214).
+func kea6DenialRecord(kernelLog string) string {
+	last := ""
+	for _, line := range strings.Split(kernelLog, "\n") {
+		if strings.Contains(line, `apparmor="DENIED"`) && strings.Contains(line, `profile="kea-dhcp6"`) {
+			last = strings.TrimSpace(line)
+		}
+	}
+	return last
+}
+
+// kea6Confinement is what the fixture measured about the kea-dhcp6 profile (#214).
+type kea6Confinement struct {
+	// mode is the kernel-reported mode, "" when not loaded; meaningful only if listRead.
+	mode          string
+	listRead      bool
+	installed     bool
+	kernelLogRead bool
+	denial        string
+}
+
+// String is the measured state in one line, for the fixture's start log.
+func (c kea6Confinement) String() string {
+	switch {
+	case !c.listRead:
+		return fmt.Sprintf("kea-dhcp6 AppArmor profile: loaded list unreadable, profile file present=%t", c.installed)
+	case c.mode == "":
+		return fmt.Sprintf("kea-dhcp6 AppArmor profile: not loaded, profile file present=%t", c.installed)
+	}
+	return "kea-dhcp6 AppArmor profile: " + c.mode
+}
+
+// kea6ConfinementHint explains why AppArmor did or may have stopped kea-dhcp6, or returns "" (#214).
+func kea6ConfinementHint(c kea6Confinement) string {
+	const paths = "  The fixture keeps every file where the profile allows it: config under /etc/kea/, leases at\n" +
+		"  /var/lib/kea/kea-leases6.csv, the log at /var/log/kea/kea-dhcp6.log, the PID file at /run/kea and the lock at\n" +
+		"  /run/lock/kea. Kea's own stdout and stderr go to a temp file the profile may deny; readiness does not read it.\n"
+	switch {
+	case c.mode == "enforce" && c.denial != "":
+		return "APPARMOR: the kea-dhcp6 profile is enforcing and the kernel logged a denial:\n    " + c.denial + "\n" + paths
+	case c.mode == "enforce" && !c.kernelLogRead:
+		return "APPARMOR: the kea-dhcp6 profile is enforcing and the kernel log could not be read, so no denial was consulted.\n" + paths
+	case c.mode == "enforce":
+		return "APPARMOR: the kea-dhcp6 profile is enforcing; no denial record was found, which does not clear it (records are\n" +
+			"  rate-limited and age out).\n" + paths
+	case !c.listRead && c.installed:
+		return "APPARMOR: a kea-dhcp6 profile is installed and the list of loaded profiles could not be read.\n" + paths
+	}
+	return ""
 }

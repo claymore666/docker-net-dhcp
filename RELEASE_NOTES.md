@@ -1,15 +1,246 @@
 # Release notes
 
-This is a maintained fork of [`devplayer0/docker-net-dhcp`][upstream]. The
-upstream repository has not been updated in several years and does not
-build on current Docker hosts; the goals of this fork are (1) keep the
-plugin building and running on modern Docker, (2) add a macvlan
-attachment mode so containers can pick up DHCP leases from the LAN
-without requiring the operator to maintain a host bridge, and (3)
-incorporate sensible improvements from open upstream PRs and other
-forks that have been waiting on review.
+`docker-net-dhcp` is the successor of [`devplayer0/docker-net-dhcp`][predecessor],
+which has not been updated since 2021 and does not build on current
+Docker hosts. The 1.x line kept that plugin running on modern Docker and
+added the macvlan mode; since 2.0 the plugin runs its own DHCP engine.
+The notes below go back to the first release of this project.
 
-[upstream]: https://github.com/devplayer0/docker-net-dhcp
+[predecessor]: https://github.com/devplayer0/docker-net-dhcp
+
+## v2.4.0
+
+The client reads and sends more DHCP options: Rapid Commit on both address
+families, User Class, FORCERENEW, the Microsoft classless routes, the
+vendor-specific options and the router's PREF64 prefix. IPv6 gains
+temporary addresses and RFC 7217 stable SLAAC identifiers, and a network
+with no DHCPv6 server is remembered for ten minutes. The rest is fixes to
+the attach path, the lease record and the IPv6 route install on engines
+below 28.
+
+### Upgrade notes
+
+**The privilege prompt does not change.** No field `docker plugin upgrade`
+prompts on has moved since v2.0.0. This release changes the manifest's
+`env` list only, by one setting, and the daemon does not prompt on it.
+
+<!-- manifest-delta: begin baseline=v2.3.1 -->
+
+| field | v2.3.1 | v2.4.0 | prompted |
+| --- | --- | --- | --- |
+| `linux.capabilities` | `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | no change |
+| `network.type` | `host` | `host` | no change |
+| `ipchost` | `false` | `false` | no change |
+| `pidhost` | `true` | `true` | no change |
+| `mounts` | `/var/run/docker.sock:bind`, `/var/lib/net-dhcp:rbind,rw`, `/var/run/docker:rbind,ro` | `/var/run/docker.sock:bind`, `/var/lib/net-dhcp:rbind,rw`, `/var/run/docker:rbind,ro` | no change |
+| `propagatedmount` | `(absent)` | `(absent)` | no change |
+| `linux.devices` | `(absent)` | `(absent)` | no change |
+| `linux.allowalldevices` | `false` | `false` | no change |
+| `env` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `STATE_DIR`, `METRICS_ADDR`, `DOCKER_HOST` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `DHCPV6_ABSENCE_MEMORY`, `STATE_DIR`, `METRICS_ADDR`, `DOCKER_HOST` | no: a setting is not a privilege |
+
+<!-- manifest-delta: end -->
+
+| What changed | What it does to you |
+| --- | --- |
+| On a network with IPv6 on, every interface that appears in the container afterwards starts with `accept_ra=0` and `autoconf=0`, where Docker Engine 28 or later creates the sandbox before Join and the daemon's sandbox mounts reach the plugin (`sandbox_netns_propagation` 1) (#1145, PR #1146) | The kernel's own Router Advertisement processing no longer races the engine's IPv6 gateway install at Join. A per-interface `--sysctl` on another link wins on that link. On Docker Engine 26 and 27 the sandbox does not exist at Join yet, so nothing is written, counted or warned and the race stays open there; on engine 28 or later a failed write is counted in `router_advert_guard_failures` and warned with `step=sandbox_default` ([`reference.md`](docs/reference.md)) |
+| An `ipv6_mode=auto` network remembers a silent DHCPv6 server for `DHCPV6_ABSENCE_MEMORY`, ten minutes by default (#1038, PR #1160) | A second endpoint within the window forms its address from the advertised prefix without soliciting. `0` turns the memory off; a granted DHCPv6 address, removing the network or a plugin restart clears it |
+| Every DHCPv4 DISCOVER and REQUEST carries option 145 (#1119, PR #1164) | A server that sends FORCERENEW can now renew a lease with an authenticated message; any other FORCERENEW is refused and counted |
+| A server that sends option 249 and no option 121 gets its routes installed (#1030, PR #1164) | The container has routes it did not have before, the default route among them |
+| The lease record file is compacted on the sweep (#1182, PR #1194) | A container pinned to a MAC that comes back after its lease ran out no longer names its old address in its request |
+| A network on an existing bridge logs the host firewall verdict at create, and again when its first lease attempt runs out of time (#1116, PR #1136) | At create a `warning` line names the bridge and the documented `FORWARD` rule when the host would drop the DHCP frames; at the deadline the verdict is appended to the failed request's error line. Nothing is refused |
+
+### New
+
+- `ipv6_iid=stable-privacy` forms a SLAAC address's interface identifier per
+  RFC 7217 from a secret kept in `STATE_DIR`, so the address does not show the
+  MAC and survives a restart; `eui64` stays the default. Losing the secret
+  file changes every such address at its next formation (#1032, PR #1200).
+- The NAT64 prefix a router advertises (PREF64, RFC 8781) is logged as
+  `nat64` on each lease event that carries it and shown per endpoint as
+  `nat64_prefixes` on `/Plugin.Health`; nothing is installed in the
+  container (#1028, PR #1162).
+- The "DHCP options received" log line carries the DHCPv4 vendor-specific
+  options, hex-encoded and never interpreted: option 43 as `vendor_43` and
+  option 125 as `vendor_125`, one `enterprise:hex` entry per enterprise
+  (#1034, PR #1164).
+- The DHCPv4 client tells the server on every DISCOVER and REQUEST that it can
+  authenticate a FORCERENEW (option 145). An authenticated FORCERENEW renews
+  the lease and any other is refused. Each endpoint's FORCERENEW and DHCPv6
+  Reconfigure counts are logged when they move and served as six health
+  counters, `forcerenews_renewed`, `forcerenews_already_renewing`,
+  `forcerenews_refused`, `forcerenews_ack_refused`, `reconfigures_accepted` and
+  `reconfigures_refused`, none of them `healthy`-affecting (#1119, PRs #1164, #1171).
+- On a DHCPv6 network the "DHCP options received" log line carries the
+  server's timezone options, 41 as `posix_tz` and 42 as `tzdb_tz`, and its
+  NTP servers, option 56, as `ntp`: every instance in the order it arrived,
+  an address as text or a server name as the name. One malformed instance
+  leaves `ntp` out and logs a warning once per server and offer (#1033,
+  #859, PR #1201).
+- A DHCP server that sends the Microsoft classless static routes, option
+  249, and no option 121 now gets its routes installed in the container,
+  and the default route among them replaces option 3's router as 121's
+  does. When both options arrive 121 wins (#1030, PRs #1159, #1164).
+
+- `user_class=` sends the DHCPv4 User Class option 77 (RFC 3004) with the
+  given value in every DISCOVER and REQUEST, for servers that give each
+  class its own policy (#1120, PR #1139).
+- `rapid_commit=true` puts option 80 (RFC 4039) in every DHCPv4 DISCOVER and
+  option 14 (RFC 8415) in every DHCPv6 Solicit. A server that supports it
+  answers with the ACK or the Reply and the lease takes two messages; one
+  that does not answers OFFER or Advertise and the exchange continues
+  unchanged (#1031, PR #1143; #926, PR #1151).
+- `ipv6_temporary=true` asks the DHCPv6 server for a temporary address (an
+  IA_TA) in every Solicit and Request, beside the stable one. Docker is
+  told only the stable address; the temporary one is on `/Plugin.Health` as
+  `ipv6_temporary_address` (#927, PR #1153).
+- `DHCPV6_ABSENCE_MEMORY` (default `10m`) sets how long an `ipv6_mode=auto`
+  network remembers that its DHCPv6 server stayed silent, and
+  `dhcpv6_absence_remembered` counts the endpoints that skipped the wait
+  (#1038, PR #1160).
+- The plugin pins `dhcp-golib` v1.2.0, v1.3.0 and v1.4.0, which carry the
+  library half of the options above (#1137, PR #1138; #1157, PR #1159;
+  #1177, PR #1178).
+
+### Fixed
+
+- Two `docker network create` commands started at the same moment on one
+  parent or one bridge no longer both succeed where the second would have
+  been refused had the first finished. The plugin now counts a network
+  whose creation is still running, or whose record it has saved and Docker
+  does not list yet, as a sibling, with the same refusal message (#1187, PR #1199).
+- On an engine below 28.0 a container with IPv6 no longer fails to start
+  now and then with "failed to set IPv6 gateway" and a link-local
+  gateway route that "could not be found". On those engines the plugin
+  installs the IPv6 default route and the advertised routes via a
+  link-local next hop itself, when the first lease or advertisement
+  arrives, instead of handing them to the engine in Join (#1149, PR #1161).
+- The lease record of a removed network no longer stays held for the
+  life of the plugin, re-read every 15 seconds. Once its restart window
+  has run out and Docker answers that the network no longer exists, the
+  record is closed and nothing is sent; one line at `info` names the
+  network and how many records were closed (#1158, PR #1163).
+- A network removed while the plugin was not running (a stopped or
+  removed plugin, then `docker network rm`) no longer keeps its subnet
+  refused for later `docker network create` calls with "network <id>
+  already holds pool <subnet>". At start, a saved network that Docker
+  answers is gone has its saved file, pool binding and held records
+  removed; a slow or unreachable daemon leaves everything as it is. One
+  line at `info` names each network, and `stale_networks_dropped` on
+  `/Plugin.Health` counts them (#1174, PR #1175).
+- The SLAAC absence-memory integration test no longer fails now and then on
+  a slow runner. Its timing check derives its floor from the 6 s fallback
+  window less the measured spread of the two attaches, instead of assuming
+  the worst case of the Solicit delay; the Solicit count and the counters
+  stay the proof that the second endpoint did not solicit (#1172, PR #1181).
+- The integration lane's lease-file reader no longer calls a lease released
+  because the DHCP server was in the middle of rewriting its lease file. An
+  empty file is read again for up to half a second before the address
+  counts as released; a line that is really gone is still reported within
+  about 40 ms (#1173, PR #1191).
+- A container whose network setup fails, or that is created and removed
+  without ever starting, no longer leaves a pending hint behind for the
+  life of the plugin. `pending_hints` on `/Plugin.Health` returns to zero
+  after either (#1183, PR #1190).
+- The log-once set behind the plugin's read-only Docker API log no longer
+  grows with every inspected container. Container and network ids in a
+  request path count as one call shape; the debug log still writes one
+  line per distinct path (#1184, PR #1190).
+- The integration suite's test binary on the arm64 lane no longer reads the
+  Docker daemon's whole log into memory, which killed it twice with the
+  log at over 840 MB. It now reads the log in small pieces, prints its own
+  memory use as `integration memory:` at exit, and the arm64 lane fails the
+  suite when that use passes 256 MB. The runner image also cuts the daemon
+  log to its last megabyte once it passes 160 MB (#1180, PR #1193).
+- The lease record file `lease-records.jsonl` in `STATE_DIR` no longer
+  grows by about 5 KB per container lifecycle for the life of the host.
+  The plugin compacts it on its sweep once it reaches 256 KiB and twice
+  its size after the last compaction, dropping closed records and held
+  records whose restart window has run out and whose server lease has
+  expired. The cost: a container pinned to a MAC that comes back after
+  its lease ran out no longer names its old address in its request
+  (DHCP option 50), so it keeps that address only if the server keeps
+  it for that client on its own (#1182, PR #1194).
+- With `propagate_dns`, a container's `/etc/resolv.conf` is no longer
+  emptied for a moment on every renewal. The plugin now leaves the file
+  alone when the DHCP-supplied resolvers have not changed, which is
+  almost every renewal, and otherwise overwrites it in place without
+  truncating it first, so a lookup running at that instant no longer
+  finds an empty file and falls back to 127.0.0.1 (#1188, PR #1198).
+- On a host where the daemon's sandbox mounts do reach the plugin, an
+  attach that polled the sandbox key in the moment between Docker
+  creating the empty key file and mounting the namespace over it no
+  longer ends the key route and no longer counts
+  `sandbox_key_not_a_namespace`. The plugin waits up to two poll
+  intervals for the file to become the namespace. A host where it stays an
+  empty file still falls back to the container PID route, after that
+  short wait. Writing the IPv6 sandbox defaults at Join waits the same
+  way and no longer counts a failure for a placeholder that becomes the
+  namespace in time (#1185, PR #1197).
+- With `audit_log=true` the `container` field of the audit log `leases.jsonl` no
+  longer stays empty, or shows Docker's `ep-` placeholder, for the rest of
+  an endpoint's life when the first lookup ran before the container
+  existed or while the daemon was slow. A lookup that finds no container
+  yet, only the placeholder, or fails is repeated on the next entry, and
+  the real container ID is looked up once (#1189, PR #1195).
+- After a Docker restart or at boot, the plugin opens its socket within the
+  time the daemon allows, also on a slow host. Docker enables the plugin
+  before it answers its own API and disables a plugin whose socket is
+  still missing after about 10 seconds. When the plugin cannot reach the
+  daemon at startup, recovery and the second engine check now run after
+  the socket opens, where before the plugin waited about 7 seconds on the
+  daemon first (#1176, PR #1179).
+- The reference no longer says the IPv6 defaults write in `Join` takes on
+  every Docker Engine 28+ host: it takes only where the daemon's sandbox
+  mounts reach the plugin (`sandbox_netns_propagation` 1), and is otherwise
+  skipped, counted and warned (#1165, PR #1166).
+- The integration cleanup step also drops the plugin's state records of
+  networks the engine no longer has, so a killed run cannot refuse the
+  next run's IPAM networks (#1165, PR #1166; the plugin-side fix is #1174, PR #1175).
+- A container that is still starting when the attach budget runs out is
+  no longer counted as one that went away. On engines 26 and 27 the
+  sandbox key does not exist until after the plugin's Join returns, so a
+  slow start looked like a vanished container, logged at Info, with no
+  renewal client and `healthy` still true. The plugin now asks the
+  daemon before counting a vanish: only "no such container", exited or
+  dead counts; a running container, an error or no answer is a start
+  failure (`join_start_failures`) (#1186, PR #1196).
+- A macvlan `passthru` network changed its parent's MAC: a passthru child
+  shares the parent's MAC, so the random MAC the plugin pinned onto the child
+  landed on the parent. The pin now takes the parent's MAC for passthru
+  (#1147, PR #1150).
+- The bridge-mode firewall test no longer fails on a host where
+  `br_netfilter` is not loaded; the hosted lane loads it and reads
+  `bridge-nf-call-iptables` back (#1148, PR #1150).
+- The DHCPv4 and DHCPv6 four-message integration tests assert the exchange's
+  property and no longer fail on a repeated DISCOVER (#1154, PRs #1155,
+  #1156).
+- The integration harness bounds every plugin log read and takes its marks
+  from `Stat` (#1168, PR #1169), and confirms an absent lease line before it
+  calls a lease released (#1167, PR #1170).
+- The engine-matrix option loop reads the option catalogue from its own
+  descriptor and counts what ran; before, it stopped after `macvlan_mode`
+  and 29 of 37 catalogue entries were never driven (#1141, PR #1142).
+- The coverage lane had no floor per function for `pkg/plugin`; it now
+  reports one, as a table in the summary and as an artifact (#1117,
+  PR #1134).
+- The docs say what the plugin never asks for: IPv6-Only Preferred
+  (option 108) is never requested, and a guard keeps it so (#1027,
+  PR #1152). The docs call the project the successor of
+  `devplayer0/docker-net-dhcp`, and not a fork, in the README, the release
+  notes preamble, the governance document, the badge answers and the Docker
+  Hub text (PRs #1131, #1133). The systemd-networkd bridge recipe
+  says what happens on a cloud image, where cloud-init's own `.network`
+  file for the NIC wins (PR #1122).
+
+### Deferred
+
+- DHCPv6 prefix delegation (IA_PD), designed first (#214): moved to v2.5.0.
+  Only its Kea DHCPv6 test fixture, the DHCPv6 server of the integration
+  lane, is in this release (PR #1144).
+- The plugin's logging of DHCPv6 option 17 (vendor-specific information), the
+  v6 half of #1034: left the v2.4.0 milestone for v2.5.0 (#1203). The library
+  half is in the v1.4.0 pin (#1177) and the DHCPv4 half, options 43 and 125,
+  is in this release (PR #1164).
 
 ## v2.3.1
 
@@ -1052,13 +1283,11 @@ table are read differently: the first is what the prompt shows you, the
 second is not prompted at all.
 
 Every cell below is the full set for that field, not a description of how
-it changed. `scripts/check-manifest-delta-table.sh` derives both columns,
-the left from `v1.9.0:config.json` in git and the right from the manifest
-in the tree, and fails if either disagrees with what is written here. The
+it changed. `scripts/check-manifest-delta-table.sh` derived both columns
+at release, the left from `v1.9.0:config.json` in git and the right from
+the v2.0.0 manifest; it now checks the newest section's table instead. The
 `prompted` column is not derived: which fields the daemon prompts on is a
 property of Docker, not of this manifest.
-
-<!-- manifest-delta: begin baseline=v1.9.0 -->
 
 | field | v1.9.0 | v2.0.0 | prompted |
 | --- | --- | --- | --- |
@@ -1071,8 +1300,6 @@ property of Docker, not of this manifest.
 | `linux.devices` | `(absent)` | `(absent)` | no change |
 | `linux.allowalldevices` | `false` | `false` | **yes**, when true |
 | `env` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `STATE_DIR`, `OUTAGE_TICK`, `OUTAGE_GRACE`, `METRICS_ADDR` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `STATE_DIR`, `METRICS_ADDR`, `DOCKER_HOST` | no: a setting is not a privilege |
-
-<!-- manifest-delta: end -->
 
 Read the `env` row against **Removed plugin settings** below: the delta
 is one added and two removed, not one added. `OUTAGE_TICK` and

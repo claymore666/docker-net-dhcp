@@ -37,17 +37,23 @@ type RASender struct {
 	fd    int
 	dst   unix.SockaddrInet6
 
-	mu   sync.Mutex
-	spec RASpec
-	sent []time.Time
+	mu       sync.Mutex
+	spec     RASpec
+	sent     []time.Time
+	interval time.Duration
 
 	stopOnce sync.Once
 	stop     chan struct{}
 	done     chan struct{}
 }
 
-// StartRASender sends spec at once and then every RASenderInterval until the test ends.
 func StartRASender(t V6FixtureT, iface string, spec RASpec) *RASender {
+	t.Helper()
+	return StartRASenderEvery(t, iface, spec, RASenderInterval)
+}
+
+// StartRASenderEvery sends spec at once and then every interval; under RASenderInterval it breaks RFC 4861 6.2.1 on purpose (#1145).
+func StartRASenderEvery(t V6FixtureT, iface string, spec RASpec, interval time.Duration) *RASender {
 	t.Helper()
 	link, err := net.InterfaceByName(iface)
 	if err != nil {
@@ -58,13 +64,14 @@ func StartRASender(t V6FixtureT, iface string, spec RASpec) *RASender {
 		t.Fatalf("RA sender on %s: %v", iface, err)
 	}
 	s := &RASender{
-		t:     t,
-		iface: iface,
-		fd:    fd,
-		dst:   unix.SockaddrInet6{ZoneId: uint32(link.Index)},
-		spec:  spec,
-		stop:  make(chan struct{}),
-		done:  make(chan struct{}),
+		t:        t,
+		iface:    iface,
+		fd:       fd,
+		dst:      unix.SockaddrInet6{ZoneId: uint32(link.Index)},
+		spec:     spec,
+		stop:     make(chan struct{}),
+		done:     make(chan struct{}),
+		interval: interval,
 	}
 	copy(s.dst.Addr[:], net.IPv6linklocalallnodes)
 	go s.run()
@@ -104,7 +111,7 @@ func openRASocket(iface string, index int) (int, error) {
 
 func (s *RASender) run() {
 	defer close(s.done)
-	tick := time.NewTicker(RASenderInterval)
+	tick := time.NewTicker(s.interval)
 	defer tick.Stop()
 	for {
 		select {

@@ -14,7 +14,8 @@ type Info struct {
 	// MTU is option 26; 0 means leave the link MTU alone, and a renewal re-applies only a changed value (#101).
 	MTU int `json:",omitempty"`
 
-	// NTPServers is option 42, logged on bind and renew and never applied to the container (#105).
+	// NTPServers is option 42 (v4) or 56 (v6, one entry per instance, wire order), logged on bind and renew and never
+	// applied to the container (#105, #859).
 	NTPServers []string `json:",omitempty"`
 
 	// SearchList is option 119, the resolv.conf `search` line under PropagateDNS, falling back to Domain (option 15)
@@ -27,12 +28,17 @@ type Info struct {
 	// BootFile is option 67, logged like TFTPServer (#105).
 	BootFile string `json:",omitempty"`
 
-	// WPAD (option 252), the RFC 4833 timezones (options 100 and 101) and TimeOffset (option 2) are logged only, never
-	// pushed into the container, to keep the no-plumbing bar (#262).
+	// WPAD (option 252), the RFC 4833 timezones (options 100 and 101 on v4, 41 and 42 on v6) and TimeOffset (option 2) are
+	// logged only, never pushed into the container, to keep the no-plumbing bar (#262, #1033).
 	WPAD          string `json:",omitempty"`
 	PosixTimezone string `json:",omitempty"`
 	TZDBTimezone  string `json:",omitempty"`
 	TimeOffset    string `json:",omitempty"`
+
+	// VendorSpecific is option 43's bytes, hex-encoded, and VendorIdentifying is option 125's blocks, one per enterprise
+	// in wire order; both are logged only and never read (RFC 2132 section 8.4, RFC 3925 section 4, #1034).
+	VendorSpecific    string        `json:",omitempty"`
+	VendorIdentifying []VendorBlock `json:",omitempty"`
 
 	// A default route is never here: RFC 3442 folds 0.0.0.0/0 into Gateway and RFC 4191 section 2.3's ::/0 means the
 	// same, and a copy would race the default route Docker installs (#821).
@@ -49,6 +55,9 @@ type Info struct {
 	OnLinkPrefixes []string `json:",omitempty"`
 	// WithdrawnOnLinkPrefixes are those options carrying Valid Lifetime 0; v6 only.
 	WithdrawnOnLinkPrefixes []string `json:",omitempty"`
+
+	// NAT64Prefixes are RFC 8781 section 4's PREF64 options as CIDR; logged and reported, never applied (#1028).
+	NAT64Prefixes []string `json:",omitempty"`
 
 	// RFC 9915 section 18.2.1's Solicit does not wait for router discovery, so an MTU of 0 before an advertisement is
 	// silence while an MTU of 0 after one is a withdrawal; folding them flips the link MTU per event (#821).
@@ -79,6 +88,10 @@ type Info struct {
 	// Addrs is every address a DHCPv6 or SLAAC lease holds, IP being the one reported to Docker; empty for v4.
 	Addrs []V6Addr `json:",omitempty"`
 
+	// TempAddrs is the IA_TA addresses beside Addrs and never inside it, so none is ever IP, the one reported to Docker
+	// (#927).
+	TempAddrs []V6Addr `json:",omitempty"`
+
 	// SLAAC says the addresses were formed from an advertisement (RFC 4862 section 5.5.3), not granted by a server
 	// (#818).
 	SLAAC bool `json:",omitempty"`
@@ -104,6 +117,13 @@ type V6Addr struct {
 	// Deprecated says the preferred lifetime has elapsed, RFC 4862 section 5.5.4's "SHOULD NOT be used to initiate new
 	// communications".
 	Deprecated bool `json:",omitempty"`
+}
+
+// VendorBlock is one enterprise's block of option 125; Data is hex, so a server's bytes cannot reach a log as text
+// (#1034, #703).
+type VendorBlock struct {
+	Enterprise uint32
+	Data       string
 }
 
 // Route is a single classless static route from DHCP option 121.

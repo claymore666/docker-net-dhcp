@@ -79,8 +79,8 @@ const recoveryBudget = 30 * time.Second
 // recoveryPerNetworkTimeout caps each recovery Docker call so one wedged call cannot consume recoveryBudget (#76).
 const recoveryPerNetworkTimeout = 3 * time.Second
 
-// recoverySyncDaemonWait caps the pre-Listen wait for the daemon, which respawns the plugin during its own startup
-// and adds this window to plugin-enable latency (#383). On expiry recovery moves to the post-Listen retry.
+// recoverySyncDaemonWait caps the pre-Listen wait for a daemon that answered the engine probe but has no network
+// store yet (#383); a daemon the probe could not reach is not waited on (#1176). On expiry recovery moves to Listen.
 const recoverySyncDaemonWait = 3 * time.Second
 
 // recoveryDeferredDaemonWait caps the post-Listen retry, cheap because the socket already serves.
@@ -223,8 +223,13 @@ type DHCPNetworkOptions struct {
 	IPv6AutoStrict bool `mapstructure:"ipv6_auto_strict"`
 	// IPv6MainPrefix, a CIDR, picks which SLAAC address Docker is told about, since RFC 4862 section 5.5.3 forms one
 	// per autonomous prefix; unset or unmatched uses the first advertised prefix (#818).
-	IPv6MainPrefix string        `mapstructure:"ipv6_main_prefix"`
-	LeaseTimeout   time.Duration `mapstructure:"lease_timeout"`
+	IPv6MainPrefix string `mapstructure:"ipv6_main_prefix"`
+	// IPv6Temporary puts an IA_TA (RFC 8415 section 21.5) beside the IA_NA in every Solicit and Request (#927).
+	IPv6Temporary bool `mapstructure:"ipv6_temporary"`
+	// IPv6IID is how SLAAC forms the interface identifier: eui64 (unset) from the MAC, or stable-privacy per RFC 7217
+	// from a secret in STATE_DIR (#1032).
+	IPv6IID      string        `mapstructure:"ipv6_iid"`
+	LeaseTimeout time.Duration `mapstructure:"lease_timeout"`
 	// IgnoreConflicts skips CreateNetwork's check for another Docker network on this bridge or range; it is unrelated
 	// to conflict_check's RFC 5227 detection on the wire.
 	IgnoreConflicts bool `mapstructure:"ignore_conflicts"`
@@ -242,6 +247,10 @@ type DHCPNetworkOptions struct {
 	ClientID string `mapstructure:"client_id"`
 	// VendorClass overrides option 60, default "docker-net-dhcp", for class-based server policy.
 	VendorClass string `mapstructure:"vendor_class"`
+	// UserClass is the one class value of DHCPv4 option 77 (RFC 3004), 1 to 254 octets; empty sends no option (#1120).
+	UserClass string `mapstructure:"user_class"`
+	// RapidCommit puts option 80 (RFC 4039) in every DISCOVER and option 14 (RFC 8415 18.2.1) in every Solicit (#1031, #926).
+	RapidCommit bool `mapstructure:"rapid_commit"`
 	// ValidateDHCP runs a one-shot DHCP probe on a macvlan or ipvlan parent at CreateNetwork (#108).
 	ValidateDHCP bool `mapstructure:"validate_dhcp"`
 	// RegisterDNS sends the hostname in option 81 (v4) and 39 (v6) with S=1; without it v6 sends no name (#261, #1029).
@@ -410,6 +419,10 @@ type Options struct {
 	// AwaitTimeout caps the polling helpers (sandbox readiness, link rename, netns appearance).
 	AwaitTimeout time.Duration
 
+	// DHCPv6AbsenceMemory is how long an auto network remembers a silent DHCPv6 server; nil is the default, zero is
+	// off (#1038).
+	DHCPv6AbsenceMemory *time.Duration
+
 	// RequestCaptureDir tees libnetwork request bodies into that directory for replay fixtures, test builds only
 	// (#644).
 	RequestCaptureDir string
@@ -425,8 +438,9 @@ type Plugin struct {
 	docker dockerClient
 
 	// engine is the startup probe's result, swapped atomically so a reader never mixes two probes (#670).
-	engine atomic.Pointer[engineIdentity]
-	server http.Server
+	engine         atomic.Pointer[engineIdentity]
+	daemonAnswered atomic.Bool
+	server         http.Server
 
 	// metricsServer is the optional METRICS_ADDR listener, a separate server serving only /metrics, since p.server
 	// carries every libnetwork RPC with CAP_NET_ADMIN, CAP_SYS_ADMIN and CAP_SYS_PTRACE (#772).
@@ -451,6 +465,11 @@ type Plugin struct {
 	bridgeMu      sync.Mutex
 	bridgePending map[string]int
 
+	// createMu guards creating, the CreateNetwork calls not yet returned, in no network list; a leaf lock (#1187).
+	createMu  sync.Mutex
+	createSeq uint64
+	creating  map[string]pendingCreate
+
 	// tombstones serialises tombstones.json and is never held with mu; scripts/check-lock-discipline.sh enforces it.
 	tombstones tombstoneStore
 
@@ -467,7 +486,8 @@ type Plugin struct {
 	recoveryDeferred atomic.Int32
 
 	// recoveryPending is set by NewPlugin when recovery must be retried after Listen, and consumed there.
-	recoveryPending bool
+	recoveryPending      bool
+	engineReprobePending bool
 
 	// recoveryCancel stops the deferred-recovery goroutine at Close; nil when recovery finished synchronously.
 	recoveryCancel context.CancelFunc
@@ -599,6 +619,13 @@ type Plugin struct {
 	ipamPools    *issuedPools
 	ipamIndex    *ipamIndex
 	ipamReserves *ipamReserves
+	// persistedAtStart is the state directory's network ids as read before the socket listened; dropStaleNetworks
+	// consumes it once, under staleMu (#1174).
+	persistedAtStart []string
+	staleMu          sync.Mutex
+	// staleNetworksDropped counts persisted networks Docker answered not-found for at recovery, whose file and pool
+	// binding were removed (#1174); not healthy-affecting.
+	staleNetworksDropped atomic.Int32
 	// recordSweepStop ends the record sweeper; closed by Close, which refuses to run twice (#984).
 	recordSweepStop chan struct{}
 
@@ -734,6 +761,13 @@ type Plugin struct {
 	// client each fall back on a silent server, and the counter counts endpoints (#1016).
 	autoFallbackCounted sync.Map
 
+	// dhcpv6AbsenceRemembered counts auto attaches that skipped the Solicit because v6Absence remembered a silent
+	// server (#1038).
+	dhcpv6AbsenceRemembered atomic.Int32
+	v6Absence               v6AbsenceMemory
+	// v6AbsenceServed holds the endpoint IDs whose attach v6Absence served, so their persistent client runs slaac too.
+	v6AbsenceServed sync.Map
+
 	// ipv6LinkEnableFailures counts links whose engine-set disable_ipv6=1 could not be cleared (#868); nothing IPv6
 	// arrives on such a link, so it would otherwise read as a DHCPv6 timeout.
 	ipv6LinkEnableFailures atomic.Int32
@@ -758,8 +792,8 @@ type Plugin struct {
 	// (#818).
 	ipv6MainPrefixUnmatched atomic.Int32
 
-	// routerAdvertGuardFailures counts RA guard steps that failed, a sysctl write or read-back, at most six per
-	// endpoint (#875). A failed guard looks healthy until the router lifetime expires, since DHCPv6 carries no router
+	// routerAdvertGuardFailures counts RA guard steps that failed, a sysctl write or read-back, at most eight per
+	// endpoint, two of them at Join (#875, #1145). A failed guard looks healthy until the router lifetime expires, since DHCPv6 carries no router
 	// (RFC 9915 section 21, RFC 5942 section 4). A privileged container process rewriting the knobs is not counted
 	// (D30 Q3).
 	routerAdvertGuardFailures atomic.Int32
@@ -773,6 +807,16 @@ type Plugin struct {
 	routerAdvertOptionsIgnored atomic.Int32
 	routerTableEntriesDropped  atomic.Int32
 	routerTableEntriesEvicted  atomic.Int32
+
+	// The library's FORCERENEW (RFC 3203, RFC 6704) and DHCPv6 Reconfigure counters, folded from every manager,
+	// persistent and one-shot (#1119). Refused is not a fault count: a resumed lease holds no key and a client with
+	// AcceptReconfigure off refuses every Reconfigure while working as asked, so none of the six affects healthy.
+	forcerenewsRenewed         atomic.Int32
+	forcerenewsAlreadyRenewing atomic.Int32
+	forcerenewsAckRefused      atomic.Int32
+	forcerenewsRefused         atomic.Int32
+	reconfiguresAccepted       atomic.Int32
+	reconfiguresRefused        atomic.Int32
 
 	// ipv6RouterWithdrawn counts default routes removed after a Router Lifetime 0 (RFC 4861 sections 4.2 and 6.3.4),
 	// counting removals since a shutting-down router sends several (section 6.2.5) (#821). Not healthy-affecting.
@@ -1061,6 +1105,7 @@ func (p *Plugin) recoverEndpoints(ctx context.Context, daemonWait time.Duration)
 			Warn("recovery: daemon did not answer within the wait budget")
 		return true
 	}
+	p.dropStaleNetworks(ctx, nets)
 	for _, n := range nets {
 		if !IsDHCPPlugin(n.Driver) {
 			continue
@@ -1331,6 +1376,9 @@ func (p *Plugin) lookupEndpointMAC(ctx context.Context, networkID, endpointID st
 	return "", fmt.Errorf("endpoint %v not found in network %v's container list", endpointID, networkID)
 }
 
+// reacquireEndpointFn is a var so a Join test reaches the no-hint branch without a veth (#1145).
+var reacquireEndpointFn = (*Plugin).reacquireEndpoint
+
 // reacquireEndpoint reruns CreateEndpoint for a Join with no hint, as on `docker restart`; ipvlan and passthru get
 // no MAC, since their child wears the parent's (#905).
 func (p *Plugin) reacquireEndpoint(ctx context.Context, r JoinRequest, opts DHCPNetworkOptions) error {
@@ -1412,6 +1460,7 @@ func NewPlugin(opts Options) (*Plugin, error) {
 		ipamIndex:    newIPAMIndex(),
 		ipamReserves: newIPAMReserves(),
 	}
+	p.v6Absence.window = absenceWindowFor(opts)
 
 	// The Docker client is built after p, since the GET-only transport counts refusals on p (#691).
 	client, err := newDockerClient(dockerHostFromEnv(os.Getenv), &p)
@@ -1445,7 +1494,7 @@ func NewPlugin(opts Options) (*Plugin, error) {
 	}
 
 	// Before the socket listens: libnetwork.New replays RequestPool and RequestAddress before serving its API (#110).
-	rebuildIPAMIndex(p.ipamIndex)
+	p.persistedAtStart = rebuildIPAMIndex(p.ipamIndex)
 	retainOrphanedReservations(p.records, time.Now())
 
 	mux := p.newServeMux()
@@ -1462,22 +1511,34 @@ func NewPlugin(opts Options) (*Plugin, error) {
 
 	// No orphan sweep: the DHCP client is an in-process goroutine; a lease left unrenewed is resumed via the record.
 
-	// Recovery runs before NewPlugin returns, so a CreateEndpoint cannot race recovery's Start; recoveryBudget bounds
-	// enable latency. A daemon not serving yet defers recovery to Listen (#383).
-	{
-		ctx, cancel := context.WithTimeout(context.Background(), recoveryBudget)
-		p.recoveryPending = p.recoverEndpoints(ctx, recoverySyncDaemonWait)
-		cancel()
-	}
-
-	// Re-probe the engine if it came up after the probe above; a no-op otherwise (#670).
-	p.reprobeEngine(context.Background())
+	p.startRecovery()
 	// The record sweeper starts last, after recovery adopted running containers: it drops unclaimed IPAM reservations
 	// and runs `release_lease=on_remove`'s deferred releases (#984).
 	p.recordSweepStop = make(chan struct{})
 	go p.recordSweeper(p.recordSweepStop)
 
 	return &p, nil
+}
+
+// startRecovery runs before Listen, so a CreateEndpoint cannot race recovery's Start. A daemon the probe could not
+// reach is not waited on: dockerd disables the plugin if its socket is missing ~10 s after the start (#1176).
+func (p *Plugin) startRecovery() {
+	if !p.daemonAnsweredAtStart() {
+		log.WithField("probe_timeout", engineProbeTimeout).
+			Info("startup: the daemon did not answer the engine probe; recovery and the engine check run after the socket opens")
+		p.recoveryPending = true
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), recoveryBudget)
+	p.recoveryPending = p.recoverEndpoints(ctx, recoverySyncDaemonWait)
+	cancel()
+	// The daemon answered but the version query failed: Listen asks again once the socket serves, off the clock (#1176).
+	p.engineReprobePending = !p.recoveryPending && !p.engineAnswered()
+}
+
+func (p *Plugin) engineAnswered() bool {
+	cur := p.engine.Load()
+	return cur != nil && cur.Version != unknownEngineField
 }
 
 // Listen starts the plugin server
@@ -1504,6 +1565,10 @@ func (p *Plugin) Listen(bindSock string) error {
 		ctx, cancel := context.WithCancel(context.Background())
 		p.recoveryCancel = cancel
 		go p.recoverEndpointsDeferred(ctx, recoveryDeferredDaemonWait)
+	}
+	if p.engineReprobePending {
+		p.engineReprobePending = false
+		go p.reprobeEngine(context.Background())
 	}
 
 	return p.server.Serve(l)

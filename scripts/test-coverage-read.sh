@@ -485,5 +485,84 @@ else
   echo "FAIL the pre-fix reader could not be built from the real script"; fail=$((fail+1))
 fi
 
+# --- THE LOG FETCH ON gh 2.101 (#1117) ---------------------------------
+# gh 2.101 will not print a job log that carries terminal escape sequences
+# unless `gh api` gets --allow-escape-sequences; an older gh rejects that
+# flag. The fake below behaves as each of the two, keyed on FAKE_GH, and
+# ignores nothing: the new one answers an unflagged log request with the
+# real refusal text on stderr and an empty stdout, the old one fails an
+# unknown flag the way cobra does. The reader is run through its real `gh`
+# code path (no COVREAD_LOG).
+FAKEBIN="$D/fakebin"; mkdir -p "$FAKEBIN"
+cp "$D/log.full" "$D/fake-log"
+cat > "$FAKEBIN/gh" <<'GH'
+#!/usr/bin/env bash
+case "$1" in
+  run) echo 4242; exit 0 ;;
+  api)
+    if [ "${2-}" = "--help" ]; then
+      echo "Usage: gh api <endpoint> [flags]"
+      echo "      --hostname string   The GitHub hostname"
+      [ "$FAKE_GH" = new ] && echo "      --allow-escape-sequences   Allow printing terminal escape sequences"
+      exit 0
+    fi
+    flagged=no
+    for a in "$@"; do [ "$a" = "--allow-escape-sequences" ] && flagged=yes; done
+    if [ "$FAKE_GH" = new ] && [ "$flagged" = no ]; then
+      echo "the response contains terminal escape sequences; pass --allow-escape-sequences to output it anyway" >&2
+      exit 0
+    fi
+    if [ "$FAKE_GH" = old ] && [ "$flagged" = yes ]; then
+      echo "unknown flag: --allow-escape-sequences" >&2
+      exit 1
+    fi
+    cat "$FAKE_LOG"
+    exit 0 ;;
+esac
+exit 1
+GH
+chmod +x "$FAKEBIN/gh"
+rungh() { # $1 = reader script, $2 = new|old
+  PATH="$FAKEBIN:$PATH" FAKE_GH="$2" FAKE_LOG="$D/fake-log" COVREAD_BASE_DEV="$D/dev.base" COVREAD_BASE_MAIN="$D/main.base" \
+    bash "$1" 4242
+}
+O=$(rungh "$READER" new 2>&1); X=$(rungh "$READER" new >/dev/null 2>&1; echo $?)
+chk "gh 2.101: the log is fetched with the flag and read" "$O" "every one of the 5 baselined package(s) got a verdict."
+eq  "gh 2.101: exit 0"                                    "$X" "0"
+O=$(rungh "$READER" old 2>&1); X=$(rungh "$READER" old >/dev/null 2>&1; echo $?)
+chk "older gh: no flag is passed and the log is read"     "$O" "every one of the 5 baselined package(s) got a verdict."
+eq  "older gh: exit 0"                                    "$X" "0"
+
+PRE_FETCH="$D/coverage-read-noflag.sh"
+if python3 - "$READER" "$PRE_FETCH" <<'SURGERY'
+import sys
+src = open(sys.argv[1]).read()
+cut = src.replace(' ${apiflags[@]+"${apiflags[@]}"}', '')
+assert cut != src, "the flag is gone from the reader: this control is inert"
+open(sys.argv[2], "w").write(cut)
+SURGERY
+then
+  O=$(rungh "$PRE_FETCH" new 2>&1); X=$(rungh "$PRE_FETCH" new >/dev/null 2>&1; echo $?)
+  chk "gh 2.101: the pre-fix reader sees an empty log (the defect)" "$O" "the log is empty"
+  eq  "gh 2.101: ...and refuses with exit 2"                        "$X" "2"
+else
+  echo "FAIL the pre-fix fetch could not be built from the real script"; fail=$((fail+1))
+fi
+
+# --- FUNCTION VERDICT LINES ARE NOT PACKAGE VERDICTS (#1117) ------------
+# The ratchet prints one FUNC-OK / FUNC-FAIL line per floored function
+# into the same step region. The package grep is unanchored, so a spelling
+# that matched it would add verdicts for packages nobody baselined.
+{ echo "$ratchetcmd"; verdicts
+  echo "FUNC-OK $P/pkg/plugin.CreateEndpoint measured 91.5% floor 91.5%"
+  echo "FUNC-FAIL $P/pkg/plugin.Join measured 40.0% is below its floor 83.5% (epsilon 0.5)"
+  echo "FUNC-FAIL $P/pkg/plugin.Leave is floored at 96.3% but has no row in the merged function table"
+  echo "FUNC-CHECK 3 floors from the merge base abc, 2 failed"
+} | freshgroup "Coverage ratchet" > "$D/log.func"
+O=$(run "$D/log.func"); X=$(runx "$D/log.func")
+chk "func lines: still 5 of 5"        "$O" "every one of the 5 baselined package(s) got a verdict."
+no  "func lines: no UNBASELINED flag" "$O" "*** UNBASELINED"
+eq  "func lines: same exit as the log without them" "$X" "$(runx "$D/log.full")"
+
 echo; echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

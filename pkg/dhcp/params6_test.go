@@ -200,6 +200,75 @@ func TestBuildParams6_RegisterDNSPutsTheNameInOption39(t *testing.T) {
 	}
 }
 
+func TestBuildParams6_RapidCommitIsOffByDefault(t *testing.T) {
+	p, err := buildParams6(testOpts6(t), false)
+	if err != nil {
+		t.Fatalf("buildParams6: %v", err)
+	}
+	if p.RapidCommit {
+		t.Fatal("Params6.RapidCommit = true on a network without rapid_commit; the Solicit would ask for option 14 (#926)")
+	}
+	if got, err := firstSolicit6(t, p).Options.RapidCommit(); err != nil || got {
+		t.Errorf("the default Solicit carries option 14 %v (err %v), want it absent (#926)", got, err)
+	}
+}
+
+func TestBuildParams6_RapidCommitPutsOption14InTheSolicit(t *testing.T) {
+	opts := testOpts6(t)
+	opts.RapidCommit = true
+	p, err := buildParams6(opts, false)
+	if err != nil {
+		t.Fatalf("buildParams6: %v", err)
+	}
+	if !p.RapidCommit {
+		t.Fatal("Params6.RapidCommit = false on a rapid_commit network: option 14 is never asked for (#926)")
+	}
+	got, err := firstSolicit6(t, p).Options.RapidCommit()
+	if err != nil || !got {
+		t.Fatalf("the Solicit carries option 14 %v (err %v), want it present and empty (RFC 8415 section 21.14, #926)", got, err)
+	}
+}
+
+// A requested address leaves Params6.Hint set beside option 14 in the Solicit (RFC 8415 section 18.2.1, #926).
+func TestBuildParams6_RapidCommitBesideTheRequestedAddress(t *testing.T) {
+	opts := testOpts6(t)
+	opts.RapidCommit = true
+	opts.PreferredV6 = "fd00::10"
+	p, err := buildParams6(opts, false)
+	if err != nil {
+		t.Fatalf("buildParams6: %v", err)
+	}
+	if p.Hint.String() != "fd00::10" {
+		t.Fatalf("Params6.Hint = %v beside rapid_commit, want fd00::10: the requested address is lost (#926)", p.Hint)
+	}
+	if got, err := firstSolicit6(t, p).Options.RapidCommit(); err != nil || !got {
+		t.Errorf("the Solicit with a hint carries option 14 %v (err %v), want it present (#926)", got, err)
+	}
+}
+
+// slaac sends no Solicit, so rapid_commit on such a network changes nothing on the wire (#926).
+func TestBuildParams6_RapidCommitInSLAACSendsNoSolicit(t *testing.T) {
+	opts := testOpts6(t)
+	opts.Mode6 = proto.Mode6SLAAC
+	opts.MAC = []byte{0x02, 0x42, 0xac, 0x11, 0x00, 0x02}
+	opts.RapidCommit = true
+	p, err := buildParams6(opts, true)
+	if err != nil {
+		t.Fatalf("buildParams6: %v", err)
+	}
+	m, err := proto.New6(p)
+	if err != nil {
+		t.Fatalf("proto.New6 refused rapid_commit in slaac: %v; a network with the key must still come up", err)
+	}
+	_, acts := m.Step(0, 0, proto.Simple(proto.EvStart))
+	_, more := m.Step(proto.Instant(proto.Second), 1, proto.TimerFired(proto.Timer6Delay))
+	for _, a := range append(acts, more...) {
+		if a.Kind == proto.ActSendV6 && a.MsgV6 != nil && a.MsgV6.Type == wire.MsgSolicit {
+			t.Fatalf("slaac sent a Solicit %v; option 14 would reach a DHCPv6 server the mode never asks (#926)", a.MsgV6)
+		}
+	}
+}
+
 func TestBuildParams6_NoRegisterDNSSendsNoName(t *testing.T) {
 	opts := testOpts6(t)
 	opts.Hostname = "web1"
@@ -246,5 +315,33 @@ func TestBuildParams6_LongLabelIsRefusedWhereV4RefusesIt(t *testing.T) {
 	}
 	if _, err := proto.New6(p); err != nil {
 		t.Errorf("v6 without register_dns refused a 64-octet hostname it never sends: %v", err)
+	}
+}
+
+func TestBuildParams6_IPv6TemporaryIsOffByDefault(t *testing.T) {
+	p, err := buildParams6(testOpts6(t), false)
+	if err != nil {
+		t.Fatalf("buildParams6: %v", err)
+	}
+	if p.Temporary {
+		t.Fatal("Params6.Temporary = true on a network without ipv6_temporary; the Solicit would carry an IA_TA (#927)")
+	}
+	if n := firstSolicit6(t, p).Options.Count(wire.OptV6IATA); n != 0 {
+		t.Errorf("the default Solicit carries %d IA_TA option(s), want none (#927)", n)
+	}
+}
+
+func TestBuildParams6_IPv6TemporaryPutsOneIATAInTheSolicit(t *testing.T) {
+	opts := testOpts6(t)
+	opts.IPv6Temporary = true
+	p, err := buildParams6(opts, false)
+	if err != nil {
+		t.Fatalf("buildParams6: %v", err)
+	}
+	if !p.Temporary {
+		t.Fatal("Params6.Temporary = false on an ipv6_temporary network: the IA_TA is never asked for (#927)")
+	}
+	if n := firstSolicit6(t, p).Options.Count(wire.OptV6IATA); n != 1 {
+		t.Errorf("the Solicit carries %d IA_TA option(s), want exactly one (RFC 8415 section 21.5, #927)", n)
 	}
 }

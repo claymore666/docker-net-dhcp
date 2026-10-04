@@ -8,6 +8,7 @@ import (
 	"errors"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -244,5 +245,113 @@ func TestRestartLinkUpCounters_AreNotHealthyAffecting(t *testing.T) {
 	if h.RestartLinkUpWaited != 3 || h.RestartLinkUpTimeouts != 2 {
 		t.Errorf("counters not reported: waited=%d timeouts=%d, want 3 and 2",
 			h.RestartLinkUpWaited, h.RestartLinkUpTimeouts)
+	}
+}
+
+func TestPinChildMAC_PassthruPinsTheParentsMACNotTheChilds(t *testing.T) {
+	parentMAC := net.HardwareAddr{0x5a, 0xa3, 0xda, 0x29, 0x72, 0x98}
+	childMAC := net.HardwareAddr{0xbe, 0xf2, 0x27, 0x8b, 0x4e, 0x1c}
+	parent := &netlink.Device{LinkAttrs: netlink.LinkAttrs{Name: "eth-par", HardwareAddr: parentMAC}}
+	child := func() netlink.Link {
+		return &netlink.Macvlan{LinkAttrs: netlink.LinkAttrs{Name: "dh-child", HardwareAddr: childMAC}}
+	}
+	for _, c := range []struct {
+		name    string
+		opts    DHCPNetworkOptions
+		user    bool
+		wantMAC net.HardwareAddr
+		wantPin net.HardwareAddr
+	}{
+		{"passthru whose child MAC differs from the parent's is pinned to the parent's (#1147)",
+			DHCPNetworkOptions{Mode: ModeMacvlan, MacvlanMode: MacvlanModePassthru}, false, parentMAC, parentMAC},
+		{"macvlan bridge keeps pinning the child's own MAC (#103)",
+			DHCPNetworkOptions{Mode: ModeMacvlan, MacvlanMode: MacvlanModeBridge}, false, childMAC, childMAC},
+		{"macvlan with no sub-mode keeps pinning the child's own MAC (#103)",
+			DHCPNetworkOptions{Mode: ModeMacvlan}, false, childMAC, childMAC},
+		{"macvlan with a user MAC is not pinned again",
+			DHCPNetworkOptions{Mode: ModeMacvlan, MacvlanMode: MacvlanModeBridge}, true, childMAC, nil},
+		{"ipvlan is never pinned, the kernel refuses it",
+			DHCPNetworkOptions{Mode: ModeIPvlan}, false, childMAC, nil},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			prev := nlLinkSetHardwareAddr
+			t.Cleanup(func() { nlLinkSetHardwareAddr = prev })
+			var pins []net.HardwareAddr
+			nlLinkSetHardwareAddr = func(_ netlink.Link, hw net.HardwareAddr) error {
+				pins = append(pins, hw)
+				return nil
+			}
+			got, err := pinChildMAC(c.opts, c.user, child(), parent)
+			if err != nil {
+				t.Fatalf("pinChildMAC: %v", err)
+			}
+			if got.String() != c.wantMAC.String() {
+				t.Errorf("returned MAC = %v, want %v: the lease and the client id key on it", got, c.wantMAC)
+			}
+			switch {
+			case c.wantPin == nil && len(pins) != 0:
+				t.Errorf("pinned %v, want no pin", pins)
+			case c.wantPin != nil && (len(pins) != 1 || pins[0].String() != c.wantPin.String()):
+				t.Errorf("pinned %v, want exactly %v", pins, c.wantPin)
+			}
+		})
+	}
+}
+
+func TestPinChildMAC_PassthruWithoutAParentMACIsRefusedBeforeAnyPin(t *testing.T) {
+	prev := nlLinkSetHardwareAddr
+	t.Cleanup(func() { nlLinkSetHardwareAddr = prev })
+	pinned := false
+	nlLinkSetHardwareAddr = func(netlink.Link, net.HardwareAddr) error { pinned = true; return nil }
+	parent := &netlink.Device{LinkAttrs: netlink.LinkAttrs{Name: "eth-par"}}
+	child := &netlink.Macvlan{LinkAttrs: netlink.LinkAttrs{Name: "dh-child", HardwareAddr: net.HardwareAddr{2, 0, 0, 0, 0, 1}}}
+	if _, err := pinChildMAC(DHCPNetworkOptions{Mode: ModeMacvlan, MacvlanMode: MacvlanModePassthru}, false, child, parent); err == nil || pinned {
+		t.Errorf("err = %v, pinned = %v: an empty parent MAC must fail before a pin", err, pinned)
+	}
+}
+
+func TestPinChildMAC_APinErrorNamesTheMode(t *testing.T) {
+	prev := nlLinkSetHardwareAddr
+	t.Cleanup(func() { nlLinkSetHardwareAddr = prev })
+	nlLinkSetHardwareAddr = func(netlink.Link, net.HardwareAddr) error { return unix.EPERM }
+	parent := &netlink.Device{LinkAttrs: netlink.LinkAttrs{Name: "eth-par", HardwareAddr: net.HardwareAddr{2, 0, 0, 0, 0, 2}}}
+	child := &netlink.Macvlan{LinkAttrs: netlink.LinkAttrs{Name: "dh-child", HardwareAddr: net.HardwareAddr{2, 0, 0, 0, 0, 1}}}
+	_, err := pinChildMAC(DHCPNetworkOptions{Mode: ModeMacvlan}, false, child, parent)
+	if !errors.Is(err, unix.EPERM) || !strings.Contains(err.Error(), "failed to pin macvlan link MAC") {
+		t.Errorf("err = %v, want the pin failure wrapped with the mode", err)
+	}
+}
+
+func TestPinPassthruProbe_PinsTheParentsMACNotTheProbeChilds(t *testing.T) {
+	parentMAC := net.HardwareAddr{0x5a, 0xa3, 0xda, 0x29, 0x72, 0x98}
+	probeMAC := net.HardwareAddr{0xbe, 0xf2, 0x27, 0x8b, 0x4e, 0x1c}
+	parent := &netlink.Device{LinkAttrs: netlink.LinkAttrs{Name: "eth-par", HardwareAddr: parentMAC}}
+	prevBy, prevSet := nlLinkByName, nlLinkSetHardwareAddr
+	t.Cleanup(func() { nlLinkByName, nlLinkSetHardwareAddr = prevBy, prevSet })
+	nlLinkByName = func(name string) (netlink.Link, error) {
+		return &netlink.Macvlan{LinkAttrs: netlink.LinkAttrs{Name: name, HardwareAddr: probeMAC}}, nil
+	}
+	var pins []net.HardwareAddr
+	nlLinkSetHardwareAddr = func(_ netlink.Link, hw net.HardwareAddr) error {
+		pins = append(pins, hw)
+		return nil
+	}
+
+	passthru := DHCPNetworkOptions{Mode: ModeMacvlan, MacvlanMode: MacvlanModePassthru}
+	if err := pinPassthruProbe(passthru, parent, "dh-probe-a1b2c3"); err != nil {
+		t.Fatalf("pinPassthruProbe: %v", err)
+	}
+	if len(pins) != 1 || pins[0].String() != parentMAC.String() {
+		t.Errorf("pinned %v, want exactly the parent's %v: the probe child's own MAC would move the parent (#1147)", pins, parentMAC)
+	}
+
+	pins = nil
+	for _, o := range []DHCPNetworkOptions{
+		{Mode: ModeMacvlan, MacvlanMode: MacvlanModeBridge},
+		{Mode: ModeIPvlan},
+	} {
+		if err := pinPassthruProbe(o, parent, "dh-probe-a1b2c3"); err != nil || len(pins) != 0 {
+			t.Errorf("%+v: err = %v, pins = %v, want no pin outside passthru", o, err, pins)
+		}
 	}
 }

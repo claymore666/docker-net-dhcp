@@ -102,6 +102,25 @@ type DHCPClientOptions struct {
 	// VendorClass overrides option 60, VendorID when empty.
 	VendorClass string
 
+	// UserClass is the one class value of option 77 (RFC 3004); empty sends no option, and v6 never sends it (#1120).
+	UserClass string
+
+	// RapidCommit puts option 80 (RFC 4039) in the DISCOVER, never in the parameter list, and option 14 (RFC 8415 section
+	// 18.2.1) in the Solicit (#1031, #926).
+	RapidCommit bool
+
+	// IPv6Temporary puts an IA_TA (RFC 8415 section 21.5) in the Solicit and the Request, and nothing in v4 (#927).
+	IPv6Temporary bool
+
+	// IPv6IID is how SLAAC forms the interface identifier, the zero value being RFC 4291 Appendix A's modified EUI-64
+	// (#1032).
+	IPv6IID proto.IIDMode
+
+	// IPv6IIDSecret is RFC 7217 section 5's secret key and IPv6IIDNetworkID its Network_ID; both are read for
+	// stable-privacy only (#1032).
+	IPv6IIDSecret    []byte
+	IPv6IIDNetworkID []byte
+
 	// ConflictMode is the parsed RFC 5227 `conflict_check` mode, zero being proto.ConflictWait (D23, #882).
 	ConflictMode proto.ConflictMode
 
@@ -123,6 +142,11 @@ type DHCPClientOptions struct {
 	// OnRouterStats gets the delta in the RFC 4861 router-discovery counters, read on the watch tick too, v6 only.
 	OnRouterStats func(RouterStats)
 
+	// OnForcerenewStats gets the delta in the FORCERENEW and Reconfigure counters, on the persistent client and, for
+	// the ACK discarded while acquiring, on the DHCPv4 one-shot. A refused FORCERENEW produces no lease event, so the
+	// fold also runs on the renewal timer (#1119).
+	OnForcerenewStats func(ForcerenewStats)
+
 	// Resume is a lease from a previous run, sent as an INIT-REBOOT DHCPREQUEST (RFC 2131 section 4.4.2).
 	Resume *lease.Lease
 
@@ -138,6 +162,8 @@ type DHCPClientOptions struct {
 
 	// resumedConfigTaken marks carryResumedConfig6's one chance at a resumed lease's RFC 3646 lists (#911).
 	resumedConfigTaken bool
+	// resumedTempDropped marks that the resumed binding was Lost, so carryResumedTemp6 stops (#927).
+	resumedTempDropped bool
 	// fqdnReported marks reportFQDN6's one report of the server's option 39 answer (#1029).
 	fqdnReported bool
 
@@ -150,6 +176,9 @@ type DHCPClientOptions struct {
 
 	// routerSeen does the same for OnRouterStats.
 	routerSeen RouterStats
+
+	// forcerenewSeen does the same for OnForcerenewStats.
+	forcerenewSeen ForcerenewStats
 }
 
 // record writes one manager event, if this manager has a record.
@@ -249,6 +278,20 @@ func (o *DHCPClientOptions) routerReport(s lease.Stats) {
 	o.OnRouterStats(delta)
 }
 
+// forcerenewReport hands the caller the FORCERENEW and Reconfigure counter gains since the last call (#1119).
+func (o *DHCPClientOptions) forcerenewReport(s lease.Stats) {
+	if o.OnForcerenewStats == nil {
+		return
+	}
+	cur := forcerenewStats(s)
+	delta := cur.Sub(o.forcerenewSeen)
+	o.forcerenewSeen = cur
+	if delta.IsZero() {
+		return
+	}
+	o.OnForcerenewStats(delta)
+}
+
 // getIP6 retries through one options value with a fresh manager; stale snapshots halved the reported counts (#814).
 
 // managerStarted forgets every delta snapshot on this options value.
@@ -257,6 +300,7 @@ func (o *DHCPClientOptions) managerStarted() {
 	o.fallbacksSeen = 0
 	o.prefixesIgnoredSeen = 0
 	o.routerSeen = RouterStats{}
+	o.forcerenewSeen = ForcerenewStats{}
 }
 
 // v6ModeReport hands the caller the Mode6Auto fallbacks counted since the last call, on the v6 paths only (#817).
@@ -406,6 +450,8 @@ func GetIP(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, RA
 	}
 	final := client.Stats()
 	opts.acdReport(final)
+	// A discarded ACK happens while acquiring, so a one-shot is where ForcerenewsAckRefused is first counted (#1119).
+	opts.forcerenewReport(final)
 	opts.count(manager, final)
 
 	if info.IP == "" {
@@ -547,6 +593,7 @@ func (c *DHCPClient) translate() {
 		c.opts.v6ModeReport(final)
 		c.opts.v6PrefixReport(final)
 		c.opts.routerReport(final)
+		c.opts.forcerenewReport(final)
 		c.renewals.report(final, c.opts.OnRenewalStats)
 		c.opts.count(c.manager, final)
 	}()
@@ -568,7 +615,9 @@ func (c *DHCPClient) translate() {
 		var ev lease.Event
 		select {
 		case <-poll.C:
-			c.renewals.report(c.Stats(), c.opts.OnRenewalStats)
+			stats := c.Stats()
+			c.renewals.report(stats, c.opts.OnRenewalStats)
+			c.opts.forcerenewReport(stats)
 			continue
 		case <-raWatch.C:
 			// Counted on every advertisement, not only on those that change something (#814).
@@ -586,6 +635,8 @@ func (c *DHCPClient) translate() {
 		now := time.Now()
 		// Before the record is written, so a second restart still finds the resolver (#911).
 		c.opts.carryResumedConfig6(&ev)
+		c.opts.carryResumedTemp6(&ev)
+		c.opts.carryResumedOptions6(&ev)
 		// Recorded before translation: translateOne drops the coalesced Changed and the stop, and the record must not
 		// (#899).
 		c.opts.record(ev)
@@ -596,6 +647,7 @@ func (c *DHCPClient) translate() {
 		c.opts.v6ModeReport(stats)
 		c.opts.v6PrefixReport(stats)
 		c.opts.routerReport(stats)
+		c.opts.forcerenewReport(stats)
 		c.renewals.report(stats, c.opts.OnRenewalStats)
 		c.renewals.cycleEnded(stats)
 		c.opts.conflict(ev)
@@ -650,10 +702,14 @@ func newStoppedTicker() *time.Ticker {
 
 // leaseView is what the advertisement watch reads.
 func (c *DHCPClient) leaseView() (lease.Lease, bool) {
+	view := c.Lease
 	if c.view != nil {
-		return c.view()
+		view = c.view
 	}
-	return c.Lease()
+	l, ok := view()
+	// The library's own lease has no options until a Reply, so the routeradvert line would lose 41, 42 and 56 (#1033).
+	c.opts.withResumedOptions6(&l)
+	return l, ok
 }
 
 // DHCPv6 has no MTU option (RFC 2132 section 5.1 is DHCPv4's), so the RFC 4861 section 4.6.4 MTU arrives only by the
@@ -667,7 +723,7 @@ func (c *DHCPClient) advertRouterView() proto.RouterObservation {
 	} else if c.client6 != nil {
 		r = c.client6.Router()
 	}
-	return proto.RouterObservation{Seen: r.Seen, MTU: r.MTU, Prefixes: r.Prefixes}
+	return proto.RouterObservation{Seen: r.Seen, MTU: r.MTU, Prefixes: r.Prefixes, PREF64: r.PREF64}
 }
 
 // baselineAdvert records the advertised configuration without reporting it, for a caller that has just applied it.
@@ -685,7 +741,8 @@ func (c *DHCPClient) takeAdvertChange(now time.Time) (Event, bool) {
 		return Event{}, false
 	}
 	// Rendered with the network's main prefix, as bound and renew are, so the choice is not itself a change (#818).
-	info, dropped := infoFromLease(l, c.advertRouterView(), now, c.opts.MainPrefix6)
+	// The bind already warned about these values; only a reported change repeats it, not every pass (#1033).
+	info, dropped, unsafe := renderLease(l, c.advertRouterView(), now, c.opts.MainPrefix6)
 	info.OnLinkPrefixes = foldOnLink(c.advert.OnLinkPrefixes, info)
 	first := !c.advertKnown
 	same := c.advertKnown && !advertisedDiffers(c.advert, info)
@@ -693,6 +750,7 @@ func (c *DHCPClient) takeAdvertChange(now time.Time) (Event, bool) {
 	if first || same {
 		return Event{}, false
 	}
+	warnDropped(unsafe)
 	return Event{
 		Type:                "routeradvert",
 		Data:                info,
@@ -864,6 +922,8 @@ func (c *DHCPClient) Wait(ctx context.Context) error {
 // Lease is the lease the client currently holds, for the durable record.
 func (c *DHCPClient) Lease() (lease.Lease, bool) {
 	switch {
+	case c.runner != nil:
+		return c.runner.Lease()
 	case c.client6 != nil:
 		return c.client6.Lease()
 	case c.client != nil:

@@ -58,3 +58,21 @@ func TestDnsmasqLease6Name_ReadsTheV6LineOfThatAddress(t *testing.T) {
 		t.Error("a line before the duid line was read as a v6 lease")
 	}
 }
+
+func TestDnsmasqLease6Addrs_SplitsTheStableAndTheTemporaryAddressOfOneDUID(t *testing.T) {
+	const leases = "1790000000 aa:bb:cc:dd:ee:ff 192.168.97.20 x *\n" +
+		"duid 00:01:00:01:aa:bb:cc:dd:ee:ff:00:11\n" +
+		"1790000100 3232261899 fd00:6470:6866::61 web1 00:03:00:01:02:42:c0:a8:67:0b\n" +
+		"1790000100 T3232261899 fd00:6470:6866::62 web1 00:03:00:01:02:42:c0:a8:67:0b\n" +
+		"1790000100 3232261900 fd00:6470:6866::63 * 00:03:00:01:02:42:c0:a8:67:0c\n"
+	stable, temp := DnsmasqLease6Addrs(leases, "00:03:00:01:02:42:C0:A8:67:0B")
+	if len(stable) != 1 || stable[0] != "fd00:6470:6866::61" {
+		t.Errorf("stable = %v, want [fd00:6470:6866::61]", stable)
+	}
+	if len(temp) != 1 || temp[0] != "fd00:6470:6866::62" {
+		t.Errorf("temporary = %v, want [fd00:6470:6866::62]", temp)
+	}
+	if s, tmp := DnsmasqLease6Addrs(leases, "00:03:00:01:02:42:c0:a8:67:ff"); len(s)+len(tmp) != 0 {
+		t.Errorf("another DUID read stable %v temporary %v, want none", s, tmp)
+	}
+}

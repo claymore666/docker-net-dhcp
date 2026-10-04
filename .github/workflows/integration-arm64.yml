@@ -128,7 +128,7 @@ jobs:
       - name: Verify fixture dependencies
         run: |
           missing=""
-          for tool in dnsmasq kea-dhcp4 ip iptables; do
+          for tool in dnsmasq kea-dhcp4 kea-dhcp6 ip iptables; do
             command -v "$tool" >/dev/null || missing="$missing $tool"
           done
           if [ -n "$missing" ]; then
@@ -168,6 +168,25 @@ jobs:
       # so the engine is reported and a minor apart is a notice (#1015).
       - name: Engine version
         run: bash scripts/check-fixture-engine-drift.sh --report
+
+      # The plugin's /var/run/docker bind receives the daemon's later sandbox mounts only from a shared source (#417).
+      # A standing runner keeps the image it was started from, and one built before dc54f0a never shared its root, so
+      # every IPv6 Join's sandbox write was refused on this lane (#1165). Before the plugin install, or its bind is
+      # already a private snapshot; nothing to do where the image shared the root at boot.
+      - name: Share the root mount for the plugin's sandbox bind
+        run: |
+          root_opts() { awk '$5 == "/" { o = ""; for (i = 7; i <= NF && $i != "-"; i++) o = o $i " " } END { print o }' /proc/self/mountinfo; }
+          opts=$(root_opts)
+          case " $opts" in
+            *" shared:"*) echo "root mount already shared (${opts% })"; exit 0 ;;
+          esac
+          err=$(mount --make-rshared / 2>&1) || echo "mount --make-rshared /: $err"
+          opts=$(root_opts)
+          case " $opts" in
+            *" shared:"*) echo "root mount made shared (${opts% }); it was private on this runner's image" ;;
+            *) echo "::error title=Root mount not shared::/ reads '${opts:-none}' after mount --make-rshared, so the plugin's sandbox bind cannot receive the daemon's netns mounts and every IPv6 Join's sandbox write fails"
+               exit 1 ;;
+          esac
 
       - name: Build + install integration plugin
         run: |
@@ -216,6 +235,12 @@ jobs:
         shell: bash
         env:
           ITEST_TIMEOUT: 165m
+          # The test binary's Go runtime memory (Sys) at exit may not pass 256 MB (#1180). Measured: Sys 36 MB
+          # and 23 MB in the two amd64 shards with the bound off (run 37126837978); RSS peak 24 MB over an
+          # 80-minute arm64 run that skipped the log read and 13 IPAM tests. The whole-suite arm64 Sys is not
+          # measured yet; 256 is margin for it. The read that killed the binary twice (an 842 MB dockerd log
+          # held whole, about 2.1x at once) puts Sys near 1.8 GB.
+          ITEST_HEAP_BOUND_MB: 256
         run: make integration-test 2>&1 | tee /tmp/itest-arm64-main.log
 
       # if: always() for the same reason as integration-hosted.yml (#742):
