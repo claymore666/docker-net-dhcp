@@ -1,4 +1,4 @@
-# Fixture for check-issue-label-map.sh (#393): <title><TAB><labels>
+# Fixture for check-label-taxonomy.sh --static (#393, #745): <title><TAB><labels>
 # '-' means the rule pass must NOT classify it — those titles are the
 # ones that fall through to the model pass, and that fall-through is
 # just as much a behaviour worth pinning as a match is.

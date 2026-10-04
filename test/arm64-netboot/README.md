@@ -96,14 +96,14 @@ unprotected; without the unit enabled, nothing pets and a *healthy* host
 resets as soon as the hardware timeout expires — 15s on this board, not
 the minute the unit file names; ordered against `shutdown.target` it looks
 perfect and covers one case fewer than it claims.
-`scripts/check-pi-watchdog-wiring.sh` gates all three,
-`scripts/test-check-pi-watchdog-wiring.sh` proves it catches each
+`scripts/check-pi-watchdog.sh --tree` gates all three,
+`scripts/test-check-pi-watchdog.sh` proves it catches each
 direction, and the daemon's half is pinned by
 `TestRun_DisarmsOnlyWhileTheFilesystemAnswers`.
 
 None of that reaches a board that is already running: the root is an
 image, so a host provisioned before this fix keeps the old unit until it
-is reprovisioned. `scripts/check-host-watchdog.sh` cannot see the
+is reprovisioned. `scripts/check-pi-watchdog.sh --host` cannot see the
 difference — it reads sysfs and `/dev/kmsg` from inside a container and
 never sees systemd's view of the unit — so this one is checked at
 provisioning time, not on the live host.

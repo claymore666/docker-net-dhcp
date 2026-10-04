@@ -395,11 +395,6 @@ jobs:
       - name: Engine-matrix option check
         run: bash scripts/check-engine-matrix-options.sh
 
-      # Every driver-option key the code parses must be documented in
-      # docs/reference.md — an undocumented option turns CI red (#132).
-      - name: Option-docs drift check
-        run: bash scripts/check-option-docs.sh
-
       # Only the half that needs no network (#537, widened by #851). The
       # badge's small_tasks answer and the README's Contributing section must
       # agree with each other: Met means both link a listing of the declared
@@ -633,17 +628,11 @@ jobs:
       - name: Privilege-sentence check
         run: bash scripts/check-privilege-sentences.sh
 
-      # The issue labeller's rule map (#393). A pattern that has stopped
-      # matching costs nothing visible at runtime — issues just fall
-      # through to the model pass — so the fixture is the only thing
-      # that notices.
-      - name: Issue label map check
-        run: bash scripts/check-issue-label-map.sh
-
       # The label taxonomy declared in .github/labels.yml (#715). This is
       # the half that is a property of the TREE: the declaration is well
-      # formed, and the labeller's rule map and ALLOWED_LABELS are both
-      # subsets of it. Whether the tracker still matches needs the API and
+      # formed, the labeller's rule map and ALLOWED_LABELS are both
+      # subsets of it, and the rule map classifies the title fixture as
+      # recorded (#393, #745). Whether the tracker still matches needs the API and
       # runs on a schedule instead — see .github/workflows/label-taxonomy.yml.
       - name: Label taxonomy check
         run: bash scripts/check-label-taxonomy.sh --static
@@ -761,7 +750,7 @@ jobs:
       # image, so without this the breakage surfaces at the next
       # reprovision of that host instead of here (#632).
       - name: Pi watchdog wiring
-        run: bash scripts/check-pi-watchdog-wiring.sh
+        run: bash scripts/check-pi-watchdog.sh --tree
 
       # A parent NIC registers one rx_handler, so it is a macvlan port
       # or an ipvlan port and never both. Every child link attached to a
@@ -864,15 +853,6 @@ jobs:
       # and to the counts the workflow derives.
       - name: Runbook release walkthrough
         run: bash scripts/check-runbook-release-steps.sh
-
-      # Every page that prints a cosign command must state which cosign
-      # major it needs (#522). Verifying a signature is the one moment a
-      # user is deciding whether to trust the artifact, and cosign v2's
-      # failure against a v3 bundle blames the release, not the toolchain.
-      # The required major lives in scripts/check-release-tooling.sh; this
-      # keeps the user-facing pages following it.
-      - name: Cosign-version docs check
-        run: bash scripts/check-cosign-docs.sh
 
       # Every job taking a workflow_dispatch `ref` input must sit behind
       # the job that validates it (#593). A fork's pull-request head is

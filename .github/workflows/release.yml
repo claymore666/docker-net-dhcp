@@ -708,7 +708,11 @@ jobs:
         run: |
           set -euo pipefail
           want=$(sed -n 's/^COSIGN_MAJOR=\([0-9][0-9]*\).*/\1/p' \
-                   scripts/check-release-tooling.sh | head -1)
+                   scripts/release-tooling.env | head -1)
+          if [ -z "$want" ]; then
+            echo "::error::no COSIGN_MAJOR=<n> line in scripts/release-tooling.env" >&2
+            exit 1
+          fi
           got=$(cosign version 2>/dev/null \
                   | sed -n 's/.*GitVersion:[[:space:]]*v\{0,1\}\([0-9][0-9.]*\).*/\1/p' \
                   | head -1)
@@ -724,7 +728,7 @@ jobs:
           fi
           if [ "${got%%.*}" != "$want" ]; then
             echo "::error::cosign major ${got%%.*} installed, but the docs and" \
-                 "scripts/check-release-tooling.sh describe major ${want}." \
+                 "scripts/release-tooling.env name major ${want}." \
                  "Update both before releasing — see #522." >&2
             exit 1
           fi
