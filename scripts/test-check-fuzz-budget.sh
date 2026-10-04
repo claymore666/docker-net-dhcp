@@ -16,6 +16,8 @@ set -u
 
 CHECK="$(dirname "$0")/check-fuzz-budget.sh"
 guarded_tmpdir TMP
+# The gate lists subjects through git (#744); every fixture tree sits in this work tree.
+git init -q "$TMP"
 
 # THE TRANSPORT IS STUBBED, NOT THE VERDICT. The gate now resolves every
 # -fuzz name against its package with `go test -list`, which would tie

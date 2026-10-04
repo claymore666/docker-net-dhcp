@@ -35,7 +35,7 @@ failures=0
 # "missing" cases pass without testing anything.
 UTILS="$TMP/bin-utils"
 mkdir -p "$UTILS"
-for c in bash sed head git; do
+for c in bash sed head git dirname; do
     src="$(command -v "$c")" || { echo "cannot locate $c to build the test PATH"; exit 1; }
     ln -sf "$src" "$UTILS/$c"
 done

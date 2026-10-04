@@ -41,6 +41,8 @@
 # With no daemon answering it reports NOT INSPECTED rather than a pass —
 # an absent check is not a green check.
 set -euo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 FIXTURE_ROOT="${FIXTURE_ROOT:-pkg/plugin/testdata/requests}"
 
@@ -84,7 +86,8 @@ if [ ! -d "$FIXTURE_ROOT" ]; then
     exit 2
 fi
 
-mapfile -t MANIFESTS < <(find "$FIXTURE_ROOT" -mindepth 2 -maxdepth 2 -name manifest.json | sort)
+# One manifest per flow directory, as git sees the tree (#744).
+gate_subjects --may-be-empty MANIFESTS manifest "$FIXTURE_ROOT"
 if [ "${#MANIFESTS[@]}" -eq 0 ]; then
     echo "FAIL: no flow manifests under $FIXTURE_ROOT."
     echo "  Nothing to compare, which must not read as \"no drift\". Regenerate"

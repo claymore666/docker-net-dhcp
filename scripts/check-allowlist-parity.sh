@@ -45,6 +45,8 @@
 # Usage: check-allowlist-parity.sh [config] [allowlist] [map]
 # Exit:  0 in sync, 1 drifted, 2 cannot check.
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 CONFIG="${1:-.github/dependency-review-config.yml}"
 ALLOWLIST="${2:-.github/vuln-allowlist.txt}"

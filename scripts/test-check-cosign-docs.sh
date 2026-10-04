@@ -19,6 +19,7 @@ check() {
     local name="$1" want_exit="$2" tooling="$3" body="$4" want_grep="$5"
     local root
     guarded_tmpdir root -p "$TMP"
+    git init -q "$root"
     mkdir -p "$root/scripts" "$root/docs"
     printf '%s\n' "$tooling" > "$root/scripts/check-release-tooling.sh"
     printf '%s\n' "$body" > "$root/docs/verifying-releases.md"
@@ -82,10 +83,13 @@ check "no page prints a cosign command => exit 2" 2 \
 # broken exactly where a maintainer runs it by hand and green where it is
 # automated, which is the worst way round and the reason this case exists.
 guarded_tmpdir root -p "$TMP"
+git init -q "$root"
 mkdir -p "$root/scripts" "$root/docs" "$root/.claude/worktrees/other/docs"
 printf '%s\n' 'COSIGN_MAJOR=3' > "$root/scripts/check-release-tooling.sh"
 printf '%s\n' "$DOC_WITH_VERSION" > "$root/docs/verifying-releases.md"
 printf '%s\n' "$DOC_WITHOUT" > "$root/.claude/worktrees/other/docs/verifying-releases.md"
+# A worktree is a nested repository, which git's view never descends into (#744).
+git init -q "$root/.claude/worktrees/other"
 DOCS_ROOT="$root" TOOLING_SCRIPT="$root/scripts/check-release-tooling.sh" \
     bash "$CHECK" > "$TMP/out" 2>&1
 rc=$?
@@ -99,6 +103,7 @@ fi
 
 # And .git, for the same reason and to keep the walk cheap.
 guarded_tmpdir root -p "$TMP"
+git init -q "$root"
 mkdir -p "$root/scripts" "$root/docs" "$root/.git"
 printf '%s\n' 'COSIGN_MAJOR=3' > "$root/scripts/check-release-tooling.sh"
 printf '%s\n' "$DOC_WITH_VERSION" > "$root/docs/verifying-releases.md"
@@ -110,6 +115,44 @@ if [ "$rc" -eq 0 ]; then
     echo "PASS: a page inside .git/ is not walked"
 else
     echo "FAIL: a page inside .git/ is not walked (rc=$rc)"
+    sed 's/^/    /' "$TMP/out"
+    failures=$((failures + 1))
+fi
+
+# Every Markdown page is in scope, not only README and docs/*.md (#744).
+guarded_tmpdir root -p "$TMP"
+git init -q "$root"
+mkdir -p "$root/scripts" "$root/docs" "$root/deploy/notes"
+printf '%s\n' 'COSIGN_MAJOR=3' > "$root/scripts/check-release-tooling.sh"
+printf '%s\n' "$DOC_WITH_VERSION" > "$root/docs/verifying-releases.md"
+printf '%s\n' "$DOC_WITHOUT" > "$root/deploy/notes/verify.md"
+DOCS_ROOT="$root" TOOLING_SCRIPT="$root/scripts/check-release-tooling.sh" \
+    bash "$CHECK" > "$TMP/out" 2>&1
+rc=$?
+if [ "$rc" -eq 1 ] && grep -q 'FAIL  deploy/notes/verify.md' "$TMP/out"; then
+    echo "PASS: a page outside docs/ is judged"
+else
+    echo "FAIL: a page outside docs/ is judged (rc=$rc)"
+    sed 's/^/    /' "$TMP/out"
+    failures=$((failures + 1))
+fi
+
+# An ignored page is not a subject: the real tree ignores build output
+# and private notes, and the gate reads git's view of it (#744).
+guarded_tmpdir root -p "$TMP"
+git init -q "$root"
+mkdir -p "$root/scripts" "$root/docs" "$root/site"
+printf '%s\n' 'COSIGN_MAJOR=3' > "$root/scripts/check-release-tooling.sh"
+printf '%s\n' "$DOC_WITH_VERSION" > "$root/docs/verifying-releases.md"
+printf '%s\n' "$DOC_WITHOUT" > "$root/site/verifying-releases.md"
+printf 'site/\n' > "$root/.gitignore"
+DOCS_ROOT="$root" TOOLING_SCRIPT="$root/scripts/check-release-tooling.sh" \
+    bash "$CHECK" > "$TMP/out" 2>&1
+rc=$?
+if [ "$rc" -eq 0 ] && ! grep -q 'site/' "$TMP/out"; then
+    echo "PASS: an ignored page is not walked"
+else
+    echo "FAIL: an ignored page is not walked (rc=$rc)"
     sed 's/^/    /' "$TMP/out"
     failures=$((failures + 1))
 fi

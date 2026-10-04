@@ -72,6 +72,8 @@
 # first. A checking script that also compiles is a build step, and
 # where it runs decides whether that matters -- see WHAT IT CANNOT DO.
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 MODULE="github.com/claymore666/dhcp-golib"
 

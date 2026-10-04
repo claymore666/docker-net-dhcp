@@ -62,6 +62,8 @@
 #          the helper missing).
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 ROOT="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 cd "$ROOT" || { echo "check-netlink-dump-errors: cannot cd to $ROOT" >&2; exit 2; }

@@ -17,6 +17,7 @@ guarded_tmpdir TMP
 
 PKG="$TMP/pkg"
 mkdir -p "$PKG"
+git init -q "$TMP"
 
 cat > "$PKG/plugin.go" <<'EOF'
 package plugin
@@ -103,7 +104,13 @@ mv "$PKG/plugin.go" "$PKG/plugin.go.bak"
 check "vanished struct fails" 1
 mv "$PKG/plugin.go.bak" "$PKG/plugin.go"
 
-# 7. Bad usage -> exit 2.
+# 7. No non-test Go source left -> a refusal, not a pass (#744).
+mkdir -p "$TMP/testsonly"
+cp "$PKG/network_test.go" "$TMP/testsonly/"
+bash "$CHECK" "$TMP/testsonly" "$DOC" > "$TMP/out" 2>&1
+if [ $? -eq 2 ] && grep -q "no 'go-src' file under" "$TMP/out"; then echo "PASS: a package with only tests refuses"; else echo "FAIL: a package with only tests: $(cat "$TMP/out")"; failures=$((failures + 1)); fi
+
+# 8. Bad usage -> exit 2.
 bash "$CHECK" "$TMP/nonexistent" "$DOC" > "$TMP/out" 2>&1
 if [ $? -eq 2 ]; then echo "PASS: bad usage exits 2"; else echo "FAIL: bad usage"; failures=$((failures + 1)); fi
 

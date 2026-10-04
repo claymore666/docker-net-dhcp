@@ -74,6 +74,8 @@
 # Usage: bash scripts/check-milestone-scope.sh
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 GH="${MS_GH:-gh}"
 BACKLOG="${MS_BACKLOG:-backlog}"

@@ -53,12 +53,15 @@
 #        1 a rebinding, a stray literal, or a Hub name a consumer misses
 #        2 CANNOT JUDGE -- the workflow is unreadable or the list is empty
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 WORKFLOW="${1:-.github/workflows/release.yml}"
 
 refuse() {
-    echo "::error title=The registry name list cannot be judged::$*" >&2
-    exit 2
+
+    GATE_TITLE='The registry name list cannot be judged' gate_refuse "$*"
+
 }
 
 [ -f "$WORKFLOW" ] || refuse "no workflow at '$WORKFLOW'; there is no name list to derive from."

@@ -27,6 +27,8 @@
 # trivially equal, and reporting that as a reproducible build is how
 # this gate would go green after someone renames the output directory.
 set -u
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 A="${1:-}"
 B="${2:-}"

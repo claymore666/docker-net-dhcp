@@ -40,6 +40,8 @@
 # reference fires always and prevents nothing. This line is a statement
 # about lowering a floor; citing the issue you are working on is not.
 set -u
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 # The gate also runs over the per-function floor file (#1117): the same
 # script with COVERAGE_FLOOR_PATH naming it and COVERAGE_FLOOR_KIND=func,

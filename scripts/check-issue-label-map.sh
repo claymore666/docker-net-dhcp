@@ -31,6 +31,8 @@
 # quantifiers, the /.../i flag form) so the two agree. Anything needing
 # a JS-only or Python-only construct does not belong in the map.
 set -u
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 MAP="${1:-.github/issue-labeler.yml}"
 WORKFLOW="${2:-.github/workflows/issue-labeler.yml}"

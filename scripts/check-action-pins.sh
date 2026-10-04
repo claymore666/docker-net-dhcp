@@ -61,13 +61,16 @@
 #             note on the `./*` exemption
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKFLOW_DIR="${WORKFLOW_DIR:-$ROOT/.github/workflows}"
 
 refuse() {
-    echo "::error title=Action pinning cannot be judged::$*" >&2
-    exit 2
+
+    GATE_TITLE='Action pinning cannot be judged' gate_refuse "$*"
+
 }
 
 [ -d "$WORKFLOW_DIR" ] || refuse "no workflow directory at $WORKFLOW_DIR."

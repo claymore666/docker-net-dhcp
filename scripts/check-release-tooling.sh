@@ -14,6 +14,8 @@
 # Run it before step 1. Exit 0 means every step in the runbook can
 # actually be executed on this box.
 set -u
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 # The cosign major the release is verifiable with. Single source of truth:
 # scripts/check-cosign-docs.sh reads this line and asserts every page that

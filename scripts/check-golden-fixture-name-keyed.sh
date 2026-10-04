@@ -48,6 +48,8 @@
 # Exit 0 pass, 1 the fixture is index-coupled, 2 cannot judge.
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 ROOT="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 SRC="$ROOT/pkg/plugin/endpoints.go"
@@ -62,7 +64,7 @@ PROBES=(
     "ZZGoldenFixtureRenderedProbe|zz_golden_fixture_rendered_probe|carries a real json name, so it moves the RENDERED field index"
 )
 
-refuse() { echo "CANNOT JUDGE: $*" >&2; exit 2; }
+refuse() { gate_refuse "$*"; }
 
 [ -f "$SRC" ] || refuse "no $SRC"
 [ -f "$GOLDEN" ] || refuse "no $GOLDEN"
