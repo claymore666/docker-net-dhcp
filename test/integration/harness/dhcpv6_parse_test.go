@@ -490,13 +490,14 @@ func TestParseDHCPv6_KeepsEveryOption17InstanceInWireOrder(t *testing.T) {
 	frame := buildDHCPv6Frame(t, 547, 546, DHCPv6Reply, 0x010203,
 		dhcpv6Option(DHCPv6OptVendorOpts, []byte{0, 0, 0, 9, 0x00, 0x01, 0x00, 0x02, 0x00, 0xaa}),
 		dhcpv6Option(DHCPv6OptVendorOpts, []byte{0, 0, 0x0d, 0xe9, 0x00, 0x02, 0x00, 0x02, 0xbb, 0xcc}),
+		dhcpv6Option(DHCPv6OptVendorOpts, []byte{0, 1, 2, 3, 0xcc}),
 		dhcpv6Option(DHCPv6OptVendorOpts, []byte{0, 7}))
 	m, ok := ParseDHCPv6(frame)
-	if !ok || len(m.VendorOpts) != 3 || !bytes.Equal(m.VendorOpts[0][:4], []byte{0, 0, 0, 9}) {
-		t.Fatalf("VendorOpts = % x (ok %v), want all three instances in wire order", m.VendorOpts, ok)
+	if !ok || len(m.VendorOpts) != 4 || !bytes.Equal(m.VendorOpts[0][:4], []byte{0, 0, 0, 9}) {
+		t.Fatalf("VendorOpts = % x (ok %v), want all four instances in wire order", m.VendorOpts, ok)
 	}
-	if got := strings.Join(m.VendorOptsEntries(), " "); got != "3561:00020002bbcc 9:0001000200aa" {
-		t.Errorf("VendorOptsEntries = %q, want the sorted entries of the two well-formed instances", got)
+	if got := strings.Join(m.VendorOptsEntries(), " "); got != "3561:00020002bbcc 66051:cc 9:0001000200aa" {
+		t.Errorf("VendorOptsEntries = %q, want the sorted entries of the three well-formed instances, 66051 being above 16 bits", got)
 	}
 	m, ok = ParseDHCPv6(buildDHCPv6Frame(t, 547, 546, DHCPv6Reply, 0x010203, clientIDOption()))
 	if !ok || m.VendorOpts != nil || m.VendorOptsEntries() != nil {
