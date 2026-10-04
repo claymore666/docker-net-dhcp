@@ -732,6 +732,14 @@ jobs:
       - name: O_CLOEXEC on raw opens
         run: bash scripts/check-openat-cloexec.sh
 
+      # A comment block copied above a new test or left behind by a
+      # rename keeps its old first word and says the test does something
+      # it does not. The rule is only "a doc block that opens with a Test
+      # name names its own function": 4 hits on the tree the issue read,
+      # no allowlist (#861).
+      - name: Doc opener names its own function
+        run: bash scripts/check-doc-opener.sh
+
       # registerDHCPManager returns the manager it displaced, and
       # dropping that return value leaks a running dhcpcd nothing can
       # stop, bidding for the same lease on the same interface. The
