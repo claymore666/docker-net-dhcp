@@ -15,6 +15,8 @@ set -u
 GATE="$(dirname "$0")/check-build-dir-refs.sh"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 guarded_tmpdir TMP
+# The gate lists subjects through git (#744); every fixture root sits in this work tree.
+git init -q "$TMP"
 failures=0
 
 # tree NAME -> creates $TMP/NAME/test/integration/harness/build.go with the names

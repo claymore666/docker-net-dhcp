@@ -29,14 +29,11 @@ if [ ! -d "$PKG_DIR" ] || [ ! -f "$DOC" ]; then
     exit 2
 fi
 
-# Non-test Go sources only — tests synthesize option maps freely.
-src_files=$(find "$PKG_DIR" -maxdepth 1 -name '*.go' ! -name '*_test.go')
-if [ -z "$src_files" ]; then
-    echo "FAIL  no Go sources found under $PKG_DIR" >&2
-    exit 2
-fi
+# Non-test Go sources only — tests synthesize option maps freely. An
+# empty package refuses inside gate_subjects (#744).
+src_files=()
+gate_subjects --shallow src_files go-src "$PKG_DIR"
 
-# shellcheck disable=SC2086  # word-splitting src_files is intended
 struct_keys=$(awk '
     /type DHCPNetworkOptions struct \{/ { in_struct = 1; next }
     in_struct && /^\}/                  { in_struct = 0 }
@@ -55,7 +52,7 @@ struct_keys=$(awk '
             }
         }
     }
-' $src_files)
+' "${src_files[@]}")
 
 if [ -z "$struct_keys" ]; then
     echo "FAIL  DHCPNetworkOptions struct not found in $PKG_DIR — moved/renamed? Update $0 deliberately." >&2
@@ -63,7 +60,7 @@ if [ -z "$struct_keys" ]; then
 fi
 
 # shellcheck disable=SC2086
-endpoint_keys=$(grep -hoE '[Oo]ptions\["[a-z0-9_]+"\]' $src_files \
+endpoint_keys=$(grep -hoE '[Oo]ptions\["[a-z0-9_]+"\]' "${src_files[@]}" \
     | sed -E 's/.*\["([a-z0-9_]+)"\].*/\1/' | sort -u)
 
 fail=0

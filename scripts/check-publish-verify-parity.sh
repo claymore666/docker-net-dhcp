@@ -161,8 +161,9 @@ set -uo pipefail
 WORKFLOW="${1:-.github/workflows/release.yml}"
 
 refuse() {
-    echo "::error title=Publish/verify parity cannot be judged::$*" >&2
-    exit 2
+
+    GATE_TITLE='Publish/verify parity cannot be judged' gate_refuse "$*"
+
 }
 
 [ -f "$WORKFLOW" ] || refuse "no workflow at '$WORKFLOW'; there is no publish set to derive from."

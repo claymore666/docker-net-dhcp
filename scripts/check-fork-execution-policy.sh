@@ -94,8 +94,9 @@ set -uo pipefail
 REPO="${REPO:-claymore666/docker-net-dhcp}"
 
 refuse() {
-    echo "::error title=Fork-execution policy cannot be judged::$*" >&2
-    exit 2
+
+    GATE_TITLE='Fork-execution policy cannot be judged' gate_refuse "$*"
+
 }
 
 # THE ENUMERATION NEEDS A WATCHER, OR IT IS A RULE ENFORCED BY READING.

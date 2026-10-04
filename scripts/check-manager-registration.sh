@@ -58,6 +58,7 @@ cd "$(dirname "$0")/.." || exit 2
 DIR="${1:-pkg/plugin}"
 [ -d "$DIR" ] || { echo "check-manager-registration: $DIR is not a directory" >&2; exit 2; }
 
+files=()
 GATE_TITLE='No Go files inspected' gate_subjects --shallow files go-src "$DIR"
 
 # Comments are stripped before matching: this gate's rule gets explained

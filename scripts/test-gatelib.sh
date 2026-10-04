@@ -27,6 +27,7 @@ gate() { # name body
     mkdir -p "$T/bin"
     cp "$LIB" "$T/bin/gatelib.sh"
     { printf '#!/usr/bin/env bash\nset -uo pipefail\n'
+      # shellcheck disable=SC2016 # the source line is written literally
       printf '. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2\n'
       cat; } > "$T/bin/$1.sh"
 }
@@ -72,9 +73,9 @@ expect "GATE_TITLE keeps an established annotation title" "2|::error title=Nothi
 
 # --- subject discovery ----------------------------------------------------
 R="$T/repo"
-mkdir -p "$R/sub" "$R/testdata" "$R/deep/testdata"
+mkdir -p "$R/sub" "$R/testdata" "$R/deep/testdata" "$R/docs/deep"
 git init -q "$R"
-for f in a.go a_test.go sub/b.go sub/b_test.go testdata/c.go deep/testdata/x.go ignored.go gone.go README.md sub/notes.md; do
+for f in a.go a_test.go sub/b.go sub/b_test.go testdata/c.go deep/testdata/x.go ignored.go gone.go README.md sub/notes.md docs/guide.md docs/deep/x.md; do
     echo "package x" > "$R/$f"
 done
 printf 'ignored.go\n' > "$R/.gitignore"
@@ -102,12 +103,14 @@ rc=$(subjects go-src "$R/sub")
 expect "a <dir> narrows the walk and prefixes the paths as find did" \
     "0|n=1|$R/sub/b.go" "$rc|$(tr '\n' '|' < "$T/out" | sed 's/|$//')"
 rc=$(subjects md)
-expect "md lists every markdown copy, nested ones too" "0|n=2|README.md|sub/notes.md" "$rc|$(tr '\n' '|' < "$T/out" | sed 's/|$//')"
+expect "md lists every markdown copy, nested ones too" "0|n=4|README.md|docs/deep/x.md|docs/guide.md|sub/notes.md" "$rc|$(tr '\n' '|' < "$T/out" | sed 's/|$//')"
+rc=$(subjects docs)
+expect "docs is the README and the top-level docs pages" "0|n=2|README.md|docs/guide.md" "$rc|$(tr '\n' '|' < "$T/out" | sed 's/|$//')"
 
 rc=$(subjects workflows)
 expect "an empty class refuses by default" 2 "$rc"
-grep -q "no 'workflows' file under" "$T/out" && ok "the empty refusal names the class" || no "the empty refusal names the class: $(cat "$T/out")"
-grep -q '^n=' "$T/out" && no "the gate went on after the empty refusal" || ok "the gate stops at the empty refusal"
+if grep -q "no 'workflows' file under" "$T/out"; then ok "the empty refusal names the class"; else no "the empty refusal names the class: $(cat "$T/out")"; fi
+if grep -q '^n=' "$T/out"; then no "the gate went on after the empty refusal"; else ok "the gate stops at the empty refusal"; fi
 rc=$(subjects workflows "" --may-be-empty)
 expect "--may-be-empty is the explicit opt-out" "0|n=0" "$rc|$(cat "$T/out")"
 rc=$(subjects nosuchclass)
@@ -130,6 +133,7 @@ missing=""
 n=0
 for g in "$HERE"/check-*.sh; do
     n=$((n + 1))
+    # shellcheck disable=SC2016 # the source line is matched literally
     grep -qxF '. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2' "$g" || missing="$missing ${g##*/}"
 done
 [ "$n" -gt 0 ] || no "no scripts/check-*.sh found beside the library"

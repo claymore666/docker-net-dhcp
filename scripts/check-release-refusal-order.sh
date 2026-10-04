@@ -102,8 +102,9 @@ ROOT="$(dirname "$HERE")"
 WF="${1:-$ROOT/.github/workflows/release.yml}"
 
 refuse() {
-    echo "::error title=Release refusal order cannot be judged::$*" >&2
-    exit 2
+
+    GATE_TITLE='Release refusal order cannot be judged' gate_refuse "$*"
+
 }
 
 command -v python3 >/dev/null 2>&1 || refuse "python3 is required to read the job graph."

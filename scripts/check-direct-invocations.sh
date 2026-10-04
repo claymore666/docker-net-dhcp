@@ -74,8 +74,9 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="${DIRECT_INV_ROOT:-$(dirname "$HERE")}"
 
 refuse() {
-    echo "::error title=Direct invocations cannot be judged::$*" >&2
-    exit 2
+
+    GATE_TITLE='Direct invocations cannot be judged' gate_refuse "$*"
+
 }
 
 command -v git >/dev/null 2>&1 || refuse "git is required: the executable bit this gate reads is the one in the index, and only git can say what that is."

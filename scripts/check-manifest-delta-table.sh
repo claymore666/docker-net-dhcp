@@ -108,8 +108,7 @@ ABSENT='(absent)'
 fail() { echo "::error title=Manifest delta table::$*" >&2; }
 
 refuse() {
-    fail "$*"
-    exit 2
+    GATE_TITLE='Manifest delta table' gate_refuse "$*"
 }
 
 for f in "$NOTES" "$MANIFEST"; do

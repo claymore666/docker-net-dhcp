@@ -59,6 +59,7 @@ DIR="${1:-pkg/plugin}"
 # gate does when its own engine dies. See the exit-status check below.
 AWK="${AWK:-awk}"
 
+files=()
 GATE_TITLE='No Go files inspected' gate_subjects --shallow files go-src "$DIR"
 
 # Scan function by function. Production Go here is gofmt'd, so a

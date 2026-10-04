@@ -304,8 +304,9 @@ cd "$(dirname "$0")/.." || exit 2
 WF="${1:-${PURITY_WORKFLOW:-.github/workflows/test.yaml}}"
 
 refuse() {
-    echo "::error title=test/policy-gates split cannot be judged::$*" >&2
-    exit 2
+
+    GATE_TITLE='test/policy-gates split cannot be judged' gate_refuse "$*"
+
 }
 
 [ -f "$WF" ] || refuse "$WF does not exist, so the boundary between the required check named \`test\` and the gate corpus could not be read."

@@ -89,6 +89,7 @@ command -v python3 >/dev/null 2>&1 || {
 
 # Untracked files count (#743); gate_subjects lists them with the
 # tracked ones (#744).
+gofiles=()
 gate_subjects --may-be-empty gofiles go-src
 FILES=$(printf '%s\n' ${gofiles[@]+"${gofiles[@]}"} | grep -E '^(pkg|cmd)/')
 

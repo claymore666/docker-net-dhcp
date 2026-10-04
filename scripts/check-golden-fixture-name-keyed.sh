@@ -64,7 +64,7 @@ PROBES=(
     "ZZGoldenFixtureRenderedProbe|zz_golden_fixture_rendered_probe|carries a real json name, so it moves the RENDERED field index"
 )
 
-refuse() { echo "CANNOT JUDGE: $*" >&2; exit 2; }
+refuse() { gate_refuse "$*"; }
 
 [ -f "$SRC" ] || refuse "no $SRC"
 [ -f "$GOLDEN" ] || refuse "no $GOLDEN"

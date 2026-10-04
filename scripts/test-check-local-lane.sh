@@ -32,6 +32,7 @@ ok() { printf 'PASS  %s\n' "$1"; pass=$((pass + 1)); }
 no() { printf 'FAIL  %s\n' "$1" >&2; fail=$((fail + 1)); }
 
 guarded_tmpdir DIR
+git init -q "$DIR"
 
 # mkgates <name>...
 #   Plant fixture gate scripts so rule 4 (no orphan gates) has a

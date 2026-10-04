@@ -93,8 +93,9 @@ SCOPE="${BRANCH_REFS_SCOPE:-$ROOT/.github/gate-branch-scope.env}"
 REMOTE="${BRANCH_REFS_REMOTE:-origin}"
 
 refuse() {
-    echo "::error title=Branch references cannot be judged::$*" >&2
-    exit 2
+
+    GATE_TITLE='Branch references cannot be judged' gate_refuse "$*"
+
 }
 
 command -v python3 >/dev/null 2>&1 || refuse \

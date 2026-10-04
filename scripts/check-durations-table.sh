@@ -98,8 +98,9 @@ TABLE="$SUITE_DIR/testdata/suite-durations.tsv"
 SHARDER="$ROOT/scripts/integration-shard.sh"
 
 cannot_see() {
-    echo "::error title=durations-table gate cannot see::$*" >&2
-    exit 2
+
+    GATE_TITLE='durations-table gate cannot see' gate_refuse "$*"
+
 }
 
 [ -d "$SUITE_DIR" ] || cannot_see "$SUITE_DIR is not a directory"

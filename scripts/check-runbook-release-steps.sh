@@ -58,8 +58,9 @@ RUNBOOK="${1:-docs/release-runbook.md}"
 WORKFLOW="${2:-.github/workflows/release.yml}"
 
 refuse() {
-    echo "::error title=The release walkthrough cannot be judged::$*" >&2
-    exit 2
+
+    GATE_TITLE='The release walkthrough cannot be judged' gate_refuse "$*"
+
 }
 
 [ -f "$RUNBOOK" ]  || refuse "no runbook at '$RUNBOOK'."

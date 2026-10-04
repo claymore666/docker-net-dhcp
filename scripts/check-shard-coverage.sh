@@ -98,8 +98,7 @@ SUITE_DIR="$ROOT/test/integration"
 WORKFLOWS="integration.yml integration-hosted.yml"
 
 refuse() {
-    echo "::error title=$1::$2" >&2
-    exit 2
+    GATE_TITLE="$1" gate_refuse "$2"
 }
 
 [ -d "$WF" ] || refuse "No workflow directory" "$WF is not a directory, so no lane can be read."

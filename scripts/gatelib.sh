@@ -38,6 +38,7 @@ go          :(glob)**/*.go :(exclude,glob)**/testdata/**
 go-src      :(glob)**/*.go :(exclude,glob)**/*_test.go :(exclude,glob)**/testdata/**
 go-test     :(glob)**/*_test.go :(exclude,glob)**/testdata/**
 md          :(glob)**/*.md :(exclude,glob)**/testdata/**
+docs        :(glob)README.md :(glob)docs/*.md
 sh          :(glob)**/*.sh
 gates       :(glob)check-*.sh
 workflows   :(glob)*.yml :(glob)*.yaml
@@ -62,7 +63,9 @@ gate_subjects() {
             *) break ;;
         esac
     done
-    [ "$#" -ge 2 ] && [ "$#" -le 3 ] || gate_refuse "gate_subjects: want <array> <class> [<dir>], got $*"
+    if [ "$#" -lt 2 ] || [ "$#" -gt 3 ]; then
+        gate_refuse "gate_subjects: want <array> <class> [<dir>], got $*"
+    fi
     local -n _gs_out="$1"
     local _gs_class="$2" _gs_dir="${3:-}" _gs_line _gs_p _gs_pre=""
     local -a _gs_spec=() _gs_raw=()

@@ -59,8 +59,9 @@ set -uo pipefail
 WORKFLOW="${1:-.github/workflows/release.yml}"
 
 refuse() {
-    echo "::error title=The registry name list cannot be judged::$*" >&2
-    exit 2
+
+    GATE_TITLE='The registry name list cannot be judged' gate_refuse "$*"
+
 }
 
 [ -f "$WORKFLOW" ] || refuse "no workflow at '$WORKFLOW'; there is no name list to derive from."

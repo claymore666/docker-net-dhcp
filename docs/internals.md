@@ -964,6 +964,22 @@ fails CI if that file lists fewer gates than the workflow runs; a local
 target that hand-listed them would quietly cover less the first time a
 gate was added (#636, the same shape as #542).
 
+Every gate sources
+[`scripts/gatelib.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/gatelib.sh)
+first (#744). The library does three things each gate used to do its own
+way. It runs the gate under `LC_ALL=C`, so `sort`, `comm` and `join`
+order file names the same on a desktop with a German or English locale
+as in CI. It has one refusal, `gate_refuse`, which prints an `::error`
+annotation naming the gate and the reason and exits 2, so a gate that
+cannot judge never reads as a pass or a finding. And it lists the files
+a gate judges with `gate_subjects <array> <class> [<dir>]`: git's view
+of the tree (tracked files, plus untracked files that are not ignored),
+narrowed to a class such as `go-src`, `md` or `docs`. The classes and
+their exceptions, such as test files and `testdata/`, are one table in
+the library, and a class that matches nothing refuses unless the gate
+passes `--may-be-empty`. `scripts/test-gatelib.sh` checks the contract
+and that every `check-*.sh` sources the library.
+
 Everything it does **not** do is declared and never merely absent.
 `scripts/local-lane.sh --list-exempt` prints the list with reasons, and
 that is the place to read it instead of a count written here, which has

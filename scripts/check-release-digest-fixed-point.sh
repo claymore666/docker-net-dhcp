@@ -146,7 +146,7 @@ WF="${2:-$TREE/.github/workflows/release.yml}"
 DOC="${3:-$TREE/docs/verifying-releases.md}"
 DOCKERFILE="${4:-$TREE/Dockerfile}"
 
-die() { echo "check-release-digest-fixed-point: $*" >&2; exit 2; }
+die() { gate_refuse "$*"; }
 note() { echo "FAIL  $*" >&2; failed=1; }
 failed=0
 

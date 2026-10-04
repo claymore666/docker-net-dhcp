@@ -21,6 +21,13 @@ set -euo pipefail
 MAIN="${1:-config.json}"
 COVER="${2:-config-cover.json}"
 
+# An unreadable or non-JSON manifest is a refusal, named, not jq's
+# exit status leaking out of `set -e` (#744).
+for f in "$MAIN" "$COVER"; do
+    [ -r "$f" ] || gate_refuse "cannot read $f"
+    jq -e 'type == "object"' "$f" >/dev/null 2>&1 || gate_refuse "$f is not a JSON object"
+done
+
 fails=0
 for field in '.linux.capabilities' '.network.type' '.pidhost' '.interface.types'; do
     a=$(jq -cS "$field" "$MAIN")

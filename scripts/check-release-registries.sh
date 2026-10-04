@@ -60,7 +60,7 @@ set -uo pipefail
 
 CANONICAL_REPO="${CANONICAL_REPO:-claymore666/docker-net-dhcp}"
 
-refuse() { echo "check-release-registries: $*" >&2; exit 2; }
+refuse() { gate_refuse "$*"; }
 
 REPO="${REPO:-}"
 HAS_HUB_CREDS="${HAS_HUB_CREDS:-}"
