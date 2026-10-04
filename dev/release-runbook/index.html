@@ -1235,12 +1235,12 @@ v1.3.5 release ended up unable to run step 10's verification, and how
 v1.5.0 was tagged before anyone noticed <code>cosign</code> was absent, leaving the
 signature unverified locally until afterwards.</p>
 <p>Twice is a class, so it has a check now. <strong>Run this before step 1:</strong></p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>bash<span class="w"> </span>scripts/check-release-tooling.sh
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>bash<span class="w"> </span>scripts/preflight-release-tooling.sh
 </code></pre></div>
 <p>Exit 0 means every step below can actually be executed on this box. It
 verifies <code>gh</code>, <code>cosign</code> <strong>major 3</strong>, and a configured <code>user.signingkey</code>;
 <code>crane</code> is reported but optional. Its own table-driven tests run in CI
-(<a href="https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/test-check-release-tooling.sh"><code>scripts/test-check-release-tooling.sh</code></a>),
+(<a href="https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/test-preflight-release-tooling.sh"><code>scripts/test-preflight-release-tooling.sh</code></a>),
 so the check cannot rot into something that always passes.</p>
 <table>
 <thead>
@@ -1280,10 +1280,12 @@ fails with <code>Error: bundle does not contain cert for verification, please
 provide public key</code>, which blames the artifact when the toolchain is the
 problem (#522). That string is now quoted on <a href="../verifying-releases/">Verifying
 releases</a> so a search for it lands on the answer.
-<a href="https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/check-cosign-docs.sh"><code>scripts/check-cosign-docs.sh</code></a>
-keeps every page that prints a cosign command naming the same major as
-<a href="https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/check-release-tooling.sh"><code>scripts/check-release-tooling.sh</code></a>
-enforces.</p>
+The <code>cosign-major-stated</code> entry of
+<a href="https://github.com/claymore666/docker-net-dhcp/blob/main/.github/doc-invariants.txt"><code>.github/doc-invariants.txt</code></a>
+keeps every page that prints a cosign command naming the major in
+<a href="https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/release-tooling.env"><code>scripts/release-tooling.env</code></a>,
+the one place the major is written; <code>release.yml</code> and the preflight above
+read it too.</p>
 <p>Also needed, but already true on any box that has committed here: a
 git signing key, since step 9 tags with <code>-s</code>. Confirm with
 <code>git config --get user.signingkey</code> before you get to the tag.</p>
@@ -1706,9 +1708,9 @@ be true.</p>
    for. A removed or renamed option, setting, Health field or tag is a
    major, whatever the milestone says.</p>
 <p><strong>Read the pages whole, and aim at the ungated prose.</strong> The
-   reference material defends itself: <code>check-option-docs.sh</code>,
-   <code>check-docs-drift.sh</code> and <code>check-version-pins.sh</code> gate every driver
-   option, health counter, plugin setting and image pin, so those tables
+   reference material defends itself: <code>check-docs-drift.sh</code> and
+   <code>check-version-pins.sh</code> gate every driver option, health counter,
+   plugin setting and image pin, so those tables
    are the <em>least</em> likely place to find drift. What rots is everything
    else: a walkthrough's shell snippet, a troubleshooting row, a
    sentence in a Behaviour section, a hand-maintained list. The v1.5.0
