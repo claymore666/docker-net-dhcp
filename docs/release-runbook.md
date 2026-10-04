@@ -54,10 +54,12 @@ fails with `Error: bundle does not contain cert for verification, please
 provide public key`, which blames the artifact when the toolchain is the
 problem (#522). That string is now quoted on [Verifying
 releases](verifying-releases.md) so a search for it lands on the answer.
-[`scripts/check-cosign-docs.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/check-cosign-docs.sh)
-keeps every page that prints a cosign command naming the same major as
-[`scripts/check-release-tooling.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/check-release-tooling.sh)
-enforces.
+The `cosign-major-stated` entry of
+[`.github/doc-invariants.txt`](https://github.com/claymore666/docker-net-dhcp/blob/main/.github/doc-invariants.txt)
+keeps every page that prints a cosign command naming the major in
+[`scripts/release-tooling.env`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/release-tooling.env),
+the one place the major is written; `release.yml` and the preflight above
+read it too.
 
 Also needed, but already true on any box that has committed here: a
 git signing key, since step 9 tags with `-s`. Confirm with

@@ -129,7 +129,6 @@ LANE=(
   "publish/verify parity|-|bash scripts/check-publish-verify-parity.sh"
   "registry name list|-|bash scripts/check-registry-name-list.sh"
   "runbook walkthrough|-|bash scripts/check-runbook-release-steps.sh"
-  "cosign docs|-|bash scripts/check-cosign-docs.sh"
   "dispatch-ref guard|-|bash scripts/check-dispatch-ref-guard.sh"
   "latest promotion order|-|bash scripts/check-latest-promotion.sh"
   # `go` rather than `-`: half of it is a measurement, not a scan -- it
