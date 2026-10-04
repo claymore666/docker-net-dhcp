@@ -161,6 +161,13 @@ find = [s for s in job["steps"] if s.get("id") == "run"][0]["run"]
 bad = []
 if not re.search(r"deadline=.*\+ *\$?\{?ENGINE_WAIT_SECONDS", find):
     bad.append("the wait step does not derive its deadline from ENGINE_WAIT_SECONDS")
+# The job value is the one number; a step-level env or an assignment in
+# the script would shadow it where this check does not look.
+for st in job["steps"]:
+    if "ENGINE_WAIT_SECONDS" in (st.get("env") or {}):
+        bad.append("step %r sets its own ENGINE_WAIT_SECONDS" % st.get("name"))
+    if re.search(r"(^|\s)ENGINE_WAIT_SECONDS=", st.get("run") or ""):
+        bad.append("step %r assigns ENGINE_WAIT_SECONDS in its script" % st.get("name"))
 if wait < 2 * lane:
     bad.append("wait %d s is under two serialised lanes (%d s)" % (wait, 2 * lane))
 if wait + 300 > ceiling:
@@ -188,6 +195,16 @@ bound_case "a wait that fills the job ceiling is refused" "$TMP/release-low-ceil
 
 sed 's/+ ENGINE_WAIT_SECONDS ))/+ 3900 ))/' "$RELEASE_YML" > "$TMP/release-hardcoded.yml"
 bound_case "a wait step that ignores the declared bound is refused" "$TMP/release-hardcoded.yml" 1
+
+python3 - "$RELEASE_YML" "$TMP/release-step-env.yml" <<'PY'
+import sys, yaml
+doc = yaml.safe_load(open(sys.argv[1]))
+for st in doc["jobs"]["production-shape"]["steps"]:
+    if st.get("id") == "run":
+        st.setdefault("env", {})["ENGINE_WAIT_SECONDS"] = "600"
+yaml.safe_dump(doc, open(sys.argv[2], "w"))
+PY
+bound_case "a step-level ENGINE_WAIT_SECONDS that shadows the job value is refused" "$TMP/release-step-env.yml" 1
 
 echo
 if [ "$failures" -ne 0 ]; then

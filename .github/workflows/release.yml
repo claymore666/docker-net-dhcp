@@ -375,13 +375,13 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       # BOUNDED: "still running" is a rerun of this job, "never ran" is
-      # a tag nobody measured. THE BOUND IS TWO LANES (#1205). The last
-      # 40 engine-matrix runs took 15 to 31 min. A tag push starts a
-      # second run of the branch push's commit, and both sit in one
-      # concurrency group keyed on the sha, so the tag's run queues
-      # until the branch run ends: v2.4.0-rc1 (run 37167600922) was 16
-      # min queued plus 16 min running, ending 83 s after the 1800 s gate quit. Two
-      # lanes at 31 min is 62 min; a third run replaces the pending one.
+      # a tag nobody measured. THE BOUND IS TWO LANES (#1205). Runs
+      # 37116339090 to 37195980909 (2026-10-03/04) took 15 to 31 min
+      # unqueued. A tag push starts a second run of the branch push's
+      # commit; both share a concurrency group keyed on the sha, so the
+      # tag's run queues until the branch run ends. v2.4.0-rc1 (run
+      # 37167600922): 16 min queued, 16 min running, finished 83 s
+      # after the 1800 s gate step failed. Two 31 min lanes = 62 min.
       - name: Find the engine-matrix run that measured this commit
         id: run
         env:

@@ -215,7 +215,7 @@ clears the second.
 the engine-matrix run of the tag's own commit. A tag push starts a second
 run of the commit the branch push already started, the two share one
 concurrency group, and the tag's run queues until the first one ends, so
-two lanes of 15 to 31 minutes each can run back to back. The gate waits
+two lanes of 15 to 31 minutes each (measured 2026-10-03/04) can run back to back. The gate waits
 `ENGINE_WAIT_SECONDS` (3900) before refusing with "The engine-matrix run
 has not finished"; that refusal means the lane was slow, not that the tag
 is wrong, and rerunning the failed jobs once the lane reports clears it.
