@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -66,13 +67,18 @@ func TestBuildResolvConf_SearchListPrecedence(t *testing.T) {
 // new content. Trailing NULs are trimmed: a plain growing write was seen as the old content plus a NUL, or as the new
 // content cut at the old length (tmpfs, 1 to 3 in 400000 reads); the hook test below pins the extension.
 type resolvReadStats struct {
-	reads, empty, torn, spliced int
+	reads, empty, torn, spliced, stale int
+	tornSeen                           [][]byte
 }
 
 // resolvSplice reports a same-length mix of valid states, each byte from some state or a NUL (#1188). A reader's read(2)
 // copies while the write's copy or the Truncate's zeroing runs: about 1 in 30000 reads here (measured 2026-10-03,
 // tmpfs), and no in-place write avoids it. The hook test pins the states a mix cannot explain.
-func resolvSplice(got []byte, states [][]byte) bool {
+// With longer, a byte may also come from a longer state (#1215): read(2) stops at the size it sampled before a copy
+// that can fault and sleep, so it returns a later grow's bytes cut at the old length. Measured 2026-10-04, reader page
+// unmapped before each read: 609 of 86089 reads on ext4, 6 of 116508 on tmpfs, each in a faulting read and each the
+// long content cut at the short one's length. Hosted lanes had 3 unclassified reads in 161661 before this class.
+func resolvSplice(got []byte, states [][]byte, longer bool) bool {
 	same := false
 	for _, s := range states {
 		if len(s) == len(got) {
@@ -88,7 +94,7 @@ func resolvSplice(got []byte, states [][]byte) bool {
 		}
 		hit := false
 		for _, o := range states {
-			if len(o) == len(got) && o[i] == c {
+			if (len(o) == len(got) || longer && len(o) > len(got)) && o[i] == c {
 				hit = true
 				break
 			}
@@ -126,7 +132,7 @@ func readOnce(path string, buf []byte) ([]byte, error) {
 	return buf[:n], nil
 }
 
-func readWhileRewriting(t *testing.T, path string, contents [][]byte, rounds int) resolvReadStats {
+func readWhileRewriting(t *testing.T, path string, contents [][]byte, rounds int, read func() ([]byte, error)) resolvReadStats {
 	t.Helper()
 	var st resolvReadStats
 	var states [][]byte
@@ -139,14 +145,13 @@ func readWhileRewriting(t *testing.T, path string, contents [][]byte, rounds int
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		buf := make([]byte, 4096)
 		for {
 			select {
 			case <-stop:
 				return
 			default:
 			}
-			got, err := readOnce(path, buf)
+			got, err := read()
 			if err != nil {
 				continue
 			}
@@ -164,12 +169,19 @@ func readWhileRewriting(t *testing.T, path string, contents [][]byte, rounds int
 					break
 				}
 			}
-			if !ok && resolvSplice(raw, states) {
+			if !ok && resolvSplice(raw, states, false) {
 				st.spliced++
+				continue
+			}
+			if !ok && resolvSplice(raw, states, true) {
+				st.stale++
 				continue
 			}
 			if !ok {
 				st.torn++
+				if len(st.tornSeen) < 5 {
+					st.tornSeen = append(st.tornSeen, append([]byte(nil), raw...))
+				}
 			}
 		}
 	}()
@@ -202,18 +214,161 @@ func TestWriteResolvConfFile_ReaderNeverSeesEmptyOrTorn(t *testing.T) {
 			if err := os.WriteFile(path, tc.contents[len(tc.contents)-1], 0644); err != nil {
 				t.Fatal(err)
 			}
-			st := readWhileRewriting(t, path, tc.contents, 20000)
-			t.Logf("reads=%d empty=%d torn=%d spliced=%d", st.reads, st.empty, st.torn, st.spliced)
+			buf := make([]byte, 4096)
+			st := readWhileRewriting(t, path, tc.contents, 20000, func() ([]byte, error) { return readOnce(path, buf) })
+			t.Logf("reads=%d empty=%d torn=%d spliced=%d stale=%d", st.reads, st.empty, st.torn, st.spliced, st.stale)
 			if st.reads == 0 {
 				t.Fatal("reader never read")
 			}
 			if st.empty != 0 {
 				t.Errorf("reader saw %d empty reads", st.empty)
 			}
-			if st.torn != 0 {
-				t.Errorf("reader saw %d reads that were neither the old nor the new content", st.torn)
+			resolvReportTorn(t, st, tc.contents)
+		})
+	}
+}
+
+// resolvReportTorn fails t on any torn read and logs the first ones beside each content (#1215).
+func resolvReportTorn(t *testing.T, st resolvReadStats, contents [][]byte) {
+	t.Helper()
+	if st.torn == 0 {
+		return
+	}
+	t.Errorf("reader saw %d reads that were neither the old nor the new content", st.torn)
+	for i, c := range contents {
+		t.Logf("content %d: len=%d %q", i, len(c), c)
+	}
+	for _, got := range st.tornSeen {
+		t.Logf("torn read: len=%d %q", len(got), got)
+	}
+}
+
+func TestResolvSplice_StaleSizeTakesOnlyLongerStates(t *testing.T) {
+	long := buildResolvConf([]string{"192.0.2.1", "192.0.2.2", "192.0.2.3"}, []string{"a.example", "b.example"}, "", "")
+	short := buildResolvConf([]string{"192.0.2.9"}, nil, "", "")
+	states := [][]byte{long, short, resolvPadTo(short, len(long))}
+	mixed := append(append([]byte{}, short[:len(short)-10]...), long[len(short)-10:len(short)]...)
+	foreign := append([]byte{}, short...)
+	foreign[len(foreign)-3] = 'X'
+
+	for _, tc := range []struct {
+		name          string
+		got           []byte
+		splice, stale bool
+	}{
+		{"long_cut_at_short_length", long[:len(short)], false, true},
+		{"short_head_long_tail_at_short_length", mixed, false, true},
+		{"padded_short_over_long_at_long_length", append(append([]byte{}, short...), long[len(short):]...), true, true},
+		{"nul_tail_at_long_length", append(append([]byte{}, short...), make([]byte, len(long)-len(short))...), true, true},
+		{"a_byte_from_no_state", foreign, false, false},
+		{"a_length_that_is_no_state", long[:len(short)+1], false, false},
+		{"long_bytes_past_any_state", append(append([]byte{}, long...), '#'), false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resolvSplice(tc.got, states, false); got != tc.splice {
+				t.Errorf("same-length splice = %v, want %v for %q", got, tc.splice, tc.got)
+			}
+			if got := resolvSplice(tc.got, states, true); got != tc.stale {
+				t.Errorf("stale-size splice = %v, want %v for %q", got, tc.stale, tc.got)
 			}
 		})
+	}
+}
+
+func TestReadWhileRewriting_CountsEachReadInItsClassAndKeepsFiveTorn(t *testing.T) {
+	long := buildResolvConf([]string{"192.0.2.1", "192.0.2.2", "192.0.2.3"}, []string{"a.example", "b.example"}, "", "")
+	short := buildResolvConf([]string{"192.0.2.9"}, nil, "", "")
+	path := filepath.Join(t.TempDir(), "resolv.conf")
+	if err := os.WriteFile(path, short, 0644); err != nil {
+		t.Fatal(err)
+	}
+	foreign := func(n int) []byte { return []byte(fmt.Sprintf("nameserver 203.0.113.%d\n", n)) }
+	seq := [][]byte{long, nil, append(append([]byte{}, short...), long[len(short):]...), long[:len(short)]}
+	for n := 0; n < 7; n++ {
+		seq = append(seq, foreign(n))
+	}
+	consumed := make(chan struct{})
+	resolvRewriteStep = func(string) { <-consumed }
+	t.Cleanup(func() { resolvRewriteStep = func(string) {} })
+	next := 0
+	st := readWhileRewriting(t, path, [][]byte{long, short}, 1, func() ([]byte, error) {
+		if next == len(seq) {
+			return long, nil
+		}
+		next++
+		if next == len(seq) {
+			close(consumed)
+		}
+		return seq[next-1], nil
+	})
+	if st.empty != 1 || st.spliced != 1 || st.stale != 1 || st.torn != 7 {
+		t.Errorf("empty=%d spliced=%d stale=%d torn=%d, want 1 1 1 7", st.empty, st.spliced, st.stale, st.torn)
+	}
+	if len(st.tornSeen) != 5 {
+		t.Fatalf("kept %d torn reads, want the first 5", len(st.tornSeen))
+	}
+	for n, got := range st.tornSeen {
+		if !bytes.Equal(got, foreign(n)) {
+			t.Errorf("torn read %d kept as %q, want %q", n, got, foreign(n))
+		}
+	}
+}
+
+func TestWriteResolvConfFile_StalledReaderSeesOnlyModelledStates(t *testing.T) {
+	long := buildResolvConf([]string{"192.0.2.1", "192.0.2.2", "192.0.2.3"}, []string{"a.example", "b.example"}, "", "")
+	short := buildResolvConf([]string{"192.0.2.9"}, nil, "", "")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "resolv.conf")
+	if err := os.WriteFile(path, short, 0644); err != nil {
+		t.Fatal(err)
+	}
+	bfd, err := unix.Open(filepath.Join(dir, "buf"), unix.O_RDWR|unix.O_CREAT|unix.O_CLOEXEC, 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { unix.Close(bfd) })
+	if err := unix.Ftruncate(bfd, 4096); err != nil {
+		t.Fatal(err)
+	}
+	mbuf, err := unix.Mmap(bfd, 0, 4096, unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { unix.Munmap(mbuf) })
+	if err := unix.Madvise(mbuf, unix.MADV_PAGEOUT); err != nil {
+		t.Fatalf("MADV_PAGEOUT: %v", err)
+	}
+
+	faulted := 0
+	st := readWhileRewriting(t, path, [][]byte{long, short}, 20000, func() ([]byte, error) {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		_ = unix.Madvise(mbuf, unix.MADV_PAGEOUT)
+		_ = unix.Fadvise(bfd, 0, 0, unix.FADV_DONTNEED)
+		fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC, 0)
+		if err != nil {
+			return nil, err
+		}
+		defer unix.Close(fd)
+		var before, after unix.Rusage
+		_ = unix.Getrusage(unix.RUSAGE_THREAD, &before)
+		n, _, errno := unix.Syscall(unix.SYS_READ, uintptr(fd), uintptr(unsafe.Pointer(&mbuf[0])), uintptr(len(mbuf)))
+		_ = unix.Getrusage(unix.RUSAGE_THREAD, &after)
+		if errno != 0 {
+			return nil, errno
+		}
+		if after.Majflt+after.Minflt > before.Majflt+before.Minflt {
+			faulted++
+		}
+		return mbuf[:n], nil
+	})
+	t.Logf("reads=%d faulted=%d empty=%d torn=%d spliced=%d stale=%d", st.reads, faulted, st.empty, st.torn, st.spliced, st.stale)
+	if st.empty != 0 {
+		t.Errorf("reader saw %d empty reads", st.empty)
+	}
+	resolvReportTorn(t, st, [][]byte{long, short})
+	if faulted == 0 {
+		t.Errorf("no read faulted on its buffer, so none stalled: the kernel kept the page mapped in %s", dir)
 	}
 }
 
