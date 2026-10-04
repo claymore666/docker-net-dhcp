@@ -304,9 +304,12 @@ cosign_check "file: and scope: are both judged" 1 c-add "README.md no longer con
 # one value from one line (#745). The last two are measured by running the
 # sed each of them contains, taken from the file itself, so an edit to
 # either is seen here.
-sed_of() { # <file> -> the first s/^COSIGN_MAJOR=.../ expression in it
+# Comment lines are dropped first: a comment quoting an old expression must
+# not stand in for the one the file runs.
+code_of() { grep -v '^[[:space:]]*#' "$1" || true; }
+sed_of() { # <file> -> the first s/^COSIGN_MAJOR=.../ expression it runs
     local out
-    out="$(grep -o 's/^COSIGN_MAJOR=[^'"'"']*' "$1" || true)"
+    out="$(code_of "$1" | grep -o 's/^COSIGN_MAJOR=[^'"'"']*' || true)"
     printf '%s' "${out%%$'\n'*}"
 }
 REL_EXPR="$(sed_of "$REPO/.github/workflows/release.yml")"
@@ -346,7 +349,7 @@ agree quoted 'COSIGN_MAJOR="3"' ''
 agree word 'COSIGN_MAJOR=v3' ''
 
 # The committed data file and the signing step must name the same file.
-read_lines="$(grep -A1 "sed -n 's/^COSIGN_MAJOR=" "$REPO/.github/workflows/release.yml" || true)"
+read_lines="$(code_of "$REPO/.github/workflows/release.yml" | grep -A1 "sed -n 's/^COSIGN_MAJOR=" || true)"
 if [[ "$read_lines" == *scripts/release-tooling.env* ]] \
     && ! grep -q 'COSIGN_MAJOR=[0-9]' "$REPO/.github/workflows/release.yml"; then
     echo "PASS: release.yml reads the data file and holds no major of its own"

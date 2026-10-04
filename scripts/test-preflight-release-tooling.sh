@@ -142,11 +142,22 @@ unset CASE_CHECK
 REPO="$(cd "$(dirname "$CHECK")/.." && pwd)"
 # The read itself (the sed and the file it is given), not the name in an error
 # message: pointing the sed at another file must fail here.
-read_lines="$(grep -A1 "sed -n 's/^COSIGN_MAJOR=" "$REPO/.github/workflows/release.yml" || true)"
+# Comment lines are dropped first: a comment that quotes the read must not
+# stand in for the line the step runs.
+read_lines="$(grep -v '^[[:space:]]*#' "$REPO/.github/workflows/release.yml" | grep -A1 "sed -n 's/^COSIGN_MAJOR=" || true)"
 if [[ "$read_lines" == *scripts/release-tooling.env* ]]; then
     echo "PASS: release.yml reads scripts/release-tooling.env"
 else
     echo "FAIL: release.yml does not read scripts/release-tooling.env"
+    failures=$((failures + 1))
+fi
+# Both read the major with one sed expression (the one each actually runs).
+rel_expr="$(grep -v '^[[:space:]]*#' "$REPO/.github/workflows/release.yml" | grep -o 's/^COSIGN_MAJOR=[^'"'"']*' || true)"
+pf_expr="$(grep -v '^[[:space:]]*#' "$CHECK" | grep -o 's/^COSIGN_MAJOR=[^'"'"']*' || true)"
+if [ -n "$pf_expr" ] && [ "${rel_expr%%$'\n'*}" = "${pf_expr%%$'\n'*}" ]; then
+    echo "PASS: release.yml and this preflight read the major with the same sed"
+else
+    echo "FAIL: release.yml ('$rel_expr') and the preflight ('$pf_expr') read the major differently"
     failures=$((failures + 1))
 fi
 literals="$(cd "$REPO" && git grep -lE 'COSIGN_MAJOR=[0-9]' -- . \
