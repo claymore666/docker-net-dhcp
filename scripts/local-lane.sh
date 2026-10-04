@@ -83,7 +83,6 @@ LANE=(
   "staticcheck (integration view)|staticcheck|staticcheck -tags integration ./..."
   "shellcheck (scripts+runner+netboot)|shellcheck|shellcheck -S warning scripts/*.sh ci/runner-image/*.sh test/arm64-netboot/*.sh"
   "actionlint|actionlint|actionlint"
-  "option-docs drift|-|bash scripts/check-option-docs.sh"
   "starter-task claims|-|bash scripts/check-good-first-issues.sh --static"
   "docs drift|-|bash scripts/check-docs-drift.sh"
   "comment budget|go|bash scripts/check-comment-budget.sh origin/dev..HEAD"

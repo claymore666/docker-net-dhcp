@@ -530,9 +530,9 @@ be true.
    *is* the site review; there's no separate wiki to reconcile.
 
    **Read the pages whole, and aim at the ungated prose.** The
-   reference material defends itself: `check-option-docs.sh`,
-   `check-docs-drift.sh` and `check-version-pins.sh` gate every driver
-   option, health counter, plugin setting and image pin, so those tables
+   reference material defends itself: `check-docs-drift.sh` and
+   `check-version-pins.sh` gate every driver option, health counter,
+   plugin setting and image pin, so those tables
    are the *least* likely place to find drift. What rots is everything
    else: a walkthrough's shell snippet, a troubleshooting row, a
    sentence in a Behaviour section, a hand-maintained list. The v1.5.0

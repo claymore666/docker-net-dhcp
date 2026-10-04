@@ -11,8 +11,7 @@ driver-option key the code parses, every health counter the plugin
 emits, and every setting the **shipped** plugin accepts appears in this
 document, and that none of them is documented a second time somewhere
 else
-([`scripts/check-option-docs.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/check-option-docs.sh),
-[`scripts/check-docs-drift.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/check-docs-drift.sh)).
+([`scripts/check-docs-drift.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/check-docs-drift.sh)).
 The claims made *about* those counters, which five flip `healthy`, are
 enforced separately, wherever this page states them
 ([`scripts/check-health-contract.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/check-health-contract.sh)).

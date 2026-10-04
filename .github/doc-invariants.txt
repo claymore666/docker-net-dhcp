@@ -6,8 +6,8 @@
 # Some documentation is reference material — it describes what the
 # current version does, and it is supposed to change when the code
 # changes. Gates already cover that kind: check-docs-drift.sh judges
-# counters and settings, check-option-docs.sh judges driver-opts,
-# check-version-pins.sh judges image pins.
+# counters, settings and driver-opts, check-version-pins.sh judges image
+# pins.
 #
 # A different kind of documentation is a PRECONDITION. It tells the
 # operator to do something before the software will work at all, it is

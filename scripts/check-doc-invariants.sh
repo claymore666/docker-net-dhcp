@@ -15,9 +15,9 @@
 # anywhere that names the directory.
 #
 # Nothing could see it. check-version-pins judges image pins,
-# check-docs-drift judges counters and settings, check-option-docs
-# judges driver-opts — the block is a standing operator instruction with
-# no code fact to reconcile against, so it fell between all three. And
+# check-docs-drift judges counters, settings and driver-opts — the block
+# is a standing operator instruction with no code fact to reconcile
+# against, so it fell between both. And
 # its text names a version, which makes it read as stale the moment a
 # later one ships: a release documentation pass is the likeliest place
 # for it to be deleted, in good faith, with nothing going red.

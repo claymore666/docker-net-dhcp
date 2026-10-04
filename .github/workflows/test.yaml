@@ -395,11 +395,6 @@ jobs:
       - name: Engine-matrix option check
         run: bash scripts/check-engine-matrix-options.sh
 
-      # Every driver-option key the code parses must be documented in
-      # docs/reference.md — an undocumented option turns CI red (#132).
-      - name: Option-docs drift check
-        run: bash scripts/check-option-docs.sh
-
       # Only the half that needs no network (#537, widened by #851). The
       # badge's small_tasks answer and the README's Contributing section must
       # agree with each other: Met means both link a listing of the declared
