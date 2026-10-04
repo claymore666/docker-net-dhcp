@@ -26,13 +26,13 @@ signature unverified locally until afterwards.
 Twice is a class, so it has a check now. **Run this before step 1:**
 
 ```sh
-bash scripts/check-release-tooling.sh
+bash scripts/preflight-release-tooling.sh
 ```
 
 Exit 0 means every step below can actually be executed on this box. It
 verifies `gh`, `cosign` **major 3**, and a configured `user.signingkey`;
 `crane` is reported but optional. Its own table-driven tests run in CI
-([`scripts/test-check-release-tooling.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/test-check-release-tooling.sh)),
+([`scripts/test-preflight-release-tooling.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/test-preflight-release-tooling.sh)),
 so the check cannot rot into something that always passes.
 
 | Tool | Needed for | Install |
@@ -54,10 +54,12 @@ fails with `Error: bundle does not contain cert for verification, please
 provide public key`, which blames the artifact when the toolchain is the
 problem (#522). That string is now quoted on [Verifying
 releases](verifying-releases.md) so a search for it lands on the answer.
-[`scripts/check-cosign-docs.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/check-cosign-docs.sh)
-keeps every page that prints a cosign command naming the same major as
-[`scripts/check-release-tooling.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/check-release-tooling.sh)
-enforces.
+The `cosign-major-stated` entry of
+[`.github/doc-invariants.txt`](https://github.com/claymore666/docker-net-dhcp/blob/main/.github/doc-invariants.txt)
+keeps every page that prints a cosign command naming the major in
+[`scripts/release-tooling.env`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/release-tooling.env),
+the one place the major is written; `release.yml` and the preflight above
+read it too.
 
 Also needed, but already true on any box that has committed here: a
 git signing key, since step 9 tags with `-s`. Confirm with
@@ -536,9 +538,9 @@ be true.
    major, whatever the milestone says.
 
    **Read the pages whole, and aim at the ungated prose.** The
-   reference material defends itself: `check-option-docs.sh`,
-   `check-docs-drift.sh` and `check-version-pins.sh` gate every driver
-   option, health counter, plugin setting and image pin, so those tables
+   reference material defends itself: `check-docs-drift.sh` and
+   `check-version-pins.sh` gate every driver option, health counter,
+   plugin setting and image pin, so those tables
    are the *least* likely place to find drift. What rots is everything
    else: a walkthrough's shell snippet, a troubleshooting row, a
    sentence in a Behaviour section, a hand-maintained list. The v1.5.0

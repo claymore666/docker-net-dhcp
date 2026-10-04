@@ -25,7 +25,13 @@
 #   --static  properties of the TREE: the declaration is well formed, and
 #             the labeller's two lists are subsets of it. Cannot become
 #             false without a commit, so it gates pull requests (test.yaml
-#             and the local lane).
+#             and the local lane). It also holds what the issue label-map gate
+#             held until #745 folded it in (#393): every rule regex compiles,
+#             every rule label is in ALLOWED_LABELS, and the rule map
+#             classifies the title fixture exactly as recorded. The action
+#             matches with JavaScript's RegExp and this gate with Python's re,
+#             so the map keeps to their common subset (anchors, groups,
+#             classes, quantifiers, the /.../i form).
 #
 #   --live    properties of the TRACKER: its label set matches the
 #             declaration in both directions, descriptions included, and no
@@ -60,11 +66,12 @@
 # a retry loop trades a self-correcting false positive for a gate that hides
 # a real one.
 #
-# Usage: check-label-taxonomy.sh --static [<labels>] [<map>] [<workflow>]
+# Usage: check-label-taxonomy.sh --static [<labels>] [<map>] [<workflow>] [<fixture>]
 #        check-label-taxonomy.sh --live   [<labels>]
 #   defaults: .github/labels.yml
 #             .github/issue-labeler.yml
-#             .github/workflows/issue-labeler.yml   (run from the repo root)
+#             .github/workflows/issue-labeler.yml
+#             scripts/testdata/issue-titles.tsv     (run from the repo root)
 # Env:   REPO        owner/name for --live (default: ask `gh`)
 #        LT_GH       the `gh` to run for --live (default: gh)
 #
@@ -92,7 +99,7 @@ MODE="${1:---static}"
 case "$MODE" in
     --static|--live) shift ;;
     *)
-        echo "usage: $0 --static|--live [<labels>] [<map>] [<workflow>]" >&2
+        echo "usage: $0 --static|--live [<labels>] [<map>] [<workflow>] [<fixture>]" >&2
         exit 2
         ;;
 esac
@@ -100,6 +107,7 @@ esac
 LABELS="${1:-.github/labels.yml}"
 MAP="${2:-.github/issue-labeler.yml}"
 WORKFLOW="${3:-.github/workflows/issue-labeler.yml}"
+FIXTURE="${4:-scripts/testdata/issue-titles.tsv}"
 
 if [ ! -f "$LABELS" ]; then
     echo "FAIL  missing declaration: $LABELS" >&2
@@ -113,14 +121,14 @@ fi
 
 # ---------------------------------------------------------------- static
 if [ "$MODE" = "--static" ]; then
-    for f in "$MAP" "$WORKFLOW"; do
+    for f in "$MAP" "$WORKFLOW" "$FIXTURE"; do
         if [ ! -f "$f" ]; then
             echo "FAIL  missing: $f" >&2
             exit 2
         fi
     done
 
-    LABELS="$LABELS" MAP="$MAP" WORKFLOW="$WORKFLOW" python3 - <<'PY'
+    LABELS="$LABELS" MAP="$MAP" WORKFLOW="$WORKFLOW" FIXTURE="$FIXTURE" python3 - <<'PY'
 import os
 import re
 import sys
@@ -133,7 +141,7 @@ def parse_labels(path):
     """Read the declaration.
 
     A small hand parser rather than PyYAML, for the reason
-    check-issue-label-map.sh gives: the CI image carries no YAML
+    #393 gives: the CI image carries no YAML
     dependency, and a parser that accepts less than YAML rejects a file
     that has drifted into a shape a real YAML reader would take
     differently.
@@ -222,26 +230,78 @@ if not [n for n, e in declared.items() if e.get("role") == "dependabot"]:
 APPLICABLE = {"type", "area"}
 
 
-def map_labels(path):
-    names = []
+def parse_map(path):
+    """Read the label -> [(line, pattern)] rule map (#393).
+
+    A hand parser for the same reason as parse_labels: the file's shape is
+    fixed (a label key, then '- pattern' lines), and a parser that accepts
+    less than YAML rejects a map the action would read differently.
+    """
+    rules = {}
+    label_line = {}
+    label = None
     for lineno, raw in enumerate(open(path, encoding="utf-8"), 1):
         line = raw.rstrip("\n")
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         if not line.startswith((" ", "\t", "-")) and line.rstrip().endswith(":"):
-            names.append((lineno, line.rstrip()[:-1].strip()))
-    return names
+            label = line.rstrip()[:-1].strip()
+            rules.setdefault(label, [])
+            label_line.setdefault(label, lineno)
+            continue
+        stripped = line.strip()
+        if stripped.startswith("- "):
+            if label is None:
+                failures.append(f"{path}:{lineno}: pattern before any label")
+                continue
+            value = unquote(stripped[2:])
+            rules[label].append((lineno, value))
+            continue
+        failures.append(f"{path}:{lineno}: cannot parse {line!r}")
+    return rules, label_line
 
 
-for lineno, name in map_labels(os.environ["MAP"]):
+def compile_pattern(pattern):
+    """Mirror the action's /pattern/flags handling; only 'i' is honoured."""
+    m = re.match(r"^/(.+)/([a-z]*)$", pattern)
+    flags = 0
+    body = pattern
+    if m:
+        body, raw_flags = m.group(1), m.group(2)
+        for flag in raw_flags:
+            if flag == "i":
+                flags |= re.IGNORECASE
+            elif flag != "g":
+                # 'g' means nothing to a single match; the rest would change
+                # semantics, so refuse rather than approximate.
+                raise ValueError(f"flag '{flag}' is not supported by this gate")
+    return re.compile(body, flags)
+
+
+map_path = os.environ["MAP"]
+rules, label_line = parse_map(map_path)
+if not rules:
+    failures.append(f"{map_path}: no rules found")
+
+compiled = {}
+for name, patterns in rules.items():
+    if not patterns:
+        failures.append(f"{map_path}: label '{name}' has no patterns")
+    for lineno, pattern in patterns:
+        try:
+            compiled.setdefault(name, []).append(compile_pattern(pattern))
+        except (re.error, ValueError) as exc:
+            failures.append(f"{map_path}:{lineno}: bad regex {pattern!r}: {exc}")
+
+for name, lineno in label_line.items():
     if name not in declared:
         failures.append(
-            f"{os.environ['MAP']}:{lineno}: rule label {name!r} is not declared "
+            f"{map_path}:{lineno}: rule label {name!r} is not declared "
             f"in {labels_path}"
         )
     elif declared[name].get("role") not in APPLICABLE:
         failures.append(
-            f"{os.environ['MAP']}:{lineno}: rule label {name!r} has role "
+            f"{map_path}:{lineno}: rule label {name!r} has role "
             f"{declared[name].get('role')!r}; the labeller may only apply "
             f"{' or '.join(sorted(APPLICABLE))}"
         )
@@ -297,6 +357,48 @@ if allowed is not None:
                 f"{declared[name].get('role')!r}; the labeller may only apply "
                 f"{' or '.join(sorted(APPLICABLE))}"
             )
+    # The model pass must know every label a rule can apply. Declared and
+    # applicable (above) does not imply listed: a rule label missing here is
+    # one nothing else in the labeller recognises (#393).
+    for name in sorted(rules):
+        if name not in allowed:
+            failures.append(
+                f"{map_path}: label '{name}' is not in ALLOWED_LABELS in {wf_path}"
+            )
+
+
+def classify(title):
+    """Reproduce the action: the target is the title plus a blank line, and
+    several patterns under one label are ANDed."""
+    target = f"{title}\n\n"
+    return [n for n in sorted(compiled) if all(p.search(target) for p in compiled[n])]
+
+
+# The rule map classifies the fixture of real titles exactly as recorded,
+# negatives included: a pattern that rots moves cost onto the model pass
+# and fails nothing at runtime (#393).
+fixture_path = os.environ["FIXTURE"]
+checked = 0
+for lineno, raw in enumerate(open(fixture_path, encoding="utf-8"), 1):
+    line = raw.rstrip("\n")
+    if not line.strip() or line.lstrip().startswith("#"):
+        continue
+    parts = line.split("\t")
+    if len(parts) != 2:
+        failures.append(f"{fixture_path}:{lineno}: want '<title>\\t<labels>'")
+        continue
+    title, expected_raw = parts[0], parts[1].strip()
+    expected = [] if expected_raw == "-" else sorted(
+        p.strip() for p in expected_raw.split(",") if p.strip()
+    )
+    got = classify(title)
+    checked += 1
+    if got != expected:
+        failures.append(
+            f"{fixture_path}:{lineno}: {title!r}\n"
+            f"    want [{', '.join(expected) or '-'}]\n"
+            f"    got  [{', '.join(got) or '-'}]"
+        )
 
 if failures:
     for f in failures:
@@ -307,7 +409,10 @@ by_role = {}
 for name, e in declared.items():
     by_role.setdefault(e["role"], []).append(name)
 summary = ", ".join(f"{len(v)} {k}" for k, v in sorted(by_role.items()))
-print(f"Label taxonomy OK (static) — {len(declared)} labels: {summary}.")
+print(
+    f"Label taxonomy OK (static) — {len(declared)} labels: {summary}; "
+    f"{len(rules)} rules, {checked} fixture titles."
+)
 PY
     exit $?
 fi

@@ -53,7 +53,7 @@
 #
 # A mention is not an invocation: a comment, an `echo` argument, a step
 # `name:` or an `if:` naming a script counted as running it until #883,
-# which hid check-release-tooling.sh as wired while no workflow ran it.
+# which hid a release preflight as wired while no workflow ran it.
 # Invocations are the words shell_command_words finds in command position.
 #
 # WHAT IT CANNOT DO

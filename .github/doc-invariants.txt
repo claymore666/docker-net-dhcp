@@ -6,8 +6,8 @@
 # Some documentation is reference material — it describes what the
 # current version does, and it is supposed to change when the code
 # changes. Gates already cover that kind: check-docs-drift.sh judges
-# counters and settings, check-option-docs.sh judges driver-opts,
-# check-version-pins.sh judges image pins.
+# counters, settings and driver-opts, check-version-pins.sh judges image
+# pins.
 #
 # A different kind of documentation is a PRECONDITION. It tells the
 # operator to do something before the software will work at all, it is
@@ -35,6 +35,13 @@
 #       file: <path relative to the repo root>      (one or more)
 #       marker: <literal substring>                 (one or more)
 #       <justification, indented, one or more lines>
+#
+# Three optional declarations widen an entry (#745): `scope: <ERE>`
+# replaces the file list with every tracked Markdown page that has a
+# matching line, `var: NAME=<path>` reads NAME from a `NAME=<n>` line
+# and fills `${NAME}` in the markers, and `match: text` ignores case,
+# Markdown emphasis and code ticks. The engine's header in
+# scripts/check-doc-invariants.sh has the exit codes.
 #
 # Entries are separated by blank lines. Every entry needs at least one
 # file, at least one marker, and a justification: an entry with no
@@ -112,3 +119,22 @@ ipam-restart-stability-rule
     explain. This entry exists because that is exactly what happened
     once: the code and the tests landed and the prose did not, and both
     documentation gates stayed green.
+
+cosign-major-stated
+    scope: ^[[:space:]]*cosign verify
+    var: COSIGN_MAJOR=scripts/release-tooling.env
+    marker: cosign v${COSIGN_MAJOR} or newer
+    match: text
+    Every page that prints a cosign verification command must also say
+    which cosign major it needs (#522). A reader on cosign v2 who runs
+    the documented `cosign verify-blob` gets "bundle does not contain
+    cert for verification", which names the bundle and reads as "this
+    release was signed wrong" when the fault is their toolchain, and the
+    person running it is deciding whether to trust the artifact.
+    The major is not written here. COSIGN_MAJOR in
+    scripts/release-tooling.env is the one source of truth; release.yml
+    and the release preflight read it too, so a bump there fails this
+    entry until every page follows. The pages are found, not listed: a
+    new page that copies the command is judged the moment it lands.
+    The phrase matches without Markdown emphasis or code ticks, so
+    "**cosign v3 or newer**" counts.
