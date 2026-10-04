@@ -75,6 +75,15 @@
 # (curl); a copy from a registry the workflow did not fill; a plain scalar
 # continued on deeper lines. Make `push` is trusted by its name.
 #
+# WHAT THE QUOTE SCANNER CAN STILL MISS (#798). It reads a `run:` body as
+# bash does, with these bounds: a `#` after whitespace is a comment even
+# inside `${...}` or `[[ ]]`, where bash may read data, and the rest of that
+# line is not seen; a heredoc whose delimiter is `<<$X`, a digit-led word or
+# empty is not recognised, and its body is then read with quote tracking;
+# the quote reader is qsplit's only, so a `$'...'` string is one word in
+# the other readers (a tool word in it refuses). Heredoc bodies are read as
+# commands, so prose naming a registry tool there refuses rather than passes.
+#
 # THE COUNT IS NOT A BACKSTOP. A missed job leaves the population, so it
 # drops out of the serialisation check and the count together: a third
 # publisher the classifier does see keeps the count at two and the file
@@ -193,20 +202,53 @@ parsed="$(awk '
     # inside an echo string must not make a command position. The quote
     # state QS carries across the lines of one `run:` body, so a string
     # closed on this line and one opened on it leave the command between.
-    function qsplit(s, segs,   i, c, q, out) {
+    # Text bash does not parse as a string never reaches that state: a `#`
+    # at a word start cuts the line (CUT), and the lines after a `<<WORD`
+    # up to WORD are split with no quote tracking, which reads every
+    # command in them (bash <<EOF) and carries nothing out (#798).
+    # dry=1 only reports CUT and leaves QS and the heredoc queue alone.
+    function qsplit(s, segs, dry,   i, c, q, out, t, w) {
+        CUT = 0
+        if (HDN > 0) {
+            t = s; sub(/^[[:space:]]+/, "", t)
+            if (t == HDT[1]) { if (!dry) hd_shift(); return 0 }
+            gsub(/&&|\|\||;|\|/, "\x01", s)
+            return split(s, segs, "\x01")
+        }
         q = QS; out = ""
         for (i = 1; i <= length(s); i++) {
             c = substr(s, i, 1)
             if (c == "\\" && q != 1) { out = out c substr(s, i + 1, 1); i++; continue }
-            if (c == "\x27" && q != 2) { if (q == 1) q = 0; else q = 1 }
-            else if (c == "\"" && q != 1) { if (q == 2) q = 0; else q = 2 }
+            if (q == 0 && c == "$" && substr(s, i + 1, 1) == "\x27") { q = 3; out = out c "\x27"; i++; continue }
+            if (c == "\x27" && q != 2) { if (q == 1 || q == 3) q = 0; else q = 1 }
+            else if (c == "\"" && q != 1 && q != 3) { if (q == 2) q = 0; else q = 2 }
+            else if (q == 0 && c == "#" && (i == 1 || substr(s, i - 1, 1) ~ /[[:space:];&|(]/)) { CUT = 1; break }
+            else if (q == 0 && c == "<" && substr(s, i + 1, 1) == "<") {
+                if (substr(s, i + 2, 1) == "<") { out = out "<<"; i += 2 }
+                else if (!dry && (w = hd_word(substr(s, i + 2))) != "") HDT[++HDN] = w
+            }
             else if (q == 0 && (c == ";" || c == "|")) c = "\x01"
             else if (q == 0 && c == "&" && substr(s, i + 1, 1) == "&") { c = "\x01"; i++ }
             out = out c
         }
-        QS = q
+        if (!dry) QS = q
         return split(out, segs, "\x01")
     }
+
+    # The delimiter word after `<<`, or "" when it is not a heredoc (`<<2`,
+    # `<<$X`): a miss only drops back to the quote-tracking split (#798).
+    function hd_word(r,   qc) {
+        sub(/^-/, "", r); sub(/^[[:space:]]*/, "", r)
+        if (r ~ /^[\x27"]/) {
+            qc = substr(r, 1, 1); r = substr(r, 2)
+            if (index(r, qc) == 0) return ""
+            return substr(r, 1, index(r, qc) - 1)
+        }
+        if (r !~ /^\\?[A-Za-z_]/) return ""
+        sub(/^\\/, "", r); sub(/[^A-Za-z0-9_.-].*$/, "", r)
+        return r
+    }
+    function hd_shift(   k) { for (k = 1; k < HDN; k++) HDT[k] = HDT[k + 1]; HDN-- }
 
     # A quoted string is one word (#798): `x="$a $b"` assigns, it runs no `$b"`.
     function qword(s,   i, c, q, out) {
@@ -436,13 +478,16 @@ parsed="$(awk '
     # joined first: a `make` invocation split over two lines is one
     # command, and a line-oriented reader sees neither half as a
     # publisher.
-    function feed(line, fnr) {
-        if (line ~ /^[[:space:]]*#/ && cont == "") return   # a shell comment
+    function feed(line, fnr,   tmp) {
+        if (line ~ /^[[:space:]]*#/ && cont == "" && QS == 0) return   # a shell comment
         if (cont != "") { line = cont " " line; cont = "" }
         if (line ~ /\\[[:space:]]*$/) {
-            sub(/\\[[:space:]]*$/, "", line)
-            cont = line
-            return
+            qsplit(line, tmp, 1)   # a backslash inside a comment joins nothing (#798)
+            if (!CUT) {
+                sub(/\\[[:space:]]*$/, "", line)
+                cont = line
+                return
+            }
         }
         classify_line(line, fnr)
     }
@@ -564,7 +609,7 @@ parsed="$(awk '
         ind = index($0, "run:") - 1
         rest = $0
         sub(/^[[:space:]]*(-[[:space:]]+)?run:[[:space:]]*/, "", rest)
-        QS = 0
+        QS = 0; HDN = 0
         if (rest ~ /^[|>]/) { runind = ind; next }   # a block scalar
         runind = -1
         feed(rest, FNR)

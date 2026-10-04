@@ -953,6 +953,162 @@ threepub "$TMP/third-runreset.yml" '      - run: echo "unclosed
 check "each run: starts outside a string (#798)" 1 \
       "$TMP/third-runreset.yml" "release-riscv64 reaches release"
 
+# A stray quote in text bash never parses as a string must not carry (#798):
+# an inline comment, and the body of a heredoc.
+threepub "$TMP/third-comment-apos.yml" "      - run: |
+          docker build -t ghcr.io/x . # don't use the cache here
+          echo \"::group::push\" && docker push ghcr.io/x:riscv64"
+check "an apostrophe in an inline comment does not hide the next push (#798)" 1 \
+      "$TMP/third-comment-apos.yml" "release-riscv64 reaches release"
+
+threepub "$TMP/third-comment-its.yml" "      - run: |
+          docker build -t ghcr.io/x . # it's the arm64 leg
+          echo pushing; docker push ghcr.io/x:riscv64"
+check "a second apostrophe comment does not hide the next push (#798)" 1 \
+      "$TMP/third-comment-its.yml" "release-riscv64 reaches release"
+
+threepub "$TMP/third-comment-dq.yml" "      - run: |
+          docker build -t ghcr.io/x . # the \"fast\" path, then \"
+          echo \"pushing\"; docker push ghcr.io/x:riscv64"
+check "an odd double quote in an inline comment does not hide the next push (#798)" 1 \
+      "$TMP/third-comment-dq.yml" "release-riscv64 reaches release"
+
+threepub "$TMP/third-heredoc-apos.yml" "      - run: |
+          cat > notes.md <<'NOTES'
+          Don't edit by hand.
+          NOTES
+          echo done && docker push ghcr.io/x:riscv64"
+check "an apostrophe in a heredoc body does not hide the push after it (#798)" 1 \
+      "$TMP/third-heredoc-apos.yml" "release-riscv64 reaches release"
+
+# The comment cut must not cut a word: a `#` inside a word or a string is data.
+threepub "$TMP/third-hash-word.yml" "      - run: |
+          echo a#b \"x # y\"; docker push ghcr.io/x:riscv64"
+check "a # inside a word or a string is not a comment (#798)" 1 \
+      "$TMP/third-hash-word.yml" "release-riscv64 reaches release"
+
+# A comment ends at its line: a trailing backslash in it continues nothing.
+threepub "$TMP/third-comment-backslash.yml" "      - run: |
+          docker build -t ghcr.io/x . # one more \\
+          docker push ghcr.io/x:riscv64"
+check "a backslash ending a comment does not join the next line (#798)" 1 \
+      "$TMP/third-comment-backslash.yml" "release-riscv64 reaches release"
+
+# A heredoc body that is run (bash <<EOF) is still read as commands.
+threepub "$TMP/third-heredoc-run.yml" "      - run: |
+          bash <<EOF
+          echo it's; docker push ghcr.io/x:riscv64
+          EOF"
+check "a command in a heredoc body is read (#798)" 1 \
+      "$TMP/third-heredoc-run.yml" "release-riscv64 reaches release"
+
+# A line inside a multi-line string that starts with # is string text.
+threepub "$TMP/third-hash-in-string.yml" "      - run: |
+          echo \"start
+          # note \"; docker push ghcr.io/x:riscv64"
+check "a # line inside a string is read as its text (#798)" 1 \
+      "$TMP/third-hash-in-string.yml" "release-riscv64 reaches release"
+
+# The heredoc reader must end where bash ends it, and must not start on
+# something that is not a heredoc: each case below puts a quoted `crane push`
+# after the construct in a job that publishes nothing, so a reader that split
+# inside quotes would turn that string into a third publisher.
+threefree() {   # threefree <out-file> <steps of a job that publishes nothing>
+    threepub "$1" "$2"
+    sed -i 's/^    needs: release$/    needs: resolve/' "$1"
+}
+
+threefree "$TMP/free-heredoc-end.yml" "      - run: |
+          cat > notes.md <<EOF
+          text
+          EOF
+          echo \"see: x; crane push y\""
+check "a heredoc ends at its terminator (#798)" 0 \
+      "$TMP/free-heredoc-end.yml" "^OK: 2 publishing job(s)"
+
+threefree "$TMP/free-herestring.yml" "      - run: |
+          cat <<< EOF
+          echo \"see: x; crane push y\""
+check "a here-string is not a heredoc (#798)" 0 \
+      "$TMP/free-herestring.yml" "^OK: 2 publishing job(s)"
+
+threefree "$TMP/free-shift.yml" "      - run: |
+          x=\$((1<<2))
+          echo \"see: x; crane push y\""
+check "an arithmetic shift is not a heredoc (#798)" 0 \
+      "$TMP/free-shift.yml" "^OK: 2 publishing job(s)"
+
+threefree "$TMP/free-heredoc-cont.yml" "      - run: |
+          cat <<EOF > notes.md \\
+            && echo \"ok; crane push y\"
+          text
+          EOF
+          echo \"see: x; crane push y\""
+check "a heredoc on a continued line is registered once (#798)" 0 \
+      "$TMP/free-heredoc-cont.yml" "^OK: 2 publishing job(s)"
+
+threefree "$TMP/free-heredoc-two.yml" "      - run: |
+          cat <<A; cat <<B
+          a
+          A
+          b
+          B
+          echo \"see: x; crane push y\""
+check "two heredocs on one line end in order (#798)" 0 \
+      "$TMP/free-heredoc-two.yml" "^OK: 2 publishing job(s)"
+
+threefree "$TMP/free-heredoc-in-string.yml" "      - run: |
+          echo \"a <<EOF\"
+          echo \"see: x; crane push y\""
+check "a << inside a string is not a heredoc (#798)" 0 \
+      "$TMP/free-heredoc-in-string.yml" "^OK: 2 publishing job(s)"
+
+threefree "$TMP/free-heredoc-runreset.yml" "      - run: cat <<EOF
+      - run: echo \"see: x; crane push y\""
+check "an unterminated heredoc does not run into the next run: (#798)" 0 \
+      "$TMP/free-heredoc-runreset.yml" "^OK: 2 publishing job(s)"
+
+threepub "$TMP/third-heredoc-dash.yml" "      - run: |
+          cat <<-EOF
+          Don't edit by hand.
+          EOF
+          echo done && docker push ghcr.io/x:riscv64"
+check "a <<-WORD heredoc body carries no quote out (#798)" 1 \
+      "$TMP/third-heredoc-dash.yml" "release-riscv64 reaches release"
+
+threepub "$TMP/third-heredoc-bare.yml" "      - run: |
+          cat <<EOF
+          Don't edit by hand.
+          EOF
+          echo done && docker push ghcr.io/x:riscv64"
+check "a <<WORD heredoc body carries no quote out (#798)" 1 \
+      "$TMP/third-heredoc-bare.yml" "release-riscv64 reaches release"
+
+# A continuation inside a string joins the lines; the push after it is read.
+threepub "$TMP/third-cont-in-string.yml" "      - run: |
+          echo \"a \\
+          b\"; docker push ghcr.io/x:riscv64"
+check "a continuation inside a string keeps its quote state (#798)" 1 \
+      "$TMP/third-cont-in-string.yml" "release-riscv64 reaches release"
+
+# `$'...'` takes backslash escapes, so `\'` inside it does not close it; in a
+# double-quoted string `$'` is two plain characters.
+threepub "$TMP/third-ansi-c.yml" "      - run: |
+          echo \$'it\\'s'
+          echo x; docker push ghcr.io/x:riscv64"
+check "an escaped quote inside a \$'...' string does not flip the state (#798)" 1 \
+      "$TMP/third-ansi-c.yml" "release-riscv64 reaches release"
+
+threepub "$TMP/third-ansi-dq.yml" "      - run: |
+          echo \$'a\"b'; docker push ghcr.io/x:riscv64"
+check "a double quote inside a \$'...' string does not open one (#798)" 1 \
+      "$TMP/third-ansi-dq.yml" "release-riscv64 reaches release"
+
+threepub "$TMP/third-dollar-in-dq.yml" "      - run: |
+          echo \"\$'\"; docker push ghcr.io/x:riscv64"
+check "a \$' inside double quotes is not an ANSI-C string (#798)" 1 \
+      "$TMP/third-dollar-in-dq.yml" "release-riscv64 reaches release"
+
 # --- #798: release.yml as it ships keeps its downstream contract ------
 # promote-latest re-tags with `crane tag` and github-release cuts the
 # release; both name both builds in needs:, and the file must stay exit 0.
