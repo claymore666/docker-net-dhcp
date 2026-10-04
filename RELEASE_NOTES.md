@@ -127,16 +127,6 @@ prompts on has moved since v2.0.0. This release changes the manifest's
   removed; a slow or unreachable daemon leaves everything as it is. One
   line at `info` names each network, and `stale_networks_dropped` on
   `/Plugin.Health` counts them (#1174, PR #1175).
-- The SLAAC absence-memory integration test no longer fails now and then on
-  a slow runner. Its timing check derives its floor from the 6 s fallback
-  window less the measured spread of the two attaches, instead of assuming
-  the worst case of the Solicit delay; the Solicit count and the counters
-  stay the proof that the second endpoint did not solicit (#1172, PR #1181).
-- The integration lane's lease-file reader no longer calls a lease released
-  because the DHCP server was in the middle of rewriting its lease file. An
-  empty file is read again for up to half a second before the address
-  counts as released; a line that is really gone is still reported within
-  about 40 ms (#1173, PR #1191).
 - A container whose network setup fails, or that is created and removed
   without ever starting, no longer leaves a pending hint behind for the
   life of the plugin. `pending_hints` on `/Plugin.Health` returns to zero
@@ -145,12 +135,6 @@ prompts on has moved since v2.0.0. This release changes the manifest's
   grows with every inspected container. Container and network ids in a
   request path count as one call shape; the debug log still writes one
   line per distinct path (#1184, PR #1190).
-- The integration suite's test binary on the arm64 lane no longer reads the
-  Docker daemon's whole log into memory, which killed it twice with the
-  log at over 840 MB. It now reads the log in small pieces, prints its own
-  memory use as `integration memory:` at exit, and the arm64 lane fails the
-  suite when that use passes 256 MB. The runner image also cuts the daemon
-  log to its last megabyte once it passes 160 MB (#1180, PR #1193).
 - The lease record file `lease-records.jsonl` in `STATE_DIR` no longer
   grows by about 5 KB per container lifecycle for the life of the host.
   The plugin compacts it on its sweep once it reaches 256 KiB and twice
@@ -193,9 +177,6 @@ prompts on has moved since v2.0.0. This release changes the manifest's
   every Docker Engine 28+ host: it takes only where the daemon's sandbox
   mounts reach the plugin (`sandbox_netns_propagation` 1), and is otherwise
   skipped, counted and warned (#1165, PR #1166).
-- The integration cleanup step also drops the plugin's state records of
-  networks the engine no longer has, so a killed run cannot refuse the
-  next run's IPAM networks (#1165, PR #1166; the plugin-side fix is #1174, PR #1175).
 - A container that is still starting when the attach budget runs out is
   no longer counted as one that went away. On engines 26 and 27 the
   sandbox key does not exist until after the plugin's Join returns, so a
@@ -208,6 +189,36 @@ prompts on has moved since v2.0.0. This release changes the manifest's
   shares the parent's MAC, so the random MAC the plugin pinned onto the child
   landed on the parent. The pin now takes the parent's MAC for passthru
   (#1147, PR #1150).
+- The docs say what the plugin never asks for: IPv6-Only Preferred
+  (option 108) is never requested, and a guard keeps it so (#1027,
+  PR #1152). The docs call the project the successor of
+  `devplayer0/docker-net-dhcp`, and not a fork, in the README, the release
+  notes preamble, the governance document, the badge answers and the Docker
+  Hub text (PRs #1131, #1133). The systemd-networkd bridge recipe
+  says what happens on a cloud image, where cloud-init's own `.network`
+  file for the NIC wins (PR #1122).
+
+### CI
+
+- The SLAAC absence-memory integration test no longer fails now and then on
+  a slow runner. Its timing check derives its floor from the 6 s fallback
+  window less the measured spread of the two attaches, instead of assuming
+  the worst case of the Solicit delay; the Solicit count and the counters
+  stay the proof that the second endpoint did not solicit (#1172, PR #1181).
+- The integration lane's lease-file reader no longer calls a lease released
+  because the DHCP server was in the middle of rewriting its lease file. An
+  empty file is read again for up to half a second before the address
+  counts as released; a line that is really gone is still reported within
+  about 40 ms (#1173, PR #1191).
+- The integration suite's test binary on the arm64 lane no longer reads the
+  Docker daemon's whole log into memory, which killed it twice with the
+  log at over 840 MB. It now reads the log in small pieces, prints its own
+  memory use as `integration memory:` at exit, and the arm64 lane fails the
+  suite when that use passes 256 MB. The runner image also cuts the daemon
+  log to its last megabyte once it passes 160 MB (#1180, PR #1193).
+- The integration cleanup step also drops the plugin's state records of
+  networks the engine no longer has, so a killed run cannot refuse the
+  next run's IPAM networks (#1165, PR #1166; the plugin-side fix is #1174, PR #1175).
 - The bridge-mode firewall test no longer fails on a host where
   `br_netfilter` is not loaded; the hosted lane loads it and reads
   `bridge-nf-call-iptables` back (#1148, PR #1150).
@@ -223,14 +234,6 @@ prompts on has moved since v2.0.0. This release changes the manifest's
 - The coverage lane had no floor per function for `pkg/plugin`; it now
   reports one, as a table in the summary and as an artifact (#1117,
   PR #1134).
-- The docs say what the plugin never asks for: IPv6-Only Preferred
-  (option 108) is never requested, and a guard keeps it so (#1027,
-  PR #1152). The docs call the project the successor of
-  `devplayer0/docker-net-dhcp`, and not a fork, in the README, the release
-  notes preamble, the governance document, the badge answers and the Docker
-  Hub text (PRs #1131, #1133). The systemd-networkd bridge recipe
-  says what happens on a cloud image, where cloud-init's own `.network`
-  file for the NIC wins (PR #1122).
 
 ### Deferred
 
