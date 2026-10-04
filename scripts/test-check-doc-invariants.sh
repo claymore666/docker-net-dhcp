@@ -300,7 +300,8 @@ sed -i 's|^    scope: .*|    file: README.md\n&|' "$TMP/c-add/manifest.txt"
 cosign_check "file: and scope: are both judged" 1 c-add "README.md no longer contains: cosign v3 or newer"
 
 # The committed data file and the signing step must name the same file.
-if grep -q 'scripts/release-tooling.env' "$REPO/.github/workflows/release.yml" \
+read_lines="$(grep -A1 "sed -n 's/^COSIGN_MAJOR=" "$REPO/.github/workflows/release.yml" || true)"
+if [[ "$read_lines" == *scripts/release-tooling.env* ]] \
     && ! grep -q 'COSIGN_MAJOR=[0-9]' "$REPO/.github/workflows/release.yml"; then
     echo "PASS: release.yml reads the data file and holds no major of its own"
 else

@@ -207,9 +207,9 @@ OUT_OF_LANE=(
 )
 
 # "script|reason" for a check-*.sh no workflow runs by design, so the
-# orphan rule of check-local-lane.sh accepts it (#883).
+# orphan rule of check-local-lane.sh accepts it (#883). Empty since #745
+# renamed the one entry, a maintainer preflight, out of the check-* class.
 NOT_IN_CI=(
-  "scripts/check-release-tooling.sh|preflight for the release runbook's manual steps; it checks the maintainer's own cosign, gh and git signing key, which a runner does not have"
 )
 
 lane_scripts() {

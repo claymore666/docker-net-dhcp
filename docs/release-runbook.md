@@ -26,13 +26,13 @@ signature unverified locally until afterwards.
 Twice is a class, so it has a check now. **Run this before step 1:**
 
 ```sh
-bash scripts/check-release-tooling.sh
+bash scripts/preflight-release-tooling.sh
 ```
 
 Exit 0 means every step below can actually be executed on this box. It
 verifies `gh`, `cosign` **major 3**, and a configured `user.signingkey`;
 `crane` is reported but optional. Its own table-driven tests run in CI
-([`scripts/test-check-release-tooling.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/test-check-release-tooling.sh)),
+([`scripts/test-preflight-release-tooling.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/test-preflight-release-tooling.sh)),
 so the check cannot rot into something that always passes.
 
 | Tool | Needed for | Install |
