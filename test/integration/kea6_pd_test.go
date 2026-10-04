@@ -102,6 +102,8 @@ func heldPrefixesOf(kea *harness.Kea6Fixture, duid string) func() []netip.Prefix
 
 func nonEmpty(p []netip.Prefix) bool { return len(p) > 0 }
 
+func none(p []netip.Prefix) bool { return len(p) == 0 }
+
 func samePrefixes(want []netip.Prefix) func([]netip.Prefix) bool {
 	return func(got []netip.Prefix) bool {
 		a, b := slices.Clone(got), slices.Clone(want)
@@ -396,6 +398,15 @@ func TestKea6PD_APluginRestartRebindsAndKeepsTheAggregate(t *testing.T) {
 	if !reported {
 		t.Errorf("15s after the Rebind no endpoint in Plugin.Health of the restarted plugin reports %s: %+v", held[0], h)
 	}
+
+	// A Leave withdraws what this process owns, and it owns the route only if Start seeded it from the record (#214).
+	if err := cli.NetworkDisconnect(ctx, "dh-itest-pdrst", id, false); err != nil {
+		t.Fatalf("NetworkDisconnect: %v", err)
+	}
+	if got, ok := pollPrefixes(10*time.Second, aggregatesOf(t, ctx, id), none); !ok {
+		t.Errorf("the container still routes %v 10s after the restarted endpoint left the network; the new process "+
+			"did not withdraw the aggregate the previous one installed", got)
+	}
 }
 
 // foreignAggregate is outside harness.Kea6PDPrefix and keaPDMovedPool, so no delegation Kea makes can be it.
@@ -472,8 +483,7 @@ func TestKea6PD_AnEndpointLeavesAnotherOwnersAggregateAlone(t *testing.T) {
 		t.Fatalf("Kea logged no DHCP6_RELEASE_PD_EXPIRED within 15s of the disconnect: the release the withdrawal belongs to never ran")
 	}
 	// The control for the absence below: the endpoint's own aggregate must be the one that went.
-	if got, ok := pollPrefixes(5*time.Second, func() []netip.Prefix { return ownAggregates(t, ctx, id) },
-		func(p []netip.Prefix) bool { return len(p) == 0 }); !ok {
+	if got, ok := pollPrefixes(5*time.Second, func() []netip.Prefix { return ownAggregates(t, ctx, id) }, none); !ok {
 		t.Errorf("the endpoint's own aggregates are %v after it left the network, want none", got)
 	}
 	if !foreignHeld() {
