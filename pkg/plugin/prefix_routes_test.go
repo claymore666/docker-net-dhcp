@@ -122,12 +122,13 @@ func pdInfo(prefixes ...string) dhcp.Info {
 	return info
 }
 
-// A RIO or connected route sharing a destination is left alone (RFC 3633 section 12.1, #214).
+// A RIO, connected or operator's route is left alone, the first two sharing a destination (RFC 3633 section 12.1, #214).
 func TestReconcilePrefixRoutes_MakesTheAggregatesMatchTheLease(t *testing.T) {
 	m, p, f := v6Manager(t)
 	rio := netlink.Route{Dst: cidr(t, "fd00:98:0:2::/64"), Protocol: unix.RTPROT_RA, Type: unix.RTN_UNICAST, LinkIndex: 3}
 	kernel := netlink.Route{Dst: cidr(t, "fd00:98:0:3::/64"), Protocol: unix.RTPROT_KERNEL, Type: unix.RTN_UNICAST, LinkIndex: 3}
-	f.routes = []netlink.Route{aggregate(t, "fd00:98:0:1::/64"), aggregate(t, "fd00:98:0:2::/64"), rio, kernel}
+	operator := netlink.Route{Dst: cidr(t, "fd00:98:0:4::/64"), Protocol: unix.RTPROT_STATIC, Type: unix.RTN_UNREACHABLE}
+	f.routes = []netlink.Route{aggregate(t, "fd00:98:0:1::/64"), aggregate(t, "fd00:98:0:2::/64"), rio, kernel, operator}
 
 	info := pdInfo("fd00:98:0:2::/64", "fd00:98:0:3::/64")
 	if err := m.applyPrefixes(info.DelegatedPrefixes); err != nil {
@@ -152,6 +153,25 @@ func TestReconcilePrefixRoutes_MakesTheAggregatesMatchTheLease(t *testing.T) {
 	}
 	if got := p.ipv6PrefixRoutesWithdrawn.Load(); got != 1 {
 		t.Errorf("ipv6_prefix_routes_withdrawn = %d, want 1", got)
+	}
+}
+
+func TestInstalledPrefixRoutes_ListsByTypeAndProtocol(t *testing.T) {
+	m, _, _ := v6Manager(t)
+	var gotFilter *netlink.Route
+	var gotMask uint64
+	nlHandleRouteListFiltered = func(_ *netlink.Handle, _ int, filter *netlink.Route, mask uint64) ([]netlink.Route, error) {
+		gotFilter, gotMask = filter, mask
+		return nil, nil
+	}
+	if _, err := m.installedPrefixRoutes(); err != nil {
+		t.Fatalf("installedPrefixRoutes: %v", err)
+	}
+	if gotFilter == nil || gotFilter.Type != unix.RTN_UNREACHABLE || gotFilter.Protocol != unix.RTPROT_DHCP {
+		t.Fatalf("filter = %+v, want type unreachable and protocol dhcp", gotFilter)
+	}
+	if want := uint64(netlink.RT_FILTER_TYPE | netlink.RT_FILTER_PROTOCOL); gotMask != want {
+		t.Errorf("mask = %#x, want %#x: a field the mask does not name is not filtered on", gotMask, want)
 	}
 }
 
