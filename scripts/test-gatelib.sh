@@ -118,15 +118,17 @@ expect "an unknown class refuses" 2 "$rc"
 
 mkdir -p "$T/plain"; echo "package x" > "$T/plain/a.go"
 rc=$(subjects go "$T/plain")
-expect "a directory outside any git work tree refuses" 2 "$rc"
+expect "a directory outside any git work tree refuses, and says so" "2|1" "$rc|$(grep -c 'is not in a git work tree' "$T/out")"
 rc=$(subjects go "$T/missing")
-expect "a missing directory refuses" 2 "$rc"
+expect "a missing directory refuses, and says so" "2|1" "$rc|$(grep -c 'is not a directory' "$T/out")"
 
 mkdir -p "$T/fakebin"
 printf '#!/bin/sh\ncase "$*" in *ls-files*) exit 128 ;; esac\nexec %s "$@"\n' "$(command -v git)" > "$T/fakebin/git"
 chmod +x "$T/fakebin/git"
 rc=$(PATH="$T/fakebin:$PATH" subjects go)
 expect "a failing git ls-files refuses, not an empty pass" 2 "$rc"
+rc=$(PATH="$T/fakebin:$PATH" subjects go "" --may-be-empty)
+expect "a failing git ls-files refuses even where empty is allowed" "2|1" "$rc|$(grep -c 'git ls-files failed' "$T/out")"
 
 # --- adoption -------------------------------------------------------------
 missing=""

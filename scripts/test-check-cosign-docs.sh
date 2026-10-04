@@ -119,6 +119,24 @@ else
     failures=$((failures + 1))
 fi
 
+# Every Markdown page is in scope, not only README and docs/*.md (#744).
+guarded_tmpdir root -p "$TMP"
+git init -q "$root"
+mkdir -p "$root/scripts" "$root/docs" "$root/deploy/notes"
+printf '%s\n' 'COSIGN_MAJOR=3' > "$root/scripts/check-release-tooling.sh"
+printf '%s\n' "$DOC_WITH_VERSION" > "$root/docs/verifying-releases.md"
+printf '%s\n' "$DOC_WITHOUT" > "$root/deploy/notes/verify.md"
+DOCS_ROOT="$root" TOOLING_SCRIPT="$root/scripts/check-release-tooling.sh" \
+    bash "$CHECK" > "$TMP/out" 2>&1
+rc=$?
+if [ "$rc" -eq 1 ] && grep -q 'FAIL  deploy/notes/verify.md' "$TMP/out"; then
+    echo "PASS: a page outside docs/ is judged"
+else
+    echo "FAIL: a page outside docs/ is judged (rc=$rc)"
+    sed 's/^/    /' "$TMP/out"
+    failures=$((failures + 1))
+fi
+
 # An ignored page is not a subject: the real tree ignores build output
 # and private notes, and the gate reads git's view of it (#744).
 guarded_tmpdir root -p "$TMP"
