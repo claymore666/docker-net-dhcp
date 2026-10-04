@@ -114,6 +114,9 @@ func TestKea4Default_EveryFilePathIsPermittedByThePackagedProfile(t *testing.T) 
 		if !profileAllows(packagedProfileRules, path) {
 			t.Errorf("%s %s is outside what the packaged kea-dhcp4 profile permits", name, path)
 		}
+		if !d.needs(path) {
+			t.Errorf("%s %s is not in kea4Dirs.needs, so a denial of it would not be blamed on AppArmor", name, path)
+		}
 	}
 	// Kea names the PID file after the config's basename; the profile permits exactly one name.
 	if want := strings.TrimSuffix(kea4ConfFile, ".conf") + ".kea-dhcp4.pid"; kea4PidFile != want {
@@ -238,6 +241,10 @@ func TestEphemeralKea_ConstructorAndTeardownUseTheProfilePaths(t *testing.T) {
 			t.Errorf("ephemeral.go must contain exactly one %q: the file would leave the profile's paths", want)
 		}
 	}
+	// Kea's stdout and stderr go to its own log: an fd inherited from a temp dir is denied by the profile (#680).
+	if strings.Count(src, "os.OpenFile(ef.keaLog,") != 1 {
+		t.Error("startKea must open ef.keaLog for Kea's stdout and stderr, not a file in the temp dir")
+	}
 	if n := strings.Count(src, "kea4Default.removeState()"); n != 2 {
 		t.Errorf("kea4Default.removeState() appears %d times in ephemeral.go, want 2 (setup and teardown)", n)
 	}
@@ -260,8 +267,8 @@ func TestKeaHostConflict(t *testing.T) {
 		{"a Kea with no -c", []keaProc{{pid: 30, args: []string{"kea-dhcp4"}}}, nil, []string{"pid 30"}},
 		{"a config dir that only shares the prefix", []keaProc{{pid: 40, args: []string{"kea-dhcp4", "-c", conf + "-other/x.conf"}}}, nil, []string{"pid 40"}},
 		{"another daemon", []keaProc{{pid: 50, args: []string{"kea-dhcp6", "-c", "/etc/kea/kea-dhcp6.conf"}}, {pid: 51, args: []string{"vim", "kea-dhcp4"}}, {pid: 52}}, nil, nil},
-		{"an active unit and no process", nil, []string{"isc-kea-dhcp4-server.service"}, []string{"active unit isc-kea-dhcp4-server.service"}},
-		{"unit and process both named", []keaProc{hostKea}, []string{"kea-dhcp4.service"}, []string{"pid 20", "kea-dhcp4.service"}},
+		{"an installed unit and no process", nil, []string{"isc-kea-dhcp4-server.service (disabled)"}, []string{"installed unit isc-kea-dhcp4-server.service (disabled)"}},
+		{"unit and process both named", []keaProc{hostKea}, []string{"kea-dhcp4.service (enabled)"}, []string{"pid 20", "kea-dhcp4.service (enabled)"}},
 	}
 	for _, c := range cases {
 		got := keaHostConflict(c.procs, c.units, conf)
@@ -313,5 +320,45 @@ func TestEphemeralKea_GuardRunsBeforeTheFirstDelete(t *testing.T) {
 	guard, del := strings.Index(src, "foreignKea()"), strings.Index(src, "kea4Default.removeState()")
 	if guard < 0 || del < 0 || guard > del {
 		t.Errorf("foreignKea() must precede the first kea4Default.removeState() in ephemeral.go (guard at %d, delete at %d)", guard, del)
+	}
+}
+
+func TestParseKeaUnitFiles(t *testing.T) {
+	out := "isc-kea-dhcp4-server.service enabled  enabled\n" +
+		"kea-dhcp4-server.service     masked   enabled\n" +
+		"kea-dhcp4.service            masked-runtime enabled\n" +
+		"isc-kea-dhcp4-server@.service static   -\n" +
+		"kea-dhcp6-server.service     enabled  enabled\n" +
+		"garbage\n\n"
+	got := parseKeaUnitFiles(out)
+	want := []string{"isc-kea-dhcp4-server.service (enabled)", "isc-kea-dhcp4-server@.service (static)"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("units = %q, want %q (masked and masked-runtime excluded, dhcp6 ignored)", got, want)
+	}
+}
+
+func TestForeignKea_ReadsTheHostsUnitFiles(t *testing.T) {
+	old := systemctlUnitFiles
+	t.Cleanup(func() { systemctlUnitFiles = old })
+	for _, tc := range []struct {
+		name string
+		out  string
+		err  error
+		want bool
+	}{
+		{"an enabled unit", "isc-kea-dhcp4-server.service enabled enabled\n", nil, true},
+		{"a disabled unit, stopped or failed all the same", "kea-dhcp4-server.service disabled enabled\n", nil, true},
+		{"a masked unit, as the hosted lane leaves it", "isc-kea-dhcp4-server.service masked enabled\n", nil, false},
+		{"no systemctl", "", errors.New("exec: systemctl: not found"), false},
+		{"no kea unit files", "", nil, false},
+	} {
+		systemctlUnitFiles = func() (string, error) { return tc.out, tc.err }
+		got := foreignKea()
+		if tc.want && !strings.Contains(got, "installed unit") {
+			t.Errorf("%s: want a unit conflict, got %q", tc.name, got)
+		}
+		if !tc.want && strings.Contains(got, "installed unit") {
+			t.Errorf("%s: want no unit conflict, got %q", tc.name, got)
+		}
 	}
 }

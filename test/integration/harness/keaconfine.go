@@ -121,8 +121,9 @@ func profileModeOf(profiles, want string) string {
 }
 
 // keaDenialRecord returns the last AppArmor DENIED record naming profile="kea-dhcp4" that is not in the kernel log
-// snapshot taken before Kea started, or "". No pid keys it (a container sees its own, the audit line the host's); audit
-// lines carry a unique timestamp and serial. An enforcing profile alone proves no denial (it ends in an #include of
+// snapshot taken before Kea started and whose name="..." is a path the fixture needs (kea4Dirs.needs), or "". Another
+// path is not this fixture's failure, for instance a file_inherit of an fd. No pid keys it (a container sees its own,
+// the audit line the host's); audit lines carry a unique timestamp and serial. An enforcing profile alone proves no denial (it ends in an #include of
 // local/usr.sbin.kea-dhcp4) and complain mode logs ALLOWED. Record format measured on a Debian host (#869):
 //
 //	audit: type=1400 audit(...): apparmor="DENIED" operation="open"
@@ -138,12 +139,39 @@ func keaDenialRecord(kernelLog, before string) string {
 		line = strings.TrimSpace(line)
 		if !strings.Contains(line, `apparmor="DENIED"`) ||
 			!strings.Contains(line, `profile="kea-dhcp4"`) ||
-			seen[line] {
+			seen[line] || !kea4Default.needs(auditName(line)) {
 			continue
 		}
 		last = line
 	}
 	return last
+}
+
+// auditName is the path of an audit line's name="..." field, or "".
+func auditName(line string) string {
+	const key = ` name="`
+	i := strings.Index(line, key)
+	if i < 0 {
+		return ""
+	}
+	rest := line[i+len(key):]
+	return rest[:strings.IndexByte(rest+`"`, '"')]
+}
+
+// needs reports whether name is a path a fixture run reads or writes: its conf dir, or one of the packaged files (#680).
+func (d kea4Dirs) needs(name string) bool {
+	if name == d.conf || strings.HasPrefix(name, d.conf+"/") {
+		return true
+	}
+	dir, base := filepath.Split(name)
+	for _, f := range []struct{ dir, prefix string }{
+		{d.lease, kea4LeaseFile}, {d.log, kea4LogFile}, {d.pid, kea4PidFile}, {d.lock, "logger_lockfile"},
+	} {
+		if filepath.Clean(dir) == f.dir && strings.HasPrefix(base, f.prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // keaConfinement is what the fixture measured about AppArmor when Kea failed, each read with its own outcome flag (#869).
@@ -180,15 +208,15 @@ func keaConfinementHint(c keaConfinement) string {
 
 	const profilePaths = "  The fixture keeps every file where the packaged profile permits it: config under\n" +
 		"  /etc/kea/, leases at /var/lib/kea/kea-leases4.csv, the log at /var/log/kea/kea-dhcp4.log,\n" +
-		"  the PID file in /run/kea and the lock in /run/lock/kea. The profile loaded on this host\n" +
-		"  therefore differs from the packaged one (a site override or another version).\n"
+		"  the PID file in /run/kea and the lock in /run/lock/kea.\n"
+	const differs = "the profile loaded on this host differs from the packaged one (a site override or another version).\n"
 
 	switch {
 	case c.denial != "":
 		return fmt.Sprintf(
 			"APPARMOR: the kernel logged a kea-dhcp4 denial after this fixture started Kea,\n"+
 				"  so that is why Kea never started:\n"+
-				"    %s\n"+profilePaths+
+				"    %s\n"+profilePaths+"  Therefore "+differs+
 				"  Kea exits before writing a line%s.\n"+remedy,
 			c.denial, emptyLog)
 
@@ -201,7 +229,7 @@ func keaConfinementHint(c keaConfinement) string {
 				"  denial record was consulted; this hint rests on the loaded profile alone."
 		}
 		return "APPARMOR: the kea-dhcp4 profile is loaded in enforce mode, so it is a candidate cause\n" +
-			"  of Kea never starting.\n" + profilePaths + unknown + "\n" +
+			"  of Kea never starting.\n" + profilePaths + "  If it is the cause, " + differs + unknown + "\n" +
 			"  Confirm with: sudo dmesg | grep 'apparmor=\"DENIED\".*kea-dhcp4'\n" + remedy
 
 	case !c.listRead && c.installed:
@@ -304,9 +332,9 @@ type keaProc struct {
 }
 
 // keaHostConflict decides whether the fixture may delete the packaged lease and log files (#680). A kea-dhcp4 whose
-// config is under confDir is a fixture's own, or its leftover; any other kea-dhcp4 process, or an active kea-dhcp4
+// config is under confDir is a fixture's own, or its leftover; any other kea-dhcp4 process, or an installed kea-dhcp4
 // unit, is a real Kea whose state removeState would destroy. It returns "" when nothing conflicts.
-func keaHostConflict(procs []keaProc, activeUnits []string, confDir string) string {
+func keaHostConflict(procs []keaProc, units []string, confDir string) string {
 	var found []string
 	for _, p := range procs {
 		if len(p.args) == 0 || filepath.Base(p.args[0]) != "kea-dhcp4" {
@@ -323,14 +351,14 @@ func keaHostConflict(procs []keaProc, activeUnits []string, confDir string) stri
 		}
 		found = append(found, fmt.Sprintf("process kea-dhcp4 pid %d", p.pid))
 	}
-	for _, u := range activeUnits {
-		found = append(found, "active unit "+u)
+	for _, u := range units {
+		found = append(found, "installed unit "+u)
 	}
 	if len(found) == 0 {
 		return ""
 	}
-	return fmt.Sprintf("a Kea this fixture did not start is running (%s) and the fixture would delete its lease file and "+
-		"log (%s*, %s*); nothing was touched. Stop it, or run the suite on a host without a kea-dhcp4 service (#680)",
+	return fmt.Sprintf("a Kea this fixture did not start is running or installed (%s) and the fixture would delete its lease file and "+
+		"log (%s*, %s*); nothing was touched. Stop and mask its unit, or run the suite on a host without a kea-dhcp4 service (#680)",
 		strings.Join(found, ", "), filepath.Join(kea4Default.lease, kea4LeaseFile), filepath.Join(kea4Default.log, kea4LogFile))
 }
 
@@ -350,4 +378,31 @@ func readKeaProcs(procRoot string) []keaProc {
 		procs = append(procs, keaProc{pid: pid, args: strings.Split(strings.TrimRight(string(raw), "\x00"), "\x00")})
 	}
 	return procs
+}
+
+// systemctlUnitFiles lists the installed kea-dhcp4 service unit files; a var so a test can stand in for systemctl.
+var systemctlUnitFiles = func() (string, error) {
+	out, err := withCLocale(exec.Command("systemctl", "list-unit-files", "--no-legend", "--plain",
+		"--type=service", "*kea-dhcp4*")).Output()
+	return string(out), err
+}
+
+// parseKeaUnitFiles returns "unit (state)" for every listed unit file that is not masked: a masked unit cannot start,
+// and the hosted lane masks what it installs, while any other state (enabled, disabled, static, ...) is a real Kea (#680).
+func parseKeaUnitFiles(out string) []string {
+	var units []string
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 2 || !strings.Contains(f[0], "kea-dhcp4") || strings.HasPrefix(f[1], "masked") {
+			continue
+		}
+		units = append(units, f[0]+" ("+f[1]+")")
+	}
+	return units
+}
+
+// foreignKea reads the host and returns keaHostConflict's verdict; a host without systemctl has no units (#680).
+func foreignKea() string {
+	out, _ := systemctlUnitFiles()
+	return keaHostConflict(readKeaProcs("/proc"), parseKeaUnitFiles(out), kea4Default.conf)
 }

@@ -118,11 +118,18 @@ profile permits exactly one PID name), leases at
 the PID file in `/run/kea` and the lock in `/run/lock/kea`. It deletes the
 lease file and log (with their rotation suffixes) at setup and teardown.
 Before deleting anything it checks for a Kea it did not start (a
-`kea-dhcp4` process outside `/etc/kea/dh-itest-v4/`, or an active
-`kea-dhcp4` systemd unit) and fails the test, touching nothing, if it
-finds one. A failure with the
-packaged profile enforcing therefore means the loaded profile differs from
-the packaged one, for example a site override.
+`kea-dhcp4` process outside `/etc/kea/dh-itest-v4/`, or an installed,
+non-masked `kea-dhcp4` systemd unit, whether running or not) and fails the
+test, touching nothing, if it finds one. A packaged config file alone does
+not count: it exists on every host that installed `kea-dhcp4-server`,
+including the CI runners. Kea's own stdout and stderr go to the log file
+above, because the profile denies an inherited descriptor on any other path.
+A failure with the packaged profile enforcing therefore means the loaded
+profile differs from the packaged one, for example a site override.
+
+No lane runs the v4 fixture under an enforcing profile today: the pool image
+has no Kea profile and the hosted lane puts it in complain mode. The test that checks every fixture path against the packaged
+profile's rules is the only observer of this section (#680).
 
 What the fixture reports depends on what it could measure, and it
 distinguishes the cases rather than blurring them. A kernel denial record

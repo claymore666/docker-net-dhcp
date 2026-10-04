@@ -600,21 +600,17 @@ func TestKeaConfig_LeaseAndLogSitOnTheProfilePaths(t *testing.T) {
 	}
 }
 
-func TestReadLog_KeaJoinsItsOwnLogAndTheCapture(t *testing.T) {
-	ef := newLogFixture(t, backendKea, "stderr before the logger\n")
+func TestReadLog_KeaReadsItsOwnLogOnly(t *testing.T) {
+	ef := newLogFixture(t, backendKea, "a stale capture that Kea no longer writes\n")
 	ef.keaLog = filepath.Join(t.TempDir(), "kea-dhcp4.log")
-
-	if got := ef.readLog(); got != "stderr before the logger\n" {
-		t.Errorf("a Kea that wrote no log file: got %q", got)
-	}
 	if err := os.WriteFile(ef.keaLog, []byte("DHCP4_STARTED\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := ef.readLog(); got != "DHCP4_STARTED\nstderr before the logger\n" {
-		t.Errorf("own log and capture not joined: got %q", got)
+	if got := ef.readLog(); got != "DHCP4_STARTED\n" {
+		t.Errorf("readLog = %q, want Kea's own log (stdout and stderr go there since #680)", got)
 	}
 	if got := ef.keaLogSize(); got != len("DHCP4_STARTED\n") {
-		t.Errorf("keaLogSize = %d, want the size of Kea's own log, not the capture's", got)
+		t.Errorf("keaLogSize = %d, want the size of Kea's own log", got)
 	}
 }
 

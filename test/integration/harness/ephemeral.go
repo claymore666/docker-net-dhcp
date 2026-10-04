@@ -84,7 +84,7 @@ type EphemeralFixture struct {
 	leaseFile      string
 	configFile     string
 	renderedConfig string
-	// logFile is the dnsmasq log, and for Kea only what its stdout and stderr carry before its own logger is up (#680).
+	// logFile is the dnsmasq log; Kea writes to keaLog (#680).
 	logFile      string
 	keaLog       string
 	kernelBefore string
@@ -500,7 +500,7 @@ func (ef *EphemeralFixture) startKea() {
 		ef.t.Fatalf("write kea config: %v", err)
 	}
 
-	logF, err := os.OpenFile(ef.logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	logF, err := os.OpenFile(ef.keaLog, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		ef.t.Fatalf("open ephemeral kea log: %v", err)
 	}
@@ -510,7 +510,8 @@ func (ef *EphemeralFixture) startKea() {
 	startMark := ef.keaLogSize()
 	ef.cmd = ef.netnsCommand(keaPath, "-c", ef.configFile)
 	ef.cmd.Env = append(ef.cmd.Env, keaEnv()...)
-	// The profile may deny an fd inherited from a temp directory; readiness reads Kea's own log file instead (#680).
+	// stdout and stderr go to Kea's own log file: the profile permits that path and denies an fd inherited from any other
+	// (file_inherit), so pre-logger errors stay visible and no denial is logged on a healthy start (#680).
 	ef.cmd.Stdout = logF
 	ef.cmd.Stderr = logF
 	ef.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -1038,19 +1039,15 @@ func checkLeaseGrants(grants []keaLeaseGrant, want int) []string {
 }
 
 func (ef *EphemeralFixture) readLog() string {
-	data, err := os.ReadFile(ef.logFile)
-	if err != nil {
+	path := ef.logFile
+	if ef.keaLog != "" {
+		path = ef.keaLog
+	}
+	data, err := os.ReadFile(path)
+	if err != nil && !(ef.keaLog != "" && os.IsNotExist(err)) {
 		return fmt.Sprintf("(could not read ephemeral DHCP server log: %v)", err)
 	}
-	if ef.keaLog == "" {
-		return string(data)
-	}
-	// Kea logs to its own file on the profile's path; the capture holds what it wrote before the logger was up (#680).
-	own, err := os.ReadFile(ef.keaLog)
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Sprintf("(could not read %s: %v)\n%s", ef.keaLog, err, data)
-	}
-	return string(own) + string(data)
+	return string(data)
 }
 
 // DumpLogs mirrors Fixture.DumpLogs for failure-path diagnostics.
@@ -1079,26 +1076,4 @@ func cleanupEphemeralLinks() {
 			_ = netlink.LinkDel(link)
 		}
 	}
-}
-
-// activeKeaUnits names the active systemd units for a kea-dhcp4 service (Debian isc-kea-dhcp4-server, upstream
-// kea-dhcp4); a host without systemctl has none (#680).
-func activeKeaUnits() []string {
-	out, err := withCLocale(exec.Command("systemctl", "list-units", "--state=active", "--plain", "--no-legend",
-		"--type=service", "*kea-dhcp4*")).Output()
-	if err != nil {
-		return nil
-	}
-	var units []string
-	for _, line := range strings.Split(string(out), "\n") {
-		if f := strings.Fields(line); len(f) > 0 && strings.Contains(f[0], "kea-dhcp4") {
-			units = append(units, f[0])
-		}
-	}
-	return units
-}
-
-// foreignKea reads the host and returns keaHostConflict's verdict (#680).
-func foreignKea() string {
-	return keaHostConflict(readKeaProcs("/proc"), activeKeaUnits(), kea4Default.conf)
 }

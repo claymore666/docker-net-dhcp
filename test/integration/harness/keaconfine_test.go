@@ -34,8 +34,8 @@ func denialFor(serial int, name string) string {
 	return fmt.Sprintf(sampleDenialFmt, serial, name)
 }
 
-// denial1 is a denial in the shape #680 measured on the affected host: the lock file the default dir would have used.
-var denial1 = denialFor(1884, "/run/kea/logger_lockfile")
+// denial1 is a denial of a path the fixture needs, in the shape #680 measured on the affected host.
+var denial1 = denialFor(1884, "/var/lib/kea/kea-leases4.csv")
 
 func TestKeaProfileMode(t *testing.T) {
 	for _, tc := range []struct {
@@ -59,7 +59,7 @@ func TestKeaProfileMode(t *testing.T) {
 }
 
 func TestKeaDenialRecord(t *testing.T) {
-	older := denialFor(1000, "/run/kea/logger_lockfile")
+	older := denialFor(1000, "/var/lib/kea/kea-leases4.csv")
 
 	for _, tc := range []struct {
 		name    string
@@ -71,6 +71,14 @@ func TestKeaDenialRecord(t *testing.T) {
 		{"a denial present in the snapshot is an older run's", older + "\n", older + "\n", false},
 		{"no snapshot reads every denial as new", denial1 + "\n", "", true},
 		{"empty kernel log", "", "", false},
+		// Kea's stdout and stderr once pointed at a tmp file: every start logged this, and no failure is its cause.
+		{"a file_inherit of an unrelated path is not blamed", strings.Replace(denialFor(7, "/tmp/dh-itest-ephemeral-1/dhcp-server.log"),
+			`operation="open"`, `operation="file_inherit"`, 1), "", false},
+		{"a denial without a path is not blamed", strings.Replace(denial1, ` name="/var/lib/kea/kea-leases4.csv"`, "", 1), "", false},
+		{"a denial of the conf dir is blamed", denialFor(8, "/etc/kea/dh-itest-v4/kea-dhcp4.conf"), "", true},
+		{"a denial of a lease suffix variant is blamed", denialFor(9, "/var/lib/kea/kea-leases4.csv.2"), "", true},
+		{"a denial of another file in the lease dir is not", denialFor(10, "/var/lib/kea/other.db"), "", false},
+		{"a sibling of the conf dir sharing its prefix is not", denialFor(11, "/etc/kea/dh-itest-v4-other/kea-dhcp4.conf"), "", false},
 		// A complain-mode profile logs ALLOWED and permits the access.
 		{
 			name:   "an ALLOWED record is not a denial",
@@ -133,8 +141,7 @@ func TestKeaConfinementHint(t *testing.T) {
 			}
 			for _, want := range []string{
 				"so that is why Kea never started",
-				`apparmor="DENIED"`, "/run/kea/logger_lockfile",
-				"/var/lib/kea/kea-leases4.csv", "/var/log/kea/kea-dhcp4.log",
+				`apparmor="DENIED"`, "/var/lib/kea/kea-leases4.csv", "/var/log/kea/kea-dhcp4.log",
 				"apparmor_parser -C -r", "test/integration/README.md",
 			} {
 				if !strings.Contains(got, want) {
@@ -258,7 +265,7 @@ func TestAppArmorKeaHint(t *testing.T) {
 	}
 
 	absent := filepath.Join(t.TempDir(), "definitely-not-here")
-	older := denialFor(1000, "/run/kea/logger_lockfile")
+	older := denialFor(1000, "/var/lib/kea/kea-leases4.csv")
 
 	tests := []struct {
 		name                string
@@ -287,6 +294,15 @@ func TestAppArmorKeaHint(t *testing.T) {
 			kernelLog:          denial1,
 			logEmpty:           true,
 			wantContains:       []string{"so that is why Kea never started", denial1},
+		},
+		{
+			name:            "the only new denial is a file_inherit on an unrelated path: no AppArmor blame",
+			profiles:        sampleProfiles,
+			profileFile:     true,
+			kernelLog:       strings.Replace(denialFor(7, "/tmp/dh-itest-ephemeral-1/dhcp-server.log"), `operation="open"`, `operation="file_inherit"`, 1),
+			logEmpty:        true,
+			wantContains:    []string{"candidate cause", "If it is the cause, the profile loaded on this host differs"},
+			wantNotContains: []string{"so that is why Kea never started", "Therefore", "file_inherit"},
 		},
 		{
 			name:        "enforce with no denial in the kernel log is a candidate only",
