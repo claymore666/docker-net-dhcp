@@ -334,7 +334,13 @@ jobs:
   production-shape:
     needs: resolve
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Two serialised lanes of the slowest measured length, plus ten
+    # minutes for the steps around the wait (#1205). The check that holds
+    # these two numbers to that rule is in
+    # scripts/test-pick-engine-matrix-run.sh.
+    timeout-minutes: 75
+    env:
+      ENGINE_WAIT_SECONDS: '3900'
     permissions:
       contents: read
       actions: read         # list another workflow's runs, download its rows
@@ -368,12 +374,14 @@ jobs:
           fi
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
-      # BOUNDED, and a timeout is a refusal that says which one it is.
-      # The matrix lane takes about two and a half minutes when it is
-      # not queued; the bound is for pool contention, not for the lane.
-      # "Still running" and "never ran" are different refusals on
-      # purpose: one is a rerun of this job, the other is a tag nobody
-      # measured.
+      # BOUNDED: "still running" is a rerun of this job, "never ran" is
+      # a tag nobody measured. THE BOUND IS TWO LANES (#1205). The last
+      # 40 engine-matrix runs took 15 to 31 min. A tag push starts a
+      # second run of the branch push's commit, and both sit in one
+      # concurrency group keyed on the sha, so the tag's run queues
+      # until the branch run ends: v2.4.0-rc1 (run 37167600922) was 16
+      # min queued plus 16 min running, ending 83 s after the 1800 s gate quit. Two
+      # lanes at 31 min is 62 min; a third run replaces the pending one.
       - name: Find the engine-matrix run that measured this commit
         id: run
         env:
@@ -381,7 +389,7 @@ jobs:
           SHA: ${{ steps.commit.outputs.sha }}
         run: |
           set -euo pipefail
-          deadline=$(( $(date +%s) + 1800 ))
+          deadline=$(( $(date +%s) + ENGINE_WAIT_SECONDS ))
           while : ; do
             # ASKED FOR BY COMMIT, not filtered out of a page. Listing
             # the workflow's newest hundred runs would be a window of
@@ -410,7 +418,7 @@ jobs:
               break
             fi
             if [ "$(date +%s)" -ge "$deadline" ]; then
-              echo "::error title=The engine-matrix run has not finished::Run $id measured this commit but was still $status when this gate gave up waiting. Nothing is wrong with the tag; rerun this job once that lane reports." >&2
+              echo "::error title=The engine-matrix run has not finished::Run $id measured this commit but was still $status after this gate waited ${ENGINE_WAIT_SECONDS} s. Nothing is wrong with the tag; rerun this job once that lane reports." >&2
               exit 1
             fi
             sleep 30
