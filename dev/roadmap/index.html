@@ -1311,9 +1311,9 @@ below decide what is in a release; this page follows them.</p>
   the lease</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/859">#859</a>, the whole DHCPv6 NTP server list, option 56, in the same log
   line, one entry per instance</li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1034">#1034</a>, the vendor-specific options logged. The DHCPv6 half's library
-  side comes with the v1.4.0 pin (<a href="https://github.com/claymore666/docker-net-dhcp/issues/1177">#1177</a>): option 17 on the lease. The
-  plugin's log line for option 17 is <a href="https://github.com/claymore666/docker-net-dhcp/issues/1203">#1203</a>, planned for v2.5.0</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1034">#1034</a>, the DHCPv4 vendor-specific options 43 and 125 logged. The
+  DHCPv6 half's library side comes with the v1.4.0 pin (<a href="https://github.com/claymore666/docker-net-dhcp/issues/1177">#1177</a>): option 17
+  on the lease</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1038">#1038</a>, an <code>ipv6_mode=auto</code> network remembers a silent DHCPv6 server
   for <code>DHCPV6_ABSENCE_MEMORY</code> (default ten minutes, <code>0</code> turns it off):
   further endpoints form their address from the advertised prefix without
@@ -1326,6 +1326,8 @@ below decide what is in a release; this page follows them.</p>
 <ul>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/214">#214</a>, DHCPv6 prefix delegation (IA_PD), designed first; only its Kea
   DHCPv6 test fixture is in v2.4.0</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1203">#1203</a>, the DHCPv6 option 17 logged as <code>vendor_17</code>, the plugin half of
+  <a href="https://github.com/claymore666/docker-net-dhcp/issues/1034">#1034</a></li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/733">#733</a>, the tracking issue for the CI consolidation programme</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/744">#744</a>, one subject discovery, one refusal and one collation in a
   shared shell library</li>

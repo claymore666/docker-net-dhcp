@@ -3300,9 +3300,10 @@ in every mode:</p>
   look like one client.</p>
 <h4 id="options-captured-from-the-server">Options captured from the server<a class="headerlink" href="#options-captured-from-the-server" title="Permanent link">&para;</a></h4>
 <p>Everything the server returns is captured. Some is applied, most of the rest
-is logged; DHCPv6 option 17 is captured but not logged yet. The
-vendor-specific options 43 and 125 are logged but never applied
-(<a href="https://github.com/claymore666/docker-net-dhcp/issues/1034">#1034</a>):</p>
+is logged. The vendor-specific options 43 and 125, and DHCPv6 option 17, are
+logged but never applied
+(<a href="https://github.com/claymore666/docker-net-dhcp/issues/1034">#1034</a>,
+<a href="https://github.com/claymore666/docker-net-dhcp/issues/1203">#1203</a>):</p>
 <p><strong>Applied</strong>, when the matching option is enabled: option 6 (DNS servers)
 and option 119 (search list, falling back to option 15) into
 <code>/etc/resolv.conf</code> with <code>propagate_dns</code>; option 26 into the link MTU
@@ -3323,10 +3324,9 @@ the first event, and the next Reply's own options replace them.
 The plugin logs the timezone options 41 and 42 and the NTP Server option
 56, as described below
 (<a href="https://github.com/claymore666/docker-net-dhcp/issues/1033">#1033</a>,
-<a href="https://github.com/claymore666/docker-net-dhcp/issues/859">#859</a>); it
-does not read or log option 17 yet
-(<a href="https://github.com/claymore666/docker-net-dhcp/issues/1203">#1203</a>).
-The DHCPv4 vendor options 43 and 125 are logged, as described below.</p>
+<a href="https://github.com/claymore666/docker-net-dhcp/issues/859">#859</a>). The
+vendor options, DHCPv4 43 and 125 and DHCPv6 17, are logged as described
+below.</p>
 <p><strong>Logged</strong> at info level on every bind and renew, and only when at least
 one is present, so plain LANs get no extra noise: option 42 (NTP; 56 on
 DHCPv6), 66 (TFTP server), 67 (boot file), 119 (when <code>propagate_dns</code> is
@@ -3347,14 +3347,24 @@ the server's DUID (<a href="https://github.com/claymore666/docker-net-dhcp/issue
 dnsmasq's <code>dhcp-option=option6:ntp-server,[a],[b]</code> packs both sources into
 one instance, which RFC 5908 does not allow and which is not read today:
 <code>ntp</code> is absent and the warning is logged.</p>
-<p>The vendor-specific options of DHCPv4 are logged the same way, hex-encoded
-and never interpreted (<a href="https://github.com/claymore666/docker-net-dhcp/issues/1034">#1034</a>):
-option 43 (RFC 2132 section 8.4) as <code>vendor_43</code>, and option 125 (RFC 3925
-section 4) as <code>vendor_125</code>, one <code>enterprise-number:hex</code> entry per
-enterprise in the order they arrived. An option 43 of zero octets and a
-malformed option 125 are left out.</p>
+<p>The vendor-specific options are logged the same way, hex-encoded
+and never interpreted (<a href="https://github.com/claymore666/docker-net-dhcp/issues/1034">#1034</a>,
+<a href="https://github.com/claymore666/docker-net-dhcp/issues/1203">#1203</a>):
+DHCPv4 option 43 (RFC 2132 section 8.4) as <code>vendor_43</code>, DHCPv4 option 125
+(RFC 3925 section 4) as <code>vendor_125</code>, and DHCPv6 option 17 (RFC 8415 section
+21.17) as <code>vendor_17</code>. The last two are one <code>enterprise-number:hex</code> entry per
+enterprise in the order they arrived; for option 17 that is one entry per
+instance of the option, and the hex is the instance's encapsulated
+sub-options. An option 43 of zero octets and a malformed option 125 are left
+out. An instance of option 17 shorter than the four octets of its enterprise
+number leaves the whole option out, the well-formed instances included,
+because the client library returns no list beside the error. A value
+longer than 256 bytes is logged as its first 256 bytes followed by
+<code>...(+N bytes, T total)</code>, which states how many bytes were cut and the full length.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>level=info msg=&quot;DHCP options received&quot; vendor_43=0104c0a86301
 <a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>  vendor_125=&quot;[9:aabb 3561:]&quot; ...
+<a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a>level=info msg=&quot;DHCP options received&quot; is_ipv6=true
+<a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a>  vendor_17=&quot;[9:00010002aabb 3561:]&quot; ...
 </code></pre></div>
 <p>These are not auto-applied because the consuming application owns those
 config files, and writing into them would mean another setns into the
