@@ -35,6 +35,8 @@ type DHCPv6Message struct {
 	Options []uint16
 	// ClientFQDN is the first option 39's value (flags, then the encoded name), nil when absent (RFC 4704, #1029).
 	ClientFQDN []byte
+	// VendorOpts is every option 17 value in wire order, enterprise number first (RFC 8415 section 21.17, #1203).
+	VendorOpts [][]byte
 }
 
 // RFC 9915 section 7.3's message types used here.
@@ -60,6 +62,7 @@ const (
 	DHCPv6OptReconfigureAccept uint16 = 20
 	// DHCPv6OptClientFQDN is RFC 4704 section 4.1's Client FQDN option (#1029).
 	DHCPv6OptClientFQDN uint16 = 39
+	DHCPv6OptVendorOpts uint16 = 17
 )
 
 // Offsets from RFC 9915 sections 7.2, 7.3 and 21.1.
@@ -135,9 +138,24 @@ func ParseDHCPv6(b []byte) (DHCPv6Message, bool) {
 		if code == DHCPv6OptClientFQDN && m.ClientFQDN == nil {
 			m.ClientFQDN = append([]byte{}, o[dhcpv6OptHeaderLen:dhcpv6OptHeaderLen+dataLen]...)
 		}
+		if code == DHCPv6OptVendorOpts {
+			m.VendorOpts = append(m.VendorOpts, append([]byte{}, o[dhcpv6OptHeaderLen:dhcpv6OptHeaderLen+dataLen]...))
+		}
 		o = o[dhcpv6OptHeaderLen+dataLen:]
 	}
 	return m, true
+}
+
+// VendorOptsEntries is each option 17 instance as "enterprise:hex", sorted, the form the plugin logs (#1203).
+func (m DHCPv6Message) VendorOptsEntries() []string {
+	var out []string
+	for _, v := range m.VendorOpts {
+		if len(v) >= 4 {
+			out = append(out, fmt.Sprintf("%d:%x", binary.BigEndian.Uint32(v[:4]), v[4:]))
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // HasOption reports whether the message carried an option with this code.
