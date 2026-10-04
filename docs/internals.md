@@ -821,7 +821,8 @@ kinds of restart. Their *observable* behaviour is documented in the
 Two more files in `STATE_DIR` are kept by the plugin and not by the
 mechanisms above. The lease record `lease-records.jsonl` is compacted on
 the 15-second sweep, so it stops growing by about 5 KB per container
-lifecycle (v2.4.0, #1182); the rule and the crash behaviour are in the
+lifecycle (v2.4.0, #1182), and a live record stops growing per renewal
+(v2.5.0, #1192); the rule and the crash behaviour are in the
 [driver reference](reference.md#state-persistence). At start, a saved
 network file whose network Docker answers is gone is removed together with
 its pool binding and held records, and `stale_networks_dropped` counts it
