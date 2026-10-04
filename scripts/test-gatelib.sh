@@ -91,7 +91,7 @@ expect "GATE_TITLE keeps an established annotation title" "2|::error title=Nothi
 R="$T/repo"
 mkdir -p "$R/sub" "$R/testdata" "$R/deep/testdata" "$R/docs/deep" "$R/fix/deep"
 git init -q "$R"
-for f in a.go a_test.go sub/b.go sub/b_test.go testdata/c.go deep/testdata/x.go ignored.go gone.go README.md sub/notes.md docs/guide.md docs/deep/x.md testdata/n.md check-a.sh sub/check-b.sh manifest.json fix/manifest.json fix/deep/manifest.json; do
+for f in a.go a_test.go sub/b.go sub/b_test.go testdata/c.go deep/testdata/x.go ignored.go gone.go README.md sub/notes.md docs/guide.md docs/deep/x.md testdata/n.md check-a.sh sub/check-b.sh x-gate.sh test-x-gate.sh sub/y-gate.sh run-gate-selftests.sh manifest.json fix/manifest.json fix/deep/manifest.json; do
     echo "package x" > "$R/$f"
 done
 printf 'ignored.go\n' > "$R/.gitignore"
@@ -124,6 +124,8 @@ rc=$(subjects docs)
 expect "docs is the README and the top-level docs pages" "0|n=2|README.md|docs/guide.md" "$rc|$(tr '\n' '|' < "$T/out" | sed 's/|$//')"
 rc=$(subjects gates)
 expect "gates is the directory's own check-*.sh only" "0|n=1|check-a.sh" "$rc|$(tr '\n' '|' < "$T/out" | sed 's/|$//')"
+rc=$(subjects named-gates)
+expect "named-gates is the directory's own *-gate.sh, not its self-test" "0|n=1|x-gate.sh" "$rc|$(tr '\n' '|' < "$T/out" | sed 's/|$//')"
 rc=$(subjects manifest)
 expect "manifest is one directory level deep only" "0|n=1|fix/manifest.json" "$rc|$(tr '\n' '|' < "$T/out" | sed 's/|$//')"
 

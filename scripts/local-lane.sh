@@ -122,6 +122,7 @@ LANE=(
   "parent-gate accounting|-|bash scripts/check-parent-gate-accounting.sh"
   "doc invariants|-|bash scripts/check-doc-invariants.sh"
   "build-dir refs|-|bash scripts/check-build-dir-refs.sh"
+  "gate expiry|-|bash scripts/check-gate-expiry.sh"
   "build context|-|bash scripts/check-build-context.sh"
   "dockerignore parity|-|bash scripts/check-dockerignore-parity.sh"
   "registry login|-|bash scripts/check-registry-login.sh"

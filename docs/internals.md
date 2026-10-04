@@ -983,6 +983,24 @@ the library, and a class that matches nothing refuses unless the gate
 passes `--may-be-empty`. `scripts/test-gatelib.sh` checks the contract
 and that every `check-*.sh` sources the library.
 
+Every gate also says when it should be removed (#749). Its leading
+comment block carries one `# Expires-when:` line, continued on lines
+indented two or more spaces, that names the condition and cites the issue
+it comes from; a gate that guards a standing invariant says `never` and
+why. The gates are every `scripts/check-*.sh` and every `scripts/*-gate.sh`.
+[`scripts/check-gate-expiry.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/check-gate-expiry.sh)
+fails a pull request whose gate has no such line, or one that is empty, a
+placeholder, under six words, without an issue reference, longer than four
+lines, or copied from another gate. From the v2.5.0 release on, the Gate
+expiry workflow lists every gate with its condition in the job summary
+once a quarter, for a person to re-read; it never decides that a
+condition holds. GitHub runs a scheduled workflow only from the default
+branch, so until that release `bash scripts/check-gate-expiry.sh --list`
+prints the same list locally. To add a gate: source
+`gatelib.sh`, write the `Expires-when` line, add a `scripts/test-check-<name>.sh`
+self-test, and wire it into the `policy-gates` job of `test.yaml` and into
+`scripts/local-lane.sh`.
+
 Everything it does **not** do is declared and never merely absent.
 `scripts/local-lane.sh --list-exempt` prints the list with reasons, and
 that is the place to read it instead of a count written here, which has
