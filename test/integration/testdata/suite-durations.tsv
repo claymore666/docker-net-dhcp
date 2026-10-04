@@ -10,8 +10,8 @@
 #
 # POPULATION: TOP-LEVEL TEST FUNCTIONS, PARENTS ONLY.
 # One row per `func TestX(t *testing.T)` in test/integration/*_test.go —
-# 235 of them, the main suite's 228 and the failure suite's 7. MEASURED
-# on this table: 235 data rows, and 235 `func TestX(t *testing.T)` in
+# 244 of them, the main suite's 237 and the failure suite's 7. MEASURED
+# on this table: 244 data rows, and 244 `func TestX(t *testing.T)` in
 # test/integration/*_test.go counted independently of them.
 #
 # THIS NUMBER HAS NOW BEEN WRONG TWICE, and the second time is the
@@ -222,6 +222,9 @@
 #              is 50.00: two arms, each one TestIPAM_SingleRestartKeeps-
 #              TheAddress at 22.00 on its own ephemeral fixture, plus
 #              that fixture's setup and teardown twice.
+#   one row    TestFQDN_Option81OnlyWithRegisterDNS (#861) is INFERRED at
+#              24.00: two golden-path lifecycles (11.60 each) on two
+#              ephemeral fixtures, and the first run that executes it costs it.
 #   four rows  The four TestReleaseLease_* rows are INFERRED, not
 #              measured: #962 adds them and no run has executed them.
 #              TestReleaseLease_TheOptionIsRefusedAtCreateOrItIsNot is
@@ -659,6 +662,7 @@ TestErrors_ParentIsBridge	0.09
 TestExtraOptions_NTPAndTFTPLogged	12.12
 TestExtraOptions_SearchListInResolvConf	12.42
 TestExtraOptions_WPADAndTimezoneLogged	11.98
+TestFQDN_Option81OnlyWithRegisterDNS	24.00
 TestFQDN_RegistersInDNS	11.60
 TestFQDN_V6RegistersAAAA	15.00
 TestFQDN_V6RegistersAAAA_IPAM	15.00
