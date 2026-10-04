@@ -8,7 +8,7 @@ name: Netboot image
 # Dockerfile or script change that does not build is found by whoever
 # next rebuilds the boot server — typically while recovering from
 # something else, on a board whose only console is a serial cable.
-# check-pi-watchdog-wiring.sh already gates how the watchdog is wired
+# check-pi-watchdog.sh --tree already gates how the watchdog is wired
 # across these files and check-dockerfile-pins.sh gates the base
 # digests; neither of them compiles anything.
 #

@@ -27,7 +27,14 @@ PKG="$TMP/pkg"
 DOCS="$TMP/docs"
 mkdir -p "$PKG" "$DOCS"
 
-cat > "$PKG/endpoints.go" <<'EOF'
+# gate_subjects discovers Go sources through git (#744), so the fixture is a work tree.
+git init -q "$TMP"
+
+# The shapes option parsing must handle: tagged fields, untagged fields
+# (mapstructure matches the lowercased name) and a comment line inside the
+# struct body.
+write_endpoints() {
+    cat > "$PKG/endpoints.go" <<'EOF'
 package plugin
 
 type HealthResponse struct {
@@ -40,6 +47,29 @@ type HealthResponse struct {
 type DHCPNetworkOptions struct {
 	Mode   string `mapstructure:"mode"`
 	Bridge string
+	// LeaseTimeout has a comment line above it.
+	LeaseTimeout time.Duration `mapstructure:"lease_timeout"`
+}
+EOF
+}
+write_endpoints
+
+# A per-endpoint option, read from a literal indexing an options map.
+cat > "$PKG/network.go" <<'EOF'
+package plugin
+
+func parseDriverOptIP(options map[string]interface{}) {
+	_ = options["ip"]
+}
+EOF
+
+# Keys referenced only in tests must NOT be required (#745).
+cat > "$PKG/network_test.go" <<'EOF'
+package plugin
+
+func TestSomething(t *testing.T) {
+	_ = map[string]interface{}{}["only_in_tests"]
+	_ = Options["only_in_tests"]
 }
 EOF
 
@@ -61,6 +91,8 @@ write_reference() {
 | `LOG_LEVEL` | x |
 | `mode` | x |
 | `bridge` | x |
+| `lease_timeout` | x |
+| `ip` | x |
 EOF
 }
 
@@ -195,21 +227,93 @@ expect 2 "renamed HealthResponse cannot gate" "could not extract HealthResponse"
 # refuses rather than passes vacuously. Everything after it needs the
 # fixture put back, or these cases exit 2 on that check and never reach
 # the rule they are about.
+write_endpoints
+
+# --- 1b. driver options (the former option-docs gate, #745) ------
+# Every key the code parses must be in the reference: a tagged field, an
+# untagged field (the lowercased name), and a literal indexing an options
+# map. Each is driven red separately, and the green case asserts a PASS
+# row per key so a parser that finds nothing cannot pass it.
+write_reference
+rm -f "$DOCS/guide.md"
+for k in mode bridge lease_timeout ip; do
+    expect 0 "option $k is read from the code and found documented" "PASS  option $k documented"
+done
+
+# Keys that exist only in *_test.go are not the plugin's options.
+out=$(run)
+if printf '%s' "$out" | grep -F "only_in_tests" >/dev/null; then
+    echo "FAIL: a key referenced only in a test file was demanded"; printf '    %s\n' "$out"; fail=1
+else
+    echo "PASS: test-only option keys are ignored"
+fi
+
+# ...and neither is a struct a test file declares with the real name.
+cat > "$PKG/shadow_test.go" <<'EOF'
+package plugin
+
+type DHCPNetworkOptions struct {
+	TestOnly string
+}
+EOF
+out=$(run)
+if printf '%s' "$out" | grep -F "testonly" >/dev/null; then
+    echo "FAIL: a DHCPNetworkOptions declared in a test file was read"; printf '    %s\n' "$out"; fail=1
+else
+    echo "PASS: a DHCPNetworkOptions in a test file is not read"
+fi
+rm -f "$PKG/shadow_test.go"
+
+write_reference; sed -i '/lease_timeout/d' "$DOCS/reference.md"
+expect 1 "an undocumented tagged option fails" "FAIL  option lease_timeout is parsed by the code"
+
+write_reference; sed -i '/`bridge`/d' "$DOCS/reference.md"
+expect 1 "an undocumented untagged option fails (lowercased field name)" "FAIL  option bridge is parsed by the code"
+
+write_reference; sed -i '/`ip`/d' "$DOCS/reference.md"
+expect 1 "an undocumented endpoint option fails" "FAIL  option ip is parsed by the code"
+
+# A bare word is not documentation: the key must be backticked.
+write_reference; sed -i 's/`ip`/ip/' "$DOCS/reference.md"
+expect 1 "an unbackticked mention does not document an option" "FAIL  option ip is parsed by the code"
+
+# An options map is found under either capitalisation: Options["k"] on a
+# receiver field is a per-endpoint key like options["k"] is.
+write_reference
+cat > "$PKG/upper.go" <<'EOF'
+package plugin
+
+func upper() { _ = Options["upper_only"] }
+EOF
+expect 1 "a capitalised Options[...] key is an endpoint option too" "FAIL  option upper_only is parsed by the code"
+rm -f "$PKG/upper.go"
+
+# The option struct vanishing is a failure, not an empty option set.
+write_reference
 cat > "$PKG/endpoints.go" <<'EOF'
 package plugin
 
 type HealthResponse struct {
-	Healthy       bool  `json:"healthy"`
-	LeasesRenewed int32 `json:"leases_renewed"`
-	// A comment line inside the struct body.
-	NAKsReceived int32 `json:"naks_received"`
-}
-
-type DHCPNetworkOptions struct {
-	Mode   string `mapstructure:"mode"`
-	Bridge string
+	Healthy bool `json:"healthy"`
 }
 EOF
+sed -i '/leases_renewed\|naks_received/d' "$DOCS/reference.md"
+expect 1 "a vanished DHCPNetworkOptions cannot gate" "DHCPNetworkOptions struct not found"
+write_endpoints
+write_reference
+
+# No non-test Go source at all refuses rather than passes (#744).
+mkdir -p "$TMP/testsonly"
+cp "$PKG/network_test.go" "$TMP/testsonly/"
+out=$(MANIFEST="$TMP/config.json" bash "$CHECK" "$TMP/testsonly" "$DOCS" "$DOCS/reference.md" 2>&1); rc=$?
+if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -F "no 'go-src' file under" >/dev/null; then
+    echo "PASS: a package with only tests refuses"
+else
+    echo "FAIL: a package with only tests (rc=$rc)"; printf '    %s\n' "$out"; fail=1
+fi
+
+out=$(MANIFEST="$TMP/config.json" bash "$CHECK" "$TMP/nonexistent" "$DOCS" "$DOCS/reference.md" 2>&1); rc=$?
+if [ "$rc" -eq 2 ]; then echo "PASS: a missing package directory is a usage error"; else echo "FAIL: a missing package directory (rc=$rc)"; fail=1; fi
 
 # The shape that shipped: two procedures, only one of them correct.
 write_reference

@@ -107,17 +107,26 @@ jobs:
           echo not-a-label
 EOF
 
+# The fixture the rule map is judged against (#393). Every static case passes
+# one explicitly: the gate refuses to run without it, and a default would
+# make the cases depend on the working directory.
+GOOD_FIXTURE="$TMP/titles.tsv"
+printf 'fix(plugin): a real bug\tbug\n'  > "$GOOD_FIXTURE"
+printf 'ci: a workflow change\tci\n'    >> "$GOOD_FIXTURE"
+printf 'fixing things generally\t-\n'   >> "$GOOD_FIXTURE"
+printf 'Fix(plugin): capitalised\tbug\n'   >> "$GOOD_FIXTURE"
+
 # ------------------------------------------------------------ static: clean
 run "well-formed declaration passes" 0 "Label taxonomy OK (static)" -- \
-    bash "$CHECK" --static "$GOOD_LABELS" "$GOOD_MAP" "$GOOD_WF"
+    bash "$CHECK" --static "$GOOD_LABELS" "$GOOD_MAP" "$GOOD_WF" "$GOOD_FIXTURE"
 
 # ------------------------------------------------- static: usage and inputs
 run "no mode is a usage error" 2 "usage:" -- \
     bash "$CHECK" --nonsense
 run "missing declaration cannot check" 2 "missing declaration" -- \
-    bash "$CHECK" --static "$TMP/absent.yml" "$GOOD_MAP" "$GOOD_WF"
+    bash "$CHECK" --static "$TMP/absent.yml" "$GOOD_MAP" "$GOOD_WF" "$GOOD_FIXTURE"
 run "missing map cannot check" 2 "missing:" -- \
-    bash "$CHECK" --static "$GOOD_LABELS" "$TMP/absent.yml" "$GOOD_WF"
+    bash "$CHECK" --static "$GOOD_LABELS" "$TMP/absent.yml" "$GOOD_WF" "$GOOD_FIXTURE"
 
 # ------------------------------------------------ static: declaration rules
 mk() { cp "$GOOD_LABELS" "$1"; }
@@ -133,17 +142,17 @@ cat > "$NO_DESC" <<'EOF'
   role: area
 EOF
 run "REGRESSION a label with no description is red" 1 "has no description" -- \
-    bash "$CHECK" --static "$NO_DESC" "$GOOD_MAP" "$GOOD_WF"
+    bash "$CHECK" --static "$NO_DESC" "$GOOD_MAP" "$GOOD_WF" "$GOOD_FIXTURE"
 
 NO_ROLE="$TMP/no-role.yml"
 printf -- '- name: bug\n  description: x\n' > "$NO_ROLE"
 run "a label with no role is red" 1 "has no role" -- \
-    bash "$CHECK" --static "$NO_ROLE" "$GOOD_MAP" "$GOOD_WF"
+    bash "$CHECK" --static "$NO_ROLE" "$GOOD_MAP" "$GOOD_WF" "$GOOD_FIXTURE"
 
 BAD_ROLE="$TMP/bad-role.yml"
 printf -- '- name: bug\n  role: kind-of\n  description: x\n' > "$BAD_ROLE"
 run "an unknown role is red" 1 "not one of" -- \
-    bash "$CHECK" --static "$BAD_ROLE" "$GOOD_MAP" "$GOOD_WF"
+    bash "$CHECK" --static "$BAD_ROLE" "$GOOD_MAP" "$GOOD_WF" "$GOOD_FIXTURE"
 
 DUPE="$TMP/dupe.yml"
 cat > "$DUPE" <<'EOF'
@@ -156,14 +165,14 @@ cat > "$DUPE" <<'EOF'
   description: A second entry for the same name
 EOF
 run "a name declared twice is red" 1 "declared twice" -- \
-    bash "$CHECK" --static "$DUPE" "$GOOD_MAP" "$GOOD_WF"
+    bash "$CHECK" --static "$DUPE" "$GOOD_MAP" "$GOOD_WF" "$GOOD_FIXTURE"
 
 # The empty-set guard. Without it, "exactly one type label" is satisfied
 # vacuously by every issue on the tracker and the live half reports clean.
 NO_TYPE="$TMP/no-type.yml"
 printf -- '- name: security\n  role: area\n  description: x\n' > "$NO_TYPE"
 run "a declaration with no type label is red" 1 "no label has role 'type'" -- \
-    bash "$CHECK" --static "$NO_TYPE" "$GOOD_MAP" "$GOOD_WF"
+    bash "$CHECK" --static "$NO_TYPE" "$GOOD_MAP" "$GOOD_WF" "$GOOD_FIXTURE"
 
 # The same guard on the other universal. "No issue wears a Dependabot label"
 # is satisfied by declaring none, and the live half would then report clean
@@ -171,25 +180,25 @@ run "a declaration with no type label is red" 1 "no label has role 'type'" -- \
 NO_DEPBOT="$TMP/no-dependabot.yml"
 printf -- '- name: bug\n  role: type\n  description: x\n' > "$NO_DEPBOT"
 run "a declaration with no Dependabot label is red" 1 "no label has role 'dependabot'" -- \
-    bash "$CHECK" --static "$NO_DEPBOT" "$GOOD_MAP" "$GOOD_WF"
+    bash "$CHECK" --static "$NO_DEPBOT" "$GOOD_MAP" "$GOOD_WF" "$GOOD_FIXTURE"
 
 EMPTY="$TMP/empty.yml"
 printf '# nothing but a comment\n' > "$EMPTY"
 run "an empty declaration is red, not clean" 1 "no labels declared" -- \
-    bash "$CHECK" --static "$EMPTY" "$GOOD_MAP" "$GOOD_WF"
+    bash "$CHECK" --static "$EMPTY" "$GOOD_MAP" "$GOOD_WF" "$GOOD_FIXTURE"
 
 # ---------------------------------------------------- static: labeller ties
 UNDECLARED_MAP="$TMP/undeclared-map.yml"
 printf 'tests:\n  - %s\n' "'/^tests:/i'" > "$UNDECLARED_MAP"
 run "a rule label that is not declared is red" 1 "is not declared" -- \
-    bash "$CHECK" --static "$GOOD_LABELS" "$UNDECLARED_MAP" "$GOOD_WF"
+    bash "$CHECK" --static "$GOOD_LABELS" "$UNDECLARED_MAP" "$GOOD_WF" "$GOOD_FIXTURE"
 
 # The labeller must never reach workflow state. `backlog` is a status label:
 # an issue title cannot establish that something is descheduled.
 STATUS_MAP="$TMP/status-map.yml"
 printf 'backlog:\n  - %s\n' "'/^later:/i'" > "$STATUS_MAP"
 run "the labeller may not apply a status label" 1 "may only apply" -- \
-    bash "$CHECK" --static "$GOOD_LABELS" "$STATUS_MAP" "$GOOD_WF"
+    bash "$CHECK" --static "$GOOD_LABELS" "$STATUS_MAP" "$GOOD_WF" "$GOOD_FIXTURE"
 
 WF_UNDECLARED="$TMP/wf-undeclared.yml"
 cat > "$WF_UNDECLARED" <<'EOF'
@@ -203,12 +212,12 @@ jobs:
     runs-on: ubuntu-latest
 EOF
 run "ALLOWED_LABELS naming an undeclared label is red" 1 "ALLOWED_LABELS names" -- \
-    bash "$CHECK" --static "$GOOD_LABELS" "$GOOD_MAP" "$WF_UNDECLARED"
+    bash "$CHECK" --static "$GOOD_LABELS" "$GOOD_MAP" "$WF_UNDECLARED" "$GOOD_FIXTURE"
 
 WF_NO_BLOCK="$TMP/wf-no-block.yml"
 printf 'jobs:\n  label:\n    runs-on: ubuntu-latest\n' > "$WF_NO_BLOCK"
 run "a missing ALLOWED_LABELS block is red" 1 "no ALLOWED_LABELS block" -- \
-    bash "$CHECK" --static "$GOOD_LABELS" "$GOOD_MAP" "$WF_NO_BLOCK"
+    bash "$CHECK" --static "$GOOD_LABELS" "$GOOD_MAP" "$WF_NO_BLOCK" "$GOOD_FIXTURE"
 
 # ------------------------------- static: the parser's own refusals (#715)
 #
@@ -236,12 +245,12 @@ mkbad() { # <out> <sed-expr>   — the good declaration with one thing wrong
 DUP_ROLE="$TMP/dup-role.yml"
 mkbad "$DUP_ROLE" '0,/^  role: type$/s//  role: type\n  role: type/'
 run "a label declaring two roles is red" 1 "duplicate 'role'" -- \
-    bash "$CHECK" --static "$DUP_ROLE" "$GOOD_MAP" "$GOOD_WF"
+    bash "$CHECK" --static "$DUP_ROLE" "$GOOD_MAP" "$GOOD_WF" "$GOOD_FIXTURE"
 
 DUP_DESC="$TMP/dup-desc.yml"
 mkbad "$DUP_DESC" "0,/^  description: Something/s//  description: Something isn't working\n  description: Something/"
 run "a label declaring two descriptions is red" 1 "duplicate 'description'" -- \
-    bash "$CHECK" --static "$DUP_DESC" "$GOOD_MAP" "$GOOD_WF"
+    bash "$CHECK" --static "$DUP_DESC" "$GOOD_MAP" "$GOOD_WF" "$GOOD_FIXTURE"
 
 # A field above the first entry belongs to nothing. Attaching it to the
 # next label would be a guess about what the author meant, and a reader
@@ -249,7 +258,7 @@ run "a label declaring two descriptions is red" 1 "duplicate 'description'" -- \
 ORPHAN="$TMP/orphan-field.yml"
 { printf '  role: type\n\n'; cat "$GOOD_LABELS"; } > "$ORPHAN"
 run "a field before the first entry is red" 1 "field before any" -- \
-    bash "$CHECK" --static "$ORPHAN" "$GOOD_MAP" "$GOOD_WF"
+    bash "$CHECK" --static "$ORPHAN" "$GOOD_MAP" "$GOOD_WF" "$GOOD_FIXTURE"
 
 # THE ONE THAT MATTERS MOST OF THE SIX. A line this reader does not
 # understand has to be an error and never a skip: silently ignoring it is
@@ -258,7 +267,7 @@ run "a field before the first entry is red" 1 "field before any" -- \
 UNPARSEABLE="$TMP/unparseable.yml"
 mkbad "$UNPARSEABLE" '0,/^  role: type$/s//  role: type\n  colour: ff0000/'
 run "a line the reader does not understand is red, not skipped" 1 "cannot parse" -- \
-    bash "$CHECK" --static "$UNPARSEABLE" "$GOOD_MAP" "$GOOD_WF"
+    bash "$CHECK" --static "$UNPARSEABLE" "$GOOD_MAP" "$GOOD_WF" "$GOOD_FIXTURE"
 
 # Added as a fourth entry rather than by blanking an existing name, so the
 # labels GOOD_MAP and GOOD_WF reference all still exist and the empty name
@@ -266,7 +275,7 @@ run "a line the reader does not understand is red, not skipped" 1 "cannot parse"
 EMPTY_NAME="$TMP/empty-name.yml"
 { cat "$GOOD_LABELS"; printf "\n- name: ''\n  role: area\n  description: an entry with no name at all\n"; } > "$EMPTY_NAME"
 run "a label with an empty name is red" 1 "empty name" -- \
-    bash "$CHECK" --static "$EMPTY_NAME" "$GOOD_MAP" "$GOOD_WF"
+    bash "$CHECK" --static "$EMPTY_NAME" "$GOOD_MAP" "$GOOD_WF" "$GOOD_FIXTURE"
 
 # The role rule has TWO call sites — the labeller's rule map and the
 # workflow's ALLOWED_LABELS — and only the map's was ever driven. One fix
@@ -285,12 +294,134 @@ jobs:
     runs-on: ubuntu-latest
 EOF
 run "ALLOWED_LABELS may not name a status label either" 1 "whose role is" -- \
-    bash "$CHECK" --static "$GOOD_LABELS" "$GOOD_MAP" "$WF_STATUS"
+    bash "$CHECK" --static "$GOOD_LABELS" "$GOOD_MAP" "$WF_STATUS" "$GOOD_FIXTURE"
 
 # Absent inputs are refusals, not verdicts, and the workflow is the one of
 # the three whose absence nothing drove.
 run "a missing workflow cannot check" 2 "missing" -- \
-    bash "$CHECK" --static "$GOOD_LABELS" "$GOOD_MAP" "$TMP/not-a-workflow.yml"
+    bash "$CHECK" --static "$GOOD_LABELS" "$GOOD_MAP" "$TMP/not-a-workflow.yml" "$GOOD_FIXTURE"
+
+# ------------------------------- static: the rule map and its fixture (#393)
+#
+# The issue label-map gate was folded in here by #745. Each case below is one
+# of its assertions, driven on the good declaration plus one defect.
+rmap() { # <name> <body>  -> path of a rule map
+    printf '%s' "$2" > "$TMP/$1.yml"; echo "$TMP/$1.yml"
+}
+st() { # <labels> <map> <workflow> <fixture>
+    bash "$CHECK" --static "$1" "$2" "$3" "$4"
+}
+
+BAD_REGEX="$(rmap bad-regex "$(printf "bug:\n  - '/^fix(\\\\([^)]*\\\\)?!?:/i'\n")")"
+run "an uncompilable rule regex is red" 1 "bad regex" -- \
+    st "$GOOD_LABELS" "$BAD_REGEX" "$GOOD_WF" "$GOOD_FIXTURE"
+
+BAD_FLAG="$(rmap bad-flag "$(printf "bug:\n  - '/^fix:/s'\n")")"
+run "an unsupported regex flag is red" 1 "not supported" -- \
+    st "$GOOD_LABELS" "$BAD_FLAG" "$GOOD_WF" "$GOOD_FIXTURE"
+
+# The action honours only i; m and s change what a pattern means and would
+# pass here while the labeller treats them differently (#745).
+BAD_FLAG_M="$(rmap bad-flag-m "$(printf "bug:\n  - '/^fix:/m'\n")")"
+run "the multiline regex flag is red too" 1 "flag 'm' is not supported" -- \
+    st "$GOOD_LABELS" "$BAD_FLAG_M" "$GOOD_WF" "$GOOD_FIXTURE"
+
+# Declared and applicable, so the declaration rules pass it; only the
+# labeller's own list can say it is unknown to the model pass.
+WF_ONLY_BUG="$TMP/wf-only-bug.yml"
+printf 'env:\n  ALLOWED_LABELS: |\n    bug\n\njobs:\n  label:\n    runs-on: ubuntu-latest\n' > "$WF_ONLY_BUG"
+run "a rule label missing from ALLOWED_LABELS is red" 1 "label 'ci' is not in ALLOWED_LABELS" -- \
+    st "$GOOD_LABELS" "$GOOD_MAP" "$WF_ONLY_BUG" "$GOOD_FIXTURE"
+
+# An allowlist that is present and empty is not "nothing to compare".
+WF_EMPTY_BLOCK="$TMP/wf-empty-block.yml"
+printf 'env:\n  ALLOWED_LABELS: |\n\njobs:\n  label:\n    runs-on: ubuntu-latest\n' > "$WF_EMPTY_BLOCK"
+run "an empty ALLOWED_LABELS block is red, not skipped" 1 "not in ALLOWED_LABELS" -- \
+    st "$GOOD_LABELS" "$GOOD_MAP" "$WF_EMPTY_BLOCK" "$GOOD_FIXTURE"
+
+# The block is read by indentation (#715). `security` is declared and has a
+# rule, but is NOT in the allowlist; the word sits on its own line in a later
+# run: block, where the old regex reader counted it as an entry.
+WF_TRAP="$TMP/wf-trap.yml"
+cat > "$WF_TRAP" <<'EOF'
+env:
+  ALLOWED_LABELS: |
+    bug
+    ci
+
+jobs:
+  label:
+    steps:
+      - name: A step whose body mentions a label name
+        run: |
+          echo picking a lane
+          security
+EOF
+TRAP_MAP="$(rmap trap-map "$(printf "bug:\n  - '/^fix:/i'\nsecurity:\n  - '/^sec:/i'\n")")"
+TRAP_FIXTURE="$TMP/trap.tsv"
+printf 'fix: a bug\tbug\nsec: a hole\tsecurity\n' > "$TRAP_FIXTURE"
+run "a label named past the allowlist block is not in the allowlist" 1 "label 'security' is not in ALLOWED_LABELS" -- \
+    st "$GOOD_LABELS" "$TRAP_MAP" "$WF_TRAP" "$TRAP_FIXTURE"
+
+# The regression the fixture exists for: a pattern that stops matching what
+# the fixture says it must.
+DRIFTED="$(rmap drifted "$(printf "bug:\n  - '/^bugfix:/i'\nci:\n  - '/^ci:/i'\n")")"
+run "a pattern that no longer matches the fixture is red" 1 "want \[bug\]" -- \
+    st "$GOOD_LABELS" "$DRIFTED" "$GOOD_WF" "$GOOD_FIXTURE"
+
+# Several patterns under one label are ANDed, as the action does. Under OR
+# the first title would classify as bug and its '-' row would go red.
+AND_MAP="$(rmap and-map "$(printf "bug:\n  - '/^fix/i'\n  - '/urgent/i'\n")")"
+AND_FIXTURE="$TMP/and.tsv"
+printf 'fix: plain\t-\nfix: urgent\tbug\nurgent matter\t-\n' > "$AND_FIXTURE"
+run "several patterns under one label must all match" 0 "Label taxonomy OK (static)" -- \
+    st "$GOOD_LABELS" "$AND_MAP" "$GOOD_WF" "$AND_FIXTURE"
+
+# The action matches against the title plus a blank line, and 'g' is
+# meaningless for a single match: both must hold for this map to pass.
+TAIL_MAP="$(rmap tail-map "$(printf "bug:\n  - '/^fix: x\\\\n\\\\n\$/gi'\n")")"
+TAIL_FIXTURE="$TMP/tail.tsv"
+printf 'fix: x\tbug\nfix: y\t-\n' > "$TAIL_FIXTURE"
+run "the target is the title plus a blank line, and the g flag is tolerated" 0 "Label taxonomy OK (static)" -- \
+    st "$GOOD_LABELS" "$TAIL_MAP" "$GOOD_WF" "$TAIL_FIXTURE"
+
+# A fixture saved with CRLF endings or a trailing space still says '-'.
+WS_FIXTURE="$TMP/ws.tsv"
+printf 'unrelated words\t- \r\nfix: a bug\tbug \r\n' > "$WS_FIXTURE"
+run "fixture rows tolerate trailing whitespace and CR" 0 "Label taxonomy OK (static)" -- \
+    st "$GOOD_LABELS" "$GOOD_MAP" "$GOOD_WF" "$WS_FIXTURE"
+
+# A title the map must not classify: the gate fails when it does.
+NEG_FIXTURE="$TMP/neg.tsv"
+printf 'fix(plugin): a real bug\t-\n' > "$NEG_FIXTURE"
+run "a negative row that the map classifies is red" 1 "want \[-\]" -- \
+    st "$GOOD_LABELS" "$GOOD_MAP" "$GOOD_WF" "$NEG_FIXTURE"
+
+EMPTY_LABEL="$(rmap empty-label "$(printf "bug:\nci:\n  - '/^ci:/i'\n")")"
+run "a rule label with no patterns is red" 1 "has no patterns" -- \
+    st "$GOOD_LABELS" "$EMPTY_LABEL" "$GOOD_WF" "$GOOD_FIXTURE"
+
+NO_RULES="$(rmap no-rules "$(printf '# nothing but a comment\n')")"
+run "a rule map with no rules is red" 1 "no rules found" -- \
+    st "$GOOD_LABELS" "$NO_RULES" "$GOOD_WF" "$GOOD_FIXTURE"
+
+ORPHAN_PAT="$(rmap orphan-pattern "$(printf "  - '/^fix:/i'\nbug:\n  - '/^fix:/i'\n")")"
+run "a pattern before any label is red" 1 "pattern before any label" -- \
+    st "$GOOD_LABELS" "$ORPHAN_PAT" "$GOOD_WF" "$GOOD_FIXTURE"
+
+UNPARSEABLE_MAP="$(rmap unparseable-map "$(printf "bug:\n  - '/^fix:/i'\n  weight: 3\n")")"
+run "a rule-map line the reader does not understand is red" 1 "cannot parse" -- \
+    st "$GOOD_LABELS" "$UNPARSEABLE_MAP" "$GOOD_WF" "$GOOD_FIXTURE"
+
+BAD_ROW="$TMP/bad-row.tsv"
+printf 'no tab on this row\n' > "$BAD_ROW"
+run "a fixture row without a tab is red" 1 "want '<title>" -- \
+    st "$GOOD_LABELS" "$GOOD_MAP" "$GOOD_WF" "$BAD_ROW"
+
+# The fixture is part of the contract: absent, the rule map is unjudged, and
+# that is a refusal and never a pass.
+run "a missing fixture cannot check" 2 "missing:" -- \
+    st "$GOOD_LABELS" "$GOOD_MAP" "$GOOD_WF" "$TMP/absent.tsv"
 
 # ------------------------------------------------------- ORTHOGONALITY
 # The gate this one replaced read the block with
@@ -316,7 +447,7 @@ fi
 # `not-a-label` lives past the block's end. If the new reader swallowed it
 # the way the old one did, it would be reported as undeclared.
 run "ORTHOGONALITY the new reader stops at the block" 0 "Label taxonomy OK (static)" -- \
-    bash "$CHECK" --static "$GOOD_LABELS" "$GOOD_MAP" "$GOOD_WF"
+    bash "$CHECK" --static "$GOOD_LABELS" "$GOOD_MAP" "$GOOD_WF" "$GOOD_FIXTURE"
 
 # --------------------------------------------------------------- live
 #

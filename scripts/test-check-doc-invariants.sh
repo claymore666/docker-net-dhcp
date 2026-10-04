@@ -174,6 +174,190 @@ check "a missing manifest is exit 2" 2 "$TMP/ok" "$TMP/nope/manifest.txt" \
 check "a missing root is exit 2" 2 "$TMP/nope-root" "$TMP/ok/manifest.txt" \
     "is not a directory"
 
+# --------------------- scope, var and match (the former cosign gate, #745)
+#
+# The separate cosign-docs gate is gone; its rules are the declarations `scope:`,
+# `var:` and `match: text` of the real cosign-major-stated entry. The
+# fixtures run that very entry, cut out of the committed manifest, so a
+# case here cannot pass against a copy that has drifted from it.
+REAL_ENTRY="$TMP/real-entry.txt"
+awk '/^cosign-major-stated$/ { p = 1 } p && /^$/ { exit } p' "$REPO/.github/doc-invariants.txt" > "$REAL_ENTRY"
+if [ -s "$REAL_ENTRY" ]; then
+    echo "PASS: the committed manifest declares cosign-major-stated"
+else
+    echo "FAIL: .github/doc-invariants.txt has no cosign-major-stated entry"
+    failures=$((failures + 1))
+fi
+
+DOC_WITH_VERSION=$'# Verify\n\nYou need **cosign v3 or newer**.\n\n```sh\ncosign verify-blob --bundle b.json checksums.txt\n```'
+DOC_WITHOUT=$'# Verify\n\n```sh\ncosign verify-blob --bundle b.json checksums.txt\n```'
+
+# cosign_root NAME ENVLINE — a git tree with the data file and one good
+# page; the caller adds or breaks what it needs.
+cosign_root() {
+    local r="$TMP/$1"
+    mkdir -p "$r/scripts" "$r/docs"
+    git init -q "$r"
+    if [ -n "$2" ]; then printf '%s\n' "$2" > "$r/scripts/release-tooling.env"; fi
+    printf '%s\n' "$DOC_WITH_VERSION" > "$r/docs/verifying-releases.md"
+    cp "$REAL_ENTRY" "$r/manifest.txt"
+}
+cosign_check() { # NAME WANT_EXIT ROOTNAME GREP
+    check "$1" "$2" "$TMP/$3" "$TMP/$3/manifest.txt" "$4"
+}
+
+cosign_root c-ok 'COSIGN_MAJOR=3'
+cosign_check "a page that states the required major passes, and the count says one page was judged" 0 c-ok \
+    "1 invariant(s), 1 marker/file check(s) passed"
+
+cosign_root c-none 'COSIGN_MAJOR=3'
+printf '%s\n' "$DOC_WITHOUT" > "$TMP/c-none/docs/verifying-releases.md"
+cosign_check "a page that prints the command and states nothing is red" 1 c-none \
+    "docs/verifying-releases.md no longer contains: cosign v3 or newer"
+
+# The drift this exists for: the data file moves to a new major and the
+# page still names the old one.
+cosign_root c-bump 'COSIGN_MAJOR=4'
+cosign_check "the data file bumped and a page left behind is red" 1 c-bump \
+    "no longer contains: cosign v4 or newer"
+
+cosign_root c-old 'COSIGN_MAJOR=3'
+printf '%s\n' $'You need `cosign v2 or newer`.\n\n    cosign verify-blob x' > "$TMP/c-old/docs/verifying-releases.md"
+cosign_check "a page naming an older major is red" 1 c-old "no longer contains: cosign v3 or newer"
+
+# match: text. Emphasis inside the phrase and a different case count; the
+# same page fails under the default raw match, so the option is what
+# carries the pass and no other entry is loosened by it.
+cosign_root c-emph 'COSIGN_MAJOR=3'
+printf '%s\n' $'Needs Cosign `v3` or newer.\n\n    cosign verify x' > "$TMP/c-emph/docs/verifying-releases.md"
+cosign_check "emphasis inside the phrase and a different case still count" 0 c-emph "1 invariant(s)"
+grep -v '^    match: text$' "$REAL_ENTRY" > "$TMP/c-emph/manifest.txt"
+cosign_check "the same page is red under a raw match" 1 c-emph "no longer contains: cosign v3 or newer"
+
+# Source-of-truth failures are exit 2, never an empty substitution.
+cosign_root c-noline 'something else'
+cosign_check "a data file with no COSIGN_MAJOR line is exit 2" 2 c-noline "no COSIGN_MAJOR=<value> line in scripts/release-tooling.env"
+cosign_root c-empty 'COSIGN_MAJOR='
+cosign_check "an empty COSIGN_MAJOR is exit 2, not a marker that matches everything" 2 c-empty "no COSIGN_MAJOR=<value> line"
+cosign_root c-nofile ''
+cosign_check "a missing data file is exit 2" 2 c-nofile "no COSIGN_MAJOR=<value> line"
+cosign_root c-typo 'COSIGN_MAJOR=3'
+sed -i 's/\${COSIGN_MAJOR}/${COSIGN_MAJR}/' "$TMP/c-typo/manifest.txt"
+cosign_check "a marker naming an undeclared variable is exit 2" 2 c-typo "unresolved variable"
+cosign_root c-badvar 'COSIGN_MAJOR=3'
+sed -i 's|^    var: .*|    var: scripts/release-tooling.env|' "$TMP/c-badvar/manifest.txt"
+cosign_check "a var: that is not NAME=<path> is exit 2" 2 c-badvar "is not NAME=<path>"
+cosign_root c-badmatch 'COSIGN_MAJOR=3'
+sed -i 's/^    match: text$/    match: fuzzy/' "$TMP/c-badmatch/manifest.txt"
+cosign_check "an unknown match: mode is exit 2" 2 c-badmatch "is not raw or text"
+
+# A broken search is not a pass: the real repo always has such a page.
+cosign_root c-nopage 'COSIGN_MAJOR=3'
+printf '%s\n' $'# Nothing to see\n' > "$TMP/c-nopage/docs/verifying-releases.md"
+cosign_check "no page printing a cosign command is exit 2" 2 c-nopage "no tracked Markdown page matches scope"
+
+# A real violation and a blind entry together: the violation wins.
+cosign_root c-both 'COSIGN_MAJOR=3'
+printf '%s\n' "$DOC_WITHOUT" > "$TMP/c-both/docs/verifying-releases.md"
+{ cat "$REAL_ENTRY"; printf '\nsecond\n    scope: ^no such line anywhere$\n    marker: x\n    Blind on purpose.\n'; } > "$TMP/c-both/manifest.txt"
+cosign_check "a violation and a blind entry in one manifest is exit 1" 1 c-both "no longer contains: cosign v3 or newer"
+
+# Scope: git's view, every page, and nothing else.
+# A worktree under .claude/ is a nested repository: the walk must not
+# judge this tree by another branch's copy of the pages (#530, #744).
+cosign_root c-wt 'COSIGN_MAJOR=3'
+mkdir -p "$TMP/c-wt/.claude/worktrees/other/docs"
+printf '%s\n' "$DOC_WITHOUT" > "$TMP/c-wt/.claude/worktrees/other/docs/verifying-releases.md"
+git init -q "$TMP/c-wt/.claude/worktrees/other"
+cosign_check "a stale page inside a .claude worktree is not walked" 0 c-wt "1 invariant(s), 1 marker/file check(s)"
+
+cosign_root c-dotgit 'COSIGN_MAJOR=3'
+printf '%s\n' "$DOC_WITHOUT" > "$TMP/c-dotgit/.git/verifying-releases.md"
+cosign_check "a page inside .git is not walked" 0 c-dotgit "1 invariant(s), 1 marker/file check(s)"
+
+cosign_root c-deep 'COSIGN_MAJOR=3'
+mkdir -p "$TMP/c-deep/deploy/notes"
+printf '%s\n' "$DOC_WITHOUT" > "$TMP/c-deep/deploy/notes/verify.md"
+cosign_check "a page outside docs/ is judged" 1 c-deep "deploy/notes/verify.md no longer contains"
+
+cosign_root c-ign 'COSIGN_MAJOR=3'
+mkdir -p "$TMP/c-ign/site"
+printf '%s\n' "$DOC_WITHOUT" > "$TMP/c-ign/site/verifying-releases.md"
+printf 'site/\n' > "$TMP/c-ign/.gitignore"
+cosign_check "an ignored page is not walked" 0 c-ign "1 invariant(s), 1 marker/file check(s)"
+
+# Declarations belong to their own entry: the entry after the cosign one
+# keeps the raw match and its own file list.
+cosign_root c-leak 'COSIGN_MAJOR=3'
+printf '%s\n' $'Needs Cosign `v3` or newer.\n\n    cosign verify x' > "$TMP/c-leak/docs/verifying-releases.md"
+{ cat "$REAL_ENTRY"; printf '\nplain\n    file: docs/verifying-releases.md\n    marker: cosign v3 or newer\n    A raw entry that follows.\n'; } > "$TMP/c-leak/manifest.txt"
+cosign_check "match: text does not leak into the next entry" 1 c-leak "plain: docs/verifying-releases.md no longer contains"
+
+# A scope adds to the declared files, it does not replace them.
+cosign_root c-add 'COSIGN_MAJOR=3'
+printf '%s\n' '# Readme with no cosign command and no phrase' > "$TMP/c-add/README.md"
+sed -i 's|^    scope: .*|    file: README.md\n&|' "$TMP/c-add/manifest.txt"
+cosign_check "file: and scope: are both judged" 1 c-add "README.md no longer contains: cosign v3 or newer"
+
+# Three readers take the major from scripts/release-tooling.env: this
+# engine, the release.yml signing step and the preflight. They must read
+# one value from one line (#745). The last two are measured by running the
+# sed each of them contains, taken from the file itself, so an edit to
+# either is seen here.
+# Comment lines are dropped first: a comment quoting an old expression must
+# not stand in for the one the file runs.
+code_of() { grep -v '^[[:space:]]*#' "$1" || true; }
+sed_of() { # <file> -> the first s/^COSIGN_MAJOR=.../ expression it runs
+    local out
+    out="$(code_of "$1" | grep -o 's/^COSIGN_MAJOR=[^'"'"']*' || true)"
+    printf '%s' "${out%%$'\n'*}"
+}
+REL_EXPR="$(sed_of "$REPO/.github/workflows/release.yml")"
+PF_EXPR="$(sed_of "$REPO/scripts/preflight-release-tooling.sh")"
+if [ -n "$REL_EXPR" ] && [ "$REL_EXPR" = "$PF_EXPR" ]; then
+    echo "PASS: release.yml and the preflight read the data file with one sed"
+else
+    echo "FAIL: release.yml and the preflight do not share one COSIGN_MAJOR read ('$REL_EXPR' vs '$PF_EXPR')"
+    failures=$((failures + 1))
+fi
+agree() { # <name> <data file body> <major all three must read; empty = none>
+    local root="c-agree-$1" file="$TMP/c-agree-$1/scripts/release-tooling.env" rel pf
+    cosign_root "$root" "$2"
+    rel="$(sed -n "$REL_EXPR" "$file")"; rel="${rel%%$'\n'*}"
+    pf="$(sed -n "$PF_EXPR" "$file")"; pf="${pf%%$'\n'*}"
+    if [ "$rel" = "$3" ] && [ "$pf" = "$3" ]; then
+        echo "PASS: $1: release.yml and the preflight read '$3'"
+    else
+        echo "FAIL: $1: release.yml read '$rel', the preflight '$pf', want '$3'"
+        failures=$((failures + 1))
+    fi
+    if [ -n "$3" ]; then
+        # The page states v3, so the engine passes only if it read 3 as well.
+        cosign_check "$1: the engine reads $3 too" 0 "$root" "1 invariant(s)"
+    else
+        cosign_check "$1: the engine reads no major either" 2 "$root" "no COSIGN_MAJOR=<value> line"
+    fi
+}
+agree plain 'COSIGN_MAJOR=3' 3
+agree dotted 'COSIGN_MAJOR=3.1' 3
+agree crlf $'COSIGN_MAJOR=3\r' 3
+agree trailing 'COSIGN_MAJOR=3 # note' 3
+agree glued 'COSIGN_MAJOR=3x' 3
+agree second $'OTHER=9\nCOSIGN_MAJOR=3' 3
+agree twice $'COSIGN_MAJOR=3\nCOSIGN_MAJOR=4' 3
+agree quoted 'COSIGN_MAJOR="3"' ''
+agree word 'COSIGN_MAJOR=v3' ''
+
+# The committed data file and the signing step must name the same file.
+read_lines="$(code_of "$REPO/.github/workflows/release.yml" | grep -A1 "sed -n 's/^COSIGN_MAJOR=" || true)"
+if [[ "$read_lines" == *scripts/release-tooling.env* ]] \
+    && ! grep -q 'COSIGN_MAJOR=[0-9]' "$REPO/.github/workflows/release.yml"; then
+    echo "PASS: release.yml reads the data file and holds no major of its own"
+else
+    echo "FAIL: release.yml must read scripts/release-tooling.env and never assign COSIGN_MAJOR itself"
+    failures=$((failures + 1))
+fi
+
 # ------------------------------------- the real tree, and the wiring
 
 # The gate above ran entirely against synthetic trees. This asserts the

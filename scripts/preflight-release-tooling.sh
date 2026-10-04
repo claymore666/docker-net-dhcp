@@ -18,10 +18,15 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 # The cosign major the release is verifiable with. Single source of truth:
-# scripts/check-cosign-docs.sh reads this line and asserts every page that
-# prints a cosign command names the same major, so a bump here cannot leave
-# the user-facing docs behind (#522).
-COSIGN_MAJOR=3
+# scripts/release-tooling.env, which release.yml and the cosign-major-stated
+# entry of .github/doc-invariants.txt read as well, so a bump there cannot
+# leave the signing step or the user-facing docs behind (#522, #745).
+COSIGN_MAJOR="$(sed -n 's/^COSIGN_MAJOR=\([0-9][0-9]*\).*/\1/p' \
+    "$(dirname "${BASH_SOURCE[0]}")/release-tooling.env" 2>/dev/null | head -1)"
+if [ -z "$COSIGN_MAJOR" ]; then
+    echo "no COSIGN_MAJOR=<n> line in scripts/release-tooling.env" >&2
+    exit 2
+fi
 
 fail=0
 ok()   { printf 'PASS  %s\n' "$1"; }

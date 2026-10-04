@@ -83,7 +83,6 @@ LANE=(
   "staticcheck (integration view)|staticcheck|staticcheck -tags integration ./..."
   "shellcheck (scripts+runner+netboot)|shellcheck|shellcheck -S warning scripts/*.sh ci/runner-image/*.sh test/arm64-netboot/*.sh"
   "actionlint|actionlint|actionlint"
-  "option-docs drift|-|bash scripts/check-option-docs.sh"
   "starter-task claims|-|bash scripts/check-good-first-issues.sh --static"
   "docs drift|-|bash scripts/check-docs-drift.sh"
   "comment budget|go|bash scripts/check-comment-budget.sh origin/dev..HEAD"
@@ -104,7 +103,6 @@ LANE=(
   # (see the note in it), so the row builds one first. `go` because of
   # that build.
   "library pin (bytes built)|go|d=\$(mktemp -d); trap 'rm -rf \"\$d\"' EXIT; go build -o \"\$d/net-dhcp\" ./cmd/net-dhcp && bash scripts/check-library-pin.sh --binary \"\$d/net-dhcp\""
-  "issue label map|-|bash scripts/check-issue-label-map.sh"
   "label taxonomy|-|bash scripts/check-label-taxonomy.sh --static"
   "release-notes symbols|-|bash scripts/check-release-notes-symbols.sh"
   "dockerfile pins|-|bash scripts/check-dockerfile-pins.sh"
@@ -120,7 +118,7 @@ LANE=(
   "proc-path discipline|-|bash scripts/check-proc-path-discipline.sh"
   "openat cloexec|-|bash scripts/check-openat-cloexec.sh"
   "manager registration|-|bash scripts/check-manager-registration.sh"
-  "pi watchdog wiring|-|bash scripts/check-pi-watchdog-wiring.sh"
+  "pi watchdog wiring|-|bash scripts/check-pi-watchdog.sh --tree"
   "parent-gate accounting|-|bash scripts/check-parent-gate-accounting.sh"
   "doc invariants|-|bash scripts/check-doc-invariants.sh"
   "build-dir refs|-|bash scripts/check-build-dir-refs.sh"
@@ -130,7 +128,6 @@ LANE=(
   "publish/verify parity|-|bash scripts/check-publish-verify-parity.sh"
   "registry name list|-|bash scripts/check-registry-name-list.sh"
   "runbook walkthrough|-|bash scripts/check-runbook-release-steps.sh"
-  "cosign docs|-|bash scripts/check-cosign-docs.sh"
   "dispatch-ref guard|-|bash scripts/check-dispatch-ref-guard.sh"
   "latest promotion order|-|bash scripts/check-latest-promotion.sh"
   # `go` rather than `-`: half of it is a measurement, not a scan -- it
@@ -210,9 +207,9 @@ OUT_OF_LANE=(
 )
 
 # "script|reason" for a check-*.sh no workflow runs by design, so the
-# orphan rule of check-local-lane.sh accepts it (#883).
+# orphan rule of check-local-lane.sh accepts it (#883). Empty since #745
+# renamed the one entry, a maintainer preflight, out of the check-* class.
 NOT_IN_CI=(
-  "scripts/check-release-tooling.sh|preflight for the release runbook's manual steps; it checks the maintainer's own cosign, gh and git signing key, which a runner does not have"
 )
 
 lane_scripts() {

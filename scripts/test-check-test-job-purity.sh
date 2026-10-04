@@ -259,7 +259,7 @@ check "a policy-gates job whose corpus is only echoed is a finding" 1 "$(wf echo
 # repository actually uses, and the two neighbouring spellings, must all
 # still count. An anchor that rejected `./scripts/x.sh` would have made
 # arm E fire on a job that is carrying its corpus.
-FORMS=$'      - uses: actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa # v7.0.1\n      - name: Forms\n        run: |\n          bash scripts/check-lock-discipline.sh\n          ./scripts/check-go-pins.sh\n          sh scripts/check-docs-drift.sh --static\n          scripts/check-option-docs.sh\n'
+FORMS=$'      - uses: actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa # v7.0.1\n      - name: Forms\n        run: |\n          bash scripts/check-lock-discipline.sh\n          ./scripts/check-go-pins.sh\n          sh scripts/check-docs-drift.sh --static\n          scripts/check-doc-invariants.sh\n'
 check "every invocation form this repo uses counts as wiring" 0 "$(wf forms "$GOOD_TEST" "$FORMS")" "4 distinct gate script(s)"
 
 # --- F: the job may not swallow its own result ------------------------
