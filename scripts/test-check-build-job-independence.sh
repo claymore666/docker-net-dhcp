@@ -819,6 +819,18 @@ bake-no-flag|2|a bake whose outputs live in its definition file|docker buildx ba
 podman|2|`podman` is a registry tool with no verb table here|podman push ghcr.io/x:riscv64
 skopeo|2|`skopeo` is a registry tool with no verb table here|skopeo copy oci:x docker://ghcr.io/x
 regctl|2|`regctl` is a registry tool with no verb table here|regctl image copy a b
+oras-cp-layout|1|release-riscv64 reaches release|oras cp --from-oci-layout ./out:riscv64 ghcr.io/x:riscv64
+oras-copy-layout-path|1|release-riscv64 reaches release|oras copy --from-oci-layout-path ./out out:riscv64 ghcr.io/x:riscv64
+builder-build-push|1|release-riscv64 reaches release|docker builder build --push -t ghcr.io/x:riscv64 .
+bytes-inside-ref|1|release-riscv64 reaches release|cosign sign --yes "$(crane push img.tar ghcr.io/x:riscv64)"
+after-quoted-pipe|1|release-riscv64 reaches release|echo "a|b"; docker push ghcr.io/x:riscv64
+escaped-quotes|1|release-riscv64 reaches release|echo \"; docker push ghcr.io/x:riscv64; echo \"
+and-and|1|release-riscv64 reaches release|true&&docker push ghcr.io/x:riscv64
+var-cli|2|a command named by a variable|"$CLI" push ghcr.io/x:riscv64
+var-braced|2|a command named by a variable|${REGISTRY_TOOL} push ghcr.io/x:riscv64
+subst-command|2|a command named by a variable|$(command -v docker) push ghcr.io/x:riscv64
+backtick-command|2|a command named by a variable|true && `which docker` push ghcr.io/x:riscv64
+build-o-var|2|a build output that is a variable|docker buildx build -o "$OUT" .
 THIRD
 
 threepub "$TMP/third-action.yml" "      - uses: docker/build-push-action@v6
@@ -899,6 +911,9 @@ go-install-oras|0|go install oras.land/oras/cmd/oras@v1.3.4
 string-naming-cosign|0|what="cosign bundle signing \`checksums.txt\`"
 echo-docker-push|0|echo "run docker push by hand"
 echo-escaped-backtick|0|echo "run \`docker push\` by hand"
+quoted-assignment|0|missing="$missing $tool"
+pipe-in-echo|0|echo "| \`${f}\` | ${what} |"
+oras-cp-to-layout|1|oras cp --to-oci-layout ghcr.io/x:1 ./out:1
 PROMOTE
 
 promote "$TMP/promote-action.yml" "      - uses: actions/attest-build-provenance@v4
@@ -914,6 +929,14 @@ threepub "$TMP/third-signandpush.yml" "      - run: cosign sign --yes x@sha256:0
       - run: cosign sign --yes y@sha256:0"
 check "bytes outrank a reference write in the same job (#798)" 1 \
       "$TMP/third-signandpush.yml" "release-riscv64 reaches release"
+
+# A string opened on the line above leaves this line's quotes unbalanced;
+# it is split as if unquoted, so the command after the quote is read (#798).
+threepub "$TMP/third-openquote.yml" '      - run: |
+          echo "start
+            done"; docker push ghcr.io/x:riscv64'
+check "a command after a string closed from the line above is read (#798)" 1 \
+      "$TMP/third-openquote.yml" "release-riscv64 reaches release"
 
 # --- #798: release.yml as it ships keeps its downstream contract ------
 # promote-latest re-tags with `crane tag` and github-release cuts the

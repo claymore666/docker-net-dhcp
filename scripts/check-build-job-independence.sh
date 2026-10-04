@@ -56,25 +56,24 @@
 # uses; it fails loudly on the day someone writes a multi-line flow
 # sequence, which is the day to teach this parser about it.
 #
-# THE SUBJECT IS A JOB THAT UPLOADS IMAGE BYTES (#798). Each command a
-# `run:` body executes through a registry tool is BYTES (make `push`,
-# docker/image/plugin/compose push, a docker build with a push output, crane
-# push/append/mutate/rebase/flatten, oras push, cosign upload/load), REFERENCE
-# (a name, signature or attachment over a digest already in a registry: crane
-# tag/copy, imagetools create, manifest push, oras cp/tag/attach, cosign
-# sign/attest), or NONE. One BYTES step makes a job a publisher. REFERENCE jobs
-# stay out on purpose: promote-latest and github-release must wait on both
-# builds (#796), and counting `crane tag` would turn that contract red. What a
-# job is called does not enter into it.
+# THE SUBJECT IS A JOB THAT UPLOADS IMAGE BYTES (#798). A registry command in
+# a `run:` body is BYTES when local content becomes an image (make `push`;
+# docker/image/plugin/compose push; a build with a push output; crane
+# push/append/mutate/rebase/flatten; oras push, blob/manifest push, cp from a
+# local layout; cosign upload/load), REFERENCE when it writes a name, signature
+# or attachment over a digest already there (crane tag/copy, imagetools create,
+# manifest push, oras cp/tag/attach, cosign sign/attest/attach), else NONE. One
+# BYTES step makes a publisher. REFERENCE jobs stay out on purpose:
+# promote-latest and github-release must wait on both builds (#796).
 #
-# NOTHING UNCLASSIFIED ANSWERS "NOT A PUBLISHER" (#798). Exit 2 instead for: a
-# verb of a known tool in no table; podman, buildah, skopeo, regctl, nerdctl,
-# ko; a tool word anywhere but command position (sudo, sh -c) or a variable
-# there; a flag before the verb; a make target naming push or publish other
-# than `push`; a step or job-level `uses:` not in the action table; a `shell:`
-# other than bash or sh. Bound: a publisher inside a script or make recipe the
-# workflow calls, or a registry write by a tool in no table (curl to the
-# registry API), is not seen. Make `push` is trusted by its name.
+# NOTHING UNCLASSIFIED ANSWERS "NOT A PUBLISHER" (#798). Exit 2 for: a verb
+# in no table; podman, buildah, skopeo, regctl, nerdctl, ko; a tool word off
+# command position (sudo, sh -c); a variable or substitution at it; a flag
+# before the verb; a make target naming push/publish other than `push`; a
+# `uses:` outside the action table; a `shell:` other than bash or sh. Bound,
+# not seen: a script or make recipe the workflow calls; a tool in no table
+# (curl); a copy from a registry the workflow did not fill; a plain scalar
+# continued on deeper lines. Make `push` is trusted by its name.
 #
 # THE COUNT IS NOT A BACKSTOP. A missed job leaves the population, so it
 # drops out of the serialisation check and the count together: a third
@@ -168,7 +167,8 @@ parsed="$(awk '
     # are handled where they arise -- `echo`/`printf` carry data rather
     # than commands (classify_make), and only the body of a `run:` is
     # read at all (the main rules below).
-    function classify_line(s, fnr,   n, i, segs, v) {
+    function classify_line(s, fnr,   n, i, segs, v, orig) {
+        orig = s
         gsub(/&&/, "\x01", s); gsub(/\|\|/, "\x01", s)
         gsub(/;/,  "\x01", s); gsub(/\|/,  "\x01", s)
         n = split(s, segs, "\x01")
@@ -179,11 +179,48 @@ parsed="$(awk '
                 bad("cannot tell whether this `make` publishes -> " trim(segs[i]), fnr)
             else if (v == "indirect")
                 bad("a `make` token that is not a literal `make` invocation -> " trim(segs[i]), fnr)
+        }
+        n = qsplit(orig, segs)
+        for (i = 1; i <= n; i++) {
             v = classify_reg(segs[i])
             if (v == "bytes") pub = 1
             else if (v == "ref") refw = 1
             else if (v != "none") bad(v " -> " trim(segs[i]), fnr)
         }
+    }
+
+    # Registry commands split at && || ; | outside quotes only (#798): a `|`
+    # inside an echo string must not make a command position. A line whose
+    # quotes do not balance (a string opened on the line above) splits as
+    # if unquoted, so a command after the closing quote is still read.
+    function qsplit(s, segs,   i, c, q, out, raw) {
+        q = 0; out = ""; raw = s
+        for (i = 1; i <= length(s); i++) {
+            c = substr(s, i, 1)
+            if (c == "\\" && q != 1) { out = out c substr(s, i + 1, 1); i++; continue }
+            if (c == "\x27" && q != 2) { if (q == 1) q = 0; else q = 1 }
+            else if (c == "\"" && q != 1) { if (q == 2) q = 0; else q = 2 }
+            else if (q == 0 && (c == ";" || c == "|")) c = "\x01"
+            else if (q == 0 && c == "&" && substr(s, i + 1, 1) == "&") { c = "\x01"; i++ }
+            out = out c
+        }
+        if (q == 0) return split(out, segs, "\x01")
+        gsub(/&&|\|\||;|\|/, "\x01", raw)
+        return split(raw, segs, "\x01")
+    }
+
+    # A quoted string is one word (#798): `x="$a $b"` assigns, it runs no `$b"`.
+    function qword(s,   i, c, q, out) {
+        q = 0; out = ""
+        for (i = 1; i <= length(s); i++) {
+            c = substr(s, i, 1)
+            if (c == "\\" && q != 1) { out = out c substr(s, i + 1, 1); i++; continue }
+            if (c == "\x27" && q != 2) { if (q == 1) q = 0; else q = 1 }
+            else if (c == "\"" && q != 1) { if (q == 2) q = 0; else q = 2 }
+            else if (q != 0 && c ~ /[[:space:]]/) c = "\x03"
+            out = out c
+        }
+        return out
     }
 
     function bare(w) { gsub(/["\x27]/, "", w); sub(/^[({]+/, "", w); sub(/[)};]+$/, "", w); return w }
@@ -199,8 +236,10 @@ parsed="$(awk '
         gsub(/\\`/, "", seg)
         gsub(/\$\(/, "\x02", seg); gsub(/`/, "\x02", seg)
         np = split(seg, p, "\x02"); out = "none"
+        if (np > 1 && reg_piece(p[1]) == "empty") return "a command named by a variable"
         for (k = 1; k <= np; k++) {
             v = reg_piece(p[k])
+            if (v == "empty") continue
             if (v != "none" && v != "ref" && v != "bytes") return v
             if (v == "bytes" || out == "none") out = v
         }
@@ -208,26 +247,32 @@ parsed="$(awk '
     }
 
     # Assignments and reserved words keep the command position; any other
-    # word before a tool is a wrapper whose effect this cannot read (#798).
-    function reg_piece(s,   t, n, i, j, cmd, w, a, na) {
-        n = split(s, t, /[[:space:]]+/)
+    # word before a tool is a wrapper whose effect this cannot read, and a
+    # command that is a variable could be any tool (#798). "empty": no
+    # command word and no trailing assignment, so a `$(` after it is one.
+    function reg_piece(s,   t, n, i, j, cmd, w, a, na, last, ww, nw, m) {
+        n = split(qword(s), t, /[[:space:]]+/); last = ""
         for (i = 1; i <= n; i++) {
-            if (t[i] == "" || t[i] ~ /^[A-Za-z_][A-Za-z0-9_]*=/) continue
+            if (t[i] == "") continue
+            last = t[i]
+            if (t[i] ~ /^[A-Za-z_][A-Za-z0-9_]*=/) continue
             if (t[i] ~ /^(if|then|else|elif|do|while|until|!|[{(]|time)$/) continue
             break
         }
-        if (i > n) return "none"
+        if (i > n && last ~ /^[A-Za-z_][A-Za-z0-9_]*=/) return "none"
+        if (i > n) return "empty"
+        if (isvar(t[i])) return "a command named by a variable"
         cmd = bare(t[i])
         if (cmd ~ /^(echo|printf)$/) return "none"
         na = 0
         for (j = i + 1; j <= n; j++) {
             if (t[j] == "") continue
-            if (istool(bare(t[j]))) return "a registry tool that is not at command position"
+            nw = split(bare(t[j]), ww, "\x03")
+            for (m = 1; m <= nw; m++)
+                if (istool(bare(ww[m]))) return "a registry tool that is not at command position"
             a[++na] = bare(t[j])
         }
         w = cmd; sub(/.*\//, "", w)
-        if (!istool(w) && isvar(cmd) && tolower(cmd) ~ /docker|crane|oras|cosign|podman|buildah|skopeo|regctl|nerdctl/)
-            return "a registry tool named by a variable"
         if (!istool(w)) return "none"
         if (w ~ /^(podman|buildah|skopeo|regctl|nerdctl|ko)$/)
             return "`" w "` is a registry tool with no verb table here"
@@ -247,6 +292,7 @@ parsed="$(awk '
         }
         if (w == "oras") {
             if (a[1] == "push") return "bytes"
+            if (a[1] ~ /^(cp|copy)$/ && from_local(a, na)) return "bytes"
             if (a[1] ~ /^(attach|cp|copy|tag)$/) return "ref"
             if (a[1] ~ /^(discover|login|logout|pull|resolve|version|help|completion)$/) return "none"
             if (a[1] == "blob" && a[2] == "push") return "bytes"
@@ -262,6 +308,13 @@ parsed="$(awk '
         if (a[1] ~ /^(sign|attest|attach|copy|clean)$/) return "ref"
         if (a[1] ~ /^(sign-blob|attest-blob|verify|verify-attestation|verify-blob|verify-blob-attestation|version|triangulate|tree|download|save|generate|generate-key-pair|import-key-pair|public-key|env|initialize|login|manifest|dockerfile|help|completion)$/) return "none"
         return unknown(w)
+    }
+
+    # oras cp/copy reads a local OCI layout with --from-oci-layout[-path];
+    # those bytes are uploaded, not referenced (#798, oras 1.2 docs).
+    function from_local(a, na,   k) {
+        for (k = 2; k <= na; k++) if (a[k] ~ /^--from-oci-layout/) return 1
+        return 0
     }
 
     # The docker CLI commands (27.x); a verb outside them is a CLI
