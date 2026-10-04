@@ -173,10 +173,7 @@ func testKea6PDDelegation(t *testing.T, at v6Attach, netName string) {
 		}
 	}
 
-	h, err := harness.PluginHealth(ctx, cli)
-	if err != nil {
-		t.Fatalf("Plugin.Health: %v", err)
-	}
+	h := harness.WaitPluginHealth(t, ctx, cli, 10*time.Second)
 	if !healthReports(h, held[0]) {
 		t.Errorf("no endpoint in Plugin.Health reports the delegated %s: %+v", held[0], h.Endpoints)
 	}
@@ -288,10 +285,7 @@ func TestKea6PD_AServerWithNoPrefixesStillLeasesTheAddress(t *testing.T) {
 	if rows, _ := keaPDRows(kea, duid); len(rows) != 0 {
 		t.Errorf("Kea without a pd-pool holds IA_PD rows for DUID %s: %+v", duid, rows)
 	}
-	h, err := harness.PluginHealth(ctx, cli)
-	if err != nil {
-		t.Fatalf("Plugin.Health: %v", err)
-	}
+	h := harness.WaitPluginHealth(t, ctx, cli, 10*time.Second)
 	for _, ep := range h.Endpoints {
 		if len(ep.DelegatedPrefixes) > 0 {
 			t.Errorf("endpoint %s reports delegated prefixes no server gave: %+v", ep.Endpoint, ep.DelegatedPrefixes)
