@@ -6,9 +6,10 @@
 # (#583). The one place that knows them is harness/build.go, and every
 # test that needs the built rootfs asks harness.BuiltPluginDir.
 #
-# Expires-when: #746 lands: the four integration lanes become one reusable
-#   workflow with one build path, so no lane-specific build directory is
-#   left to name (#583).
+# Expires-when: the coverage build stops having a directory of its own:
+#   both lanes build into one path, so no test can spell the wrong one.
+#   #746 keeps a cover: false|true input and both directories, so it
+#   does not end this (#583).
 #
 # WHY THIS EXISTS
 #
