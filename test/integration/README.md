@@ -124,8 +124,16 @@ test, touching nothing, if it finds one. A packaged config file alone does
 not count: it exists on every host that installed `kea-dhcp4-server`,
 including the CI runners. Kea's own stdout and stderr go to the log file
 above, because the profile denies an inherited descriptor on any other path.
-A failure with the packaged profile enforcing therefore means the loaded
-profile differs from the packaged one, for example a site override.
+On a stock host the packaged profile is enforcing and `kea-common` ships
+`/etc/kea` as `0750 _kea:_kea` (its postinst runs `dpkg-statoverride --add
+_kea _kea 0750 /etc/kea`), while the profile grants root neither
+`dac_read_search` nor `dac_override`. Kea runs as root here, so it cannot
+reach its config and the kernel logs a capability denial with no path. The
+fixture reports that record and its cause. Run `sudo chmod 0755 /etc/kea`
+once (the CI runner image does the same) and the fixture then starts under the
+packaged profile. A failure with a path denial of a file the fixture needs, or
+none at all, means the loaded profile differs from the packaged one, for
+example a site override.
 
 No lane runs the v4 fixture under an enforcing profile today: the pool image
 has no Kea profile and the hosted lane puts it in complain mode. The test that checks every fixture path against the packaged

@@ -245,6 +245,11 @@ func TestEphemeralKea_ConstructorAndTeardownUseTheProfilePaths(t *testing.T) {
 	if strings.Count(src, "os.OpenFile(ef.keaLog,") != 1 {
 		t.Error("startKea must open ef.keaLog for Kea's stdout and stderr, not a file in the temp dir")
 	}
+	for _, want := range []string{"ef.kernelBeforeRead = beforeErr == nil\n", "appArmorKeaHint(ef.kernelBefore, ef.kernelBeforeRead,"} {
+		if strings.Count(src, want) != 1 {
+			t.Errorf("ephemeral.go must contain exactly one %q", want)
+		}
+	}
 	if n := strings.Count(src, "kea4Default.removeState()"); n != 2 {
 		t.Errorf("kea4Default.removeState() appears %d times in ephemeral.go, want 2 (setup and teardown)", n)
 	}

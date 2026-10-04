@@ -139,12 +139,19 @@ func keaDenialRecord(kernelLog, before string) string {
 		line = strings.TrimSpace(line)
 		if !strings.Contains(line, `apparmor="DENIED"`) ||
 			!strings.Contains(line, `profile="kea-dhcp4"`) ||
-			seen[line] || !kea4Default.needs(auditName(line)) {
+			seen[line] || !(kea4Default.needs(auditName(line)) || isDACDenial(line)) {
 			continue
 		}
 		last = line
 	}
 	return last
+}
+
+// isDACDenial reports a capability denial that carries no path: root Kea denied dac_read_search or dac_override, which
+// the packaged profile never grants, so it cannot open a config under /etc/kea (shipped 0750 _kea:_kea) (#680).
+func isDACDenial(line string) bool {
+	return strings.Contains(line, `operation="capable"`) &&
+		(strings.Contains(line, `capname="dac_read_search"`) || strings.Contains(line, `capname="dac_override"`))
 }
 
 // auditName is the path of an audit line's name="..." field, or "".
@@ -211,7 +218,20 @@ func keaConfinementHint(c keaConfinement) string {
 		"  the PID file in /run/kea and the lock in /run/lock/kea.\n"
 	const differs = "the profile loaded on this host differs from the packaged one (a site override or another version).\n"
 
+	const dacCause = "  This is a capability denial with no path: Kea runs as root, the kea packages ship /etc/kea\n" +
+		"  as 0750 _kea:_kea, and the packaged profile grants no dac_read_search or dac_override, so\n" +
+		"  Kea cannot read its config. That is the packaged profile working as shipped, not a site\n" +
+		"  override. Fix on this host: sudo chmod 0755 /etc/kea (the CI runner image does the same).\n"
+
 	switch {
+	case isDACDenial(c.denial):
+		return fmt.Sprintf(
+			"APPARMOR: the kernel logged a kea-dhcp4 denial after this fixture started Kea,\n"+
+				"  so that is why Kea never started:\n"+
+				"    %s\n"+dacCause+
+				"  Kea exits before writing a line%s.\n"+remedy,
+			c.denial, emptyLog)
+
 	case c.denial != "":
 		return fmt.Sprintf(
 			"APPARMOR: the kernel logged a kea-dhcp4 denial after this fixture started Kea,\n"+
@@ -250,7 +270,7 @@ func keaConfinementHint(c keaConfinement) string {
 }
 
 // keaConfinementEvidence performs the reads and reports what each established (#680).
-func keaConfinementEvidence(before string, logEmpty bool) keaConfinement {
+func keaConfinementEvidence(before string, beforeRead, logEmpty bool) keaConfinement {
 	c := keaConfinement{logEmpty: logEmpty}
 
 	if data, err := os.ReadFile(apparmorProfilesPath); err == nil {
@@ -261,7 +281,8 @@ func keaConfinementEvidence(before string, logEmpty bool) keaConfinement {
 	c.installed = statErr == nil
 
 	// Read whatever the profile list says: a container without securityfs cannot read it but still sees the denial.
-	if kernelLog, err := readKernelLog(); err == nil {
+	// Without a before snapshot an old denial cannot be told from a new one, so the log counts as unread (#680).
+	if kernelLog, err := readKernelLog(); err == nil && beforeRead {
 		c.kernelLogRead = true
 		c.denial = keaDenialRecord(kernelLog, before)
 	}
@@ -269,8 +290,8 @@ func keaConfinementEvidence(before string, logEmpty bool) keaConfinement {
 }
 
 // appArmorKeaHint is keaConfinementHint with the reads done; logEmpty is about the log the caller prints.
-func appArmorKeaHint(before string, logEmpty bool) string {
-	return keaConfinementHint(keaConfinementEvidence(before, logEmpty))
+func appArmorKeaHint(before string, beforeRead, logEmpty bool) string {
+	return keaConfinementHint(keaConfinementEvidence(before, beforeRead, logEmpty))
 }
 
 // kea6DenialRecord returns the last AppArmor DENIED record naming profile="kea-dhcp6", or "". The fixture's state sits

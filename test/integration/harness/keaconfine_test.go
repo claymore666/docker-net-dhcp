@@ -34,6 +34,12 @@ func denialFor(serial int, name string) string {
 	return fmt.Sprintf(sampleDenialFmt, serial, name)
 }
 
+// capDenialFor is a capability denial of the packaged profile: no name= field, as the kernel logs it (#680).
+func capDenialFor(serial int, capname string) string {
+	return fmt.Sprintf(`[62803.914006] audit: type=1400 audit(1787871229.672:%d): apparmor="DENIED" operation="capable" `+
+		`class="cap" profile="kea-dhcp4" pid=386894 comm="kea-dhcp4" capability=2 capname="%s"`, serial, capname)
+}
+
 // denial1 is a denial of a path the fixture needs, in the shape #680 measured on the affected host.
 var denial1 = denialFor(1884, "/var/lib/kea/kea-leases4.csv")
 
@@ -79,6 +85,10 @@ func TestKeaDenialRecord(t *testing.T) {
 		{"a denial of a lease suffix variant is blamed", denialFor(9, "/var/lib/kea/kea-leases4.csv.2"), "", true},
 		{"a denial of another file in the lease dir is not", denialFor(10, "/var/lib/kea/other.db"), "", false},
 		{"a sibling of the conf dir sharing its prefix is not", denialFor(11, "/etc/kea/dh-itest-v4-other/kea-dhcp4.conf"), "", false},
+		{"a dac_read_search denial is blamed", capDenialFor(12, "dac_read_search"), "", true},
+		{"a dac_override denial is blamed", capDenialFor(13, "dac_override"), "", true},
+		{"another capability denial is not", capDenialFor(14, "net_admin"), "", false},
+		{"a dac denial already in the before snapshot is not", capDenialFor(15, "dac_read_search"), capDenialFor(15, "dac_read_search"), false},
 		// A complain-mode profile logs ALLOWED and permits the access.
 		{
 			name:   "an ALLOWED record is not a denial",
@@ -273,6 +283,7 @@ func TestAppArmorKeaHint(t *testing.T) {
 		profilesUnreadable  bool
 		profileFile         bool
 		before              string
+		beforeUnread        bool
 		kernelLog           string
 		kernelLogUnreadable bool
 		logEmpty            bool
@@ -303,6 +314,25 @@ func TestAppArmorKeaHint(t *testing.T) {
 			logEmpty:        true,
 			wantContains:    []string{"candidate cause", "If it is the cause, the profile loaded on this host differs"},
 			wantNotContains: []string{"so that is why Kea never started", "Therefore", "file_inherit"},
+		},
+		{
+			name:            "the only new denial is a dac_read_search capability line: named, not blamed on a site override",
+			profiles:        sampleProfiles,
+			profileFile:     true,
+			kernelLog:       capDenialFor(16, "dac_read_search"),
+			logEmpty:        true,
+			wantContains:    []string{"so that is why Kea never started", `capname="dac_read_search"`, "0750 _kea:_kea", "chmod 0755 /etc/kea"},
+			wantNotContains: []string{"differs from the packaged", "candidate cause"},
+		},
+		{
+			name:            "no before snapshot: a denial cannot be told from an old one, so none is blamed",
+			profiles:        sampleProfiles,
+			profileFile:     true,
+			beforeUnread:    true,
+			kernelLog:       denial1,
+			logEmpty:        true,
+			wantContains:    []string{"candidate cause", "kernel log could not be read"},
+			wantNotContains: []string{"so that is why Kea never started"},
 		},
 		{
 			name:        "enforce with no denial in the kernel log is a candidate only",
@@ -398,7 +428,7 @@ func TestAppArmorKeaHint(t *testing.T) {
 				return kernelLog, nil
 			}
 
-			got := appArmorKeaHint(tc.before, tc.logEmpty)
+			got := appArmorKeaHint(tc.before, !tc.beforeUnread, tc.logEmpty)
 			if tc.wantEmpty {
 				if got != "" {
 					t.Fatalf("want no hint, got:\n%s", got)

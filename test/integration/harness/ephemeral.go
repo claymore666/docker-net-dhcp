@@ -85,9 +85,10 @@ type EphemeralFixture struct {
 	configFile     string
 	renderedConfig string
 	// logFile is the dnsmasq log; Kea writes to keaLog (#680).
-	logFile      string
-	keaLog       string
-	kernelBefore string
+	logFile          string
+	keaLog           string
+	kernelBefore     string
+	kernelBeforeRead bool
 
 	poolStart, poolEnd string
 	serverCIDR         string
@@ -506,7 +507,9 @@ func (ef *EphemeralFixture) startKea() {
 	}
 	defer logF.Close()
 
-	ef.kernelBefore, _ = readKernelLog()
+	var beforeErr error
+	ef.kernelBefore, beforeErr = readKernelLog()
+	ef.kernelBeforeRead = beforeErr == nil
 	startMark := ef.keaLogSize()
 	ef.cmd = ef.netnsCommand(keaPath, "-c", ef.configFile)
 	ef.cmd.Env = append(ef.cmd.Env, keaEnv()...)
@@ -543,7 +546,7 @@ func (ef *EphemeralFixture) startKea() {
 	// An empty log with no readiness marker usually means AppArmor denied Kea a path (#869, #680); the log is read once.
 	keaLog := ef.readLog()
 	ef.t.Fatalf("ephemeral kea did not become ready; config:\n%s\nlog:\n%s\n%s",
-		ef.renderedConfig, keaLog, appArmorKeaHint(ef.kernelBefore, keaLog == ""))
+		ef.renderedConfig, keaLog, appArmorKeaHint(ef.kernelBefore, ef.kernelBeforeRead, keaLog == ""))
 }
 
 // keaEnv pins every directory Kea writes to the one the profile permits, so the host's own settings cannot move one (#680).
