@@ -3,6 +3,10 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # Assert the privileged lanes share ONE concurrency key expression (#742).
 #
+# Expires-when: every privileged lane, capture-fixtures.yml included,
+#   takes its concurrency group from one shared definition, so no copy
+#   can go stale. #746 covers only the integration lanes (#742).
+#
 # THE FAILURE THIS CATCHES IS A COPY THAT WENT STALE. #390 put
 # integration.yml, coverage.yml and capture-fixtures.yml in a single
 # ci-pool-exempt: a count of colliding jobs, not of the pool

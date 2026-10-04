@@ -4,6 +4,10 @@
 
 # Keep the "good first issue" promise honest (#537, #851; follow-up to #455).
 #
+# Expires-when: neither .bestpractices.json nor README.md names the
+#   good-first-issue filter, so no public claim about tracker state remains
+#   (#537).
+#
 # Two public artifacts make claims about live tracker state:
 #
 #   * .bestpractices.json answers `small_tasks` Met or Unmet, and when it

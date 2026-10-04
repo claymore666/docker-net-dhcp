@@ -4,6 +4,9 @@
 
 # The release run must judge the notes BEFORE it publishes anything.
 #
+# Expires-when: scripts/release-body.sh no longer refuses a tag, or the
+#   notes are judged in the same job before any publish step (#914).
+#
 # WHY THIS EXISTS
 #
 # `scripts/release-body.sh` refuses a tag whose `RELEASE_NOTES.md` section

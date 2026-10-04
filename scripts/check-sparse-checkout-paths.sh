@@ -5,6 +5,9 @@
 # Assert that no `actions/checkout` step which sets `sparse-checkout:`
 # shares its workspace path with another checkout in the same job (#736).
 #
+# Expires-when: actions/checkout clears a sparse-checkout configuration it
+#   finds in an existing workspace (#736).
+#
 # THE BUG THIS IS WRITTEN FOR, WHICH SHIPPED.
 #
 # actions/checkout writes the sparse-checkout configuration into the

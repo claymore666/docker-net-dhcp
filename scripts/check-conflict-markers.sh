@@ -4,6 +4,9 @@
 
 # No tracked file carries a merge-conflict marker (#818).
 #
+# Expires-when: never: a conflict marker in a file no compiler reads passes
+#   every other gate, and git can leave one on any rebase (#818).
+#
 # WHY. A hand-resolved rebase can leave a conflict block behind in a
 # file no compiler reads. RELEASE_NOTES.md carried two of them to a
 # branch tip: `scripts/release-body.sh v2.2.0` emitted four marker

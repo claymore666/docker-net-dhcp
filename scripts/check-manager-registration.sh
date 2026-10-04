@@ -5,6 +5,9 @@
 # A DHCP manager registration must never have its result discarded
 # (#480).
 #
+# Expires-when: registerDHCPManager no longer returns a displaced manager
+#   that its caller has to stop (#480).
+#
 # WHY THIS EXISTS
 #
 # registerDHCPManager returns the manager it displaced, and its doc
