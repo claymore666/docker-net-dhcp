@@ -190,11 +190,11 @@ parsed="$(awk '
     }
 
     # Registry commands split at && || ; | outside quotes only (#798): a `|`
-    # inside an echo string must not make a command position. A line whose
-    # quotes do not balance (a string opened on the line above) splits as
-    # if unquoted, so a command after the closing quote is still read.
-    function qsplit(s, segs,   i, c, q, out, raw) {
-        q = 0; out = ""; raw = s
+    # inside an echo string must not make a command position. The quote
+    # state QS carries across the lines of one `run:` body, so a string
+    # closed on this line and one opened on it leave the command between.
+    function qsplit(s, segs,   i, c, q, out) {
+        q = QS; out = ""
         for (i = 1; i <= length(s); i++) {
             c = substr(s, i, 1)
             if (c == "\\" && q != 1) { out = out c substr(s, i + 1, 1); i++; continue }
@@ -204,9 +204,8 @@ parsed="$(awk '
             else if (q == 0 && c == "&" && substr(s, i + 1, 1) == "&") { c = "\x01"; i++ }
             out = out c
         }
-        if (q == 0) return split(out, segs, "\x01")
-        gsub(/&&|\|\||;|\|/, "\x01", raw)
-        return split(raw, segs, "\x01")
+        QS = q
+        return split(out, segs, "\x01")
     }
 
     # A quoted string is one word (#798): `x="$a $b"` assigns, it runs no `$b"`.
@@ -565,6 +564,7 @@ parsed="$(awk '
         ind = index($0, "run:") - 1
         rest = $0
         sub(/^[[:space:]]*(-[[:space:]]+)?run:[[:space:]]*/, "", rest)
+        QS = 0
         if (rest ~ /^[|>]/) { runind = ind; next }   # a block scalar
         runind = -1
         feed(rest, FNR)

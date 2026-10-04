@@ -831,6 +831,7 @@ var-braced|2|a command named by a variable|${REGISTRY_TOOL} push ghcr.io/x:riscv
 subst-command|2|a command named by a variable|$(command -v docker) push ghcr.io/x:riscv64
 backtick-command|2|a command named by a variable|true && `which docker` push ghcr.io/x:riscv64
 build-o-var|2|a build output that is a variable|docker buildx build -o "$OUT" .
+sh-c-later-word|2|not at command position|sh -c "set -e; docker push ghcr.io/x:riscv64"
 THIRD
 
 threepub "$TMP/third-action.yml" "      - uses: docker/build-push-action@v6
@@ -937,6 +938,20 @@ threepub "$TMP/third-openquote.yml" '      - run: |
             done"; docker push ghcr.io/x:riscv64'
 check "a command after a string closed from the line above is read (#798)" 1 \
       "$TMP/third-openquote.yml" "release-riscv64 reaches release"
+
+# One line closes a string and opens the next; the push between is a command.
+threepub "$TMP/third-closeopen.yml" '      - run: |
+          echo "start
+          end" ; docker push ghcr.io/x:riscv64 ; echo "more
+          tail"'
+check "a command between two multi-line strings is read (#798)" 1 \
+      "$TMP/third-closeopen.yml" "release-riscv64 reaches release"
+
+# The quote state is per `run:`: an unclosed quote does not swallow the next.
+threepub "$TMP/third-runreset.yml" '      - run: echo "unclosed
+      - run: echo x; docker push ghcr.io/x:riscv64'
+check "each run: starts outside a string (#798)" 1 \
+      "$TMP/third-runreset.yml" "release-riscv64 reaches release"
 
 # --- #798: release.yml as it ships keeps its downstream contract ------
 # promote-latest re-tags with `crane tag` and github-release cuts the
