@@ -4,6 +4,9 @@
 
 # Keep the release PR's `Closes` list from closing work that is not done.
 #
+# Expires-when: the release PR's Closes list is no longer built from
+#   milestone membership (release-runbook step 6) (#403).
+#
 # docs/release-runbook.md step 6 builds that list from MILESTONE
 # MEMBERSHIP — "a `Closes #N` line for every issue in the milestone" —
 # and merging the release PR closes every issue it names. Milestone

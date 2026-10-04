@@ -6,6 +6,9 @@
 # and every sentence names a grant config.json still asks for (E-2,
 # #725's second follow-up).
 #
+# Expires-when: SECURITY.md's grant sentences are generated from
+#   config.json, so a grant without its sentence cannot exist (#725).
+#
 # WHY THIS EXISTS
 #
 # SECURITY.md's job is to let an operator decide whether to approve what

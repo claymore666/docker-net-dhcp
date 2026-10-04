@@ -4,6 +4,9 @@
 
 # The `test` job must contain only tests of this program (#829).
 #
+# Expires-when: test and policy-gates become one job again, or test stops
+#   being a required check on dev and main (#829).
+#
 # WHY THIS EXISTS
 #
 # `test` is a REQUIRED status check on dev and main. For a long time it

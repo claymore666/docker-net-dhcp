@@ -5,6 +5,9 @@
 # Every workflow step that runs `docker plugin create` must first create
 # every /var/lib bind source declared by the manifest it is installing.
 #
+# Expires-when: the engine creates a missing plugin bind source instead of
+#   failing docker plugin enable, or no manifest declares one (#440).
+#
 # Why this exists: a bind source that does not exist on the host does not
 # degrade the plugin, it kills `docker plugin enable` with an opaque
 # "failed to fulfil mount request" (#440, #588, #660). The Makefile's

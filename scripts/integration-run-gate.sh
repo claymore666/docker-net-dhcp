@@ -25,6 +25,9 @@
 #                   the semantic-conflict case dev-push runs exist for —
 #                   always runs.
 #
+# Expires-when: the integration suite is cheap enough to run on every event,
+#   so skipping docs-only and duplicate trees saves nothing (#311, #312).
+#
 # Prints exactly one word on stdout: "run" or "skip" (reason on stderr).
 # FAIL-OPEN by design: any API error, unexpected input, missing tool, or
 # unknown mode prints "run" — the expensive path is always the safe one.

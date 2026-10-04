@@ -5,6 +5,9 @@
 # The metrics golden must move ONLY for the series that actually
 # changed (#651).
 #
+# Expires-when: the metrics golden is removed or written per series by the
+#   test itself, so index keying cannot come back (#651).
+#
 # fixtureSnapshot used to number HealthResponse by field INDEX --
 # (n-i)*10 -- which couples every field's value to every other field's
 # position. Adding one field shifted n and reindexed everything below

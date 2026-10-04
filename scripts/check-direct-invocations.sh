@@ -5,6 +5,9 @@
 # A script this repository tells someone to RUN must be runnable, and a
 # refusal printed in the middle of a documented block must stop the block.
 #
+# Expires-when: no document tells a person to run a script directly; CI runs
+#   every script through bash and cannot see a missing mode bit (#914).
+#
 # WHY THIS EXISTS
 #
 # `scripts/release-body.sh` shipped mode 100644. Every caller in CI writes

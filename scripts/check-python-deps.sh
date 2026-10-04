@@ -4,6 +4,9 @@
 
 # Python dependency-reachability gate (#535).
 #
+# Expires-when: the tree carries no Python requirements file, so no declared
+#   distribution can be unreachable (#535).
+#
 # `scripts/requirements.txt` declared two third-party distributions for
 # `scripts/common.py`, the manifest-list helper inherited from upstream.
 # Nothing installed the file and nothing imported the module: the

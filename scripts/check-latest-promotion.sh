@@ -5,6 +5,9 @@
 # Assert that the floating registry tag (`:latest`) is moved LAST, and
 # that a pre-release run still exercises the code that moves it (#736).
 #
+# Expires-when: the project stops publishing a floating :latest tag, so
+#   there is no promotion left to order (#736).
+#
 # WHY THIS EXISTS. `crane tag <version> latest` used to run inside the
 # `release` job — before `cosign sign`, before the SBOM, before the
 # attestation, and a whole job before `verify-install` proved the plugin

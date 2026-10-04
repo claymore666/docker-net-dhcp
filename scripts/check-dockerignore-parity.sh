@@ -5,6 +5,9 @@
 # Every directory .gitignore excludes, and every credential-shaped path it
 # excludes, must also be excluded by .dockerignore.
 #
+# Expires-when: builds stop sending the repository root as context, so a
+#   path .gitignore excludes cannot reach the daemon either way (#487).
+#
 # The defect this guards, first half: .dockerignore listed /plugin/ but not
 # /plugin-cover/. Both are build output written by `sudo make create...`,
 # so both end up root-owned; once one is in the build context, every

@@ -4,6 +4,9 @@
 
 # Test-weakening gate (#413).
 #
+# Expires-when: never: weakening a failing test once hid #402 and #408
+#   behind an honest comment (#413); a standing review rule.
+#
 # An escape hatch was once built to silence a failing restart test — a
 # helper that made containers stop slowly so the test passed — with an
 # honest comment explaining exactly what it did. That sentence was

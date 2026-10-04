@@ -13,6 +13,9 @@
 # on the STARVATION and POOL SHORT paths. A diagnostic that misdirects
 # is worse than a comment that is merely stale.
 #
+# Expires-when: the runner pool size and the jobs per run are no longer
+#   stated in prose anywhere in the tree (#879).
+#
 # THE FACTS AND WHERE EACH IS DERIVED FROM
 #
 #   integration-pool-jobs   how many jobs an integration.yml run places

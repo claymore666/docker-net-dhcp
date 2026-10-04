@@ -3,6 +3,9 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # Assert that every workflow_dispatch workflow is actually DISPATCHABLE.
 #
+# Expires-when: never: GitHub dispatches only workflows present on the
+#   default branch (#665); this ends only if that platform rule changes.
+#
 # THE RULE GITHUB ENFORCES AND NOTHING HERE DID. A workflow_dispatch
 # workflow can only be triggered if the file exists on the repository's
 # DEFAULT branch. Not the branch you pass to `--ref` — the default one.

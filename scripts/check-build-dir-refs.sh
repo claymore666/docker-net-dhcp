@@ -6,6 +6,10 @@
 # (#583). The one place that knows them is harness/build.go, and every
 # test that needs the built rootfs asks harness.BuiltPluginDir.
 #
+# Expires-when: #746 lands: the four integration lanes become one reusable
+#   workflow with one build path, so no lane-specific build directory is
+#   left to name (#583).
+#
 # WHY THIS EXISTS
 #
 # The two lanes build into different directories: `make plugin` ->

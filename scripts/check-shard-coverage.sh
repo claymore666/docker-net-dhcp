@@ -4,6 +4,9 @@
 
 # THE SHARDS THE LANE SCHEDULES MUST COVER THE ROSTER EXACTLY ONCE.
 #
+# Expires-when: the integration suite is no longer split into shards, so
+#   there is no roster for the scheduled shards to cover (#877).
+#
 # WHY THIS EXISTS. Everything about the partition was checked except the
 # thing the lane actually does with it. scripts/integration-shard.sh is
 # proven to partition the roster at every count -- test-integration-shard.sh

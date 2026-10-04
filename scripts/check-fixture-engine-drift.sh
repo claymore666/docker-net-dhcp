@@ -5,6 +5,10 @@
 # Fail when the captured libnetwork request fixtures were recorded on a
 # different Docker Engine minor than the daemon this host runs (#644).
 #
+# Expires-when: the unit tests stop replaying captured libnetwork request
+#   fixtures, or those fixtures are recaptured on the engine of every run
+#   (#644).
+#
 # WHY THIS EXISTS
 #
 # pkg/plugin/testdata/requests holds real request bodies, and the unit

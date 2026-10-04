@@ -5,6 +5,9 @@
 # Assert the CI fuzz budget is expressed in EXECUTIONS, not wall clock
 # (#324), and that each fuzz invocation carries a bounding -timeout.
 #
+# Expires-when: the Go fuzzing coordinator's deadline race is fixed
+#   upstream, so -fuzztime with a duration stops cleanly (#324).
+#
 # Why this is a gate and not a comment:
 #
 # `go test -fuzz -fuzztime <duration>` installs a deadline context in

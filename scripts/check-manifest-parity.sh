@@ -11,6 +11,9 @@
 # landed in config.json only, and the release-PR coverage run failed
 # the new non-root test against the unfixed cover manifest.
 #
+# Expires-when: #746 lands: one reusable integration workflow removes the
+#   copy-paste class that config-cover.json drift is a symptom of (#317).
+#
 # Cover-specific additions (env like GOCOVERDIR, extra mounts) are
 # expected and NOT compared. Usage:
 #   scripts/check-manifest-parity.sh [config.json] [config-cover.json]

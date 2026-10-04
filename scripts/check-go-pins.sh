@@ -4,6 +4,9 @@
 
 # Go version-pin consistency gate (#525).
 #
+# Expires-when: the Go version is declared once and every workflow, image
+#   and go.mod reads it from there, so no two answers can differ (#525).
+#
 # There is no single place in this tree that says which Go we build
 # with, and before this gate there were four answers that disagreed:
 # go.mod said 1.26.4, six workflow steps said '1.26', the CI runner
