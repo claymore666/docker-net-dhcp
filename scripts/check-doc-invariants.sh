@@ -45,8 +45,11 @@
 #                     with a line matching the regex, discovered rather
 #                     than listed, so a new page that copies the snippet
 #                     is judged the moment it lands. No match is exit 2.
-#   var: NAME=<path>  NAME's value is read from the `NAME=<value>` line
-#                     of <path>; `${NAME}` in a marker becomes that value.
+#   var: NAME=<path>  NAME's value is read from the `NAME=<n>` line of
+#                     <path>: its leading digits, whatever follows ignored,
+#                     the same read release.yml and the preflight make of
+#                     scripts/release-tooling.env (#745). `${NAME}` in a
+#                     marker becomes that number.
 #                     A missing file, a missing line or an unresolved
 #                     `${NAME}` is exit 2, never an empty substitution.
 #   match: text       markers match case-insensitively with Markdown
@@ -121,7 +124,7 @@ check_entry() {
         fi
         val=""
         if [ -f "$ROOT/$vpath" ]; then
-            val="$(sed -n "s/^${name}=\([A-Za-z0-9._-][A-Za-z0-9._-]*\)\([[:space:]].*\)\{0,1\}\$/\1/p" "$ROOT/$vpath" | head -1)"
+            val="$(sed -n "s/^${name}=\([0-9][0-9]*\).*/\1/p" "$ROOT/$vpath" | head -1)"
         fi
         if [ -z "$val" ]; then
             echo "BLIND $id: no ${name}=<value> line in $vpath, so the marker cannot be built."

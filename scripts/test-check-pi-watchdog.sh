@@ -134,6 +134,9 @@ check "ExecStart pointing somewhere else fails" 1 "$(tree_fixture pathdrift brea
 # --- the memlock limit
 break_memlock() { sed -i '/^LimitMEMLOCK=infinity/d' "$1/patch-target.sh"; }
 check "a missing LimitMEMLOCK=infinity fails" 1 "$(tree_fixture nomemlock break_memlock)"
+# The line is anchored: a comment that still names the setting is not it (#745).
+break_memlock_commented() { sed -i 's/^LimitMEMLOCK=infinity/# LimitMEMLOCK=infinity was removed/' "$1/patch-target.sh"; }
+check "a commented-out LimitMEMLOCK=infinity fails" 1 "$(tree_fixture commentedmemlock break_memlock_commented)"
 
 # --- the image not shipping the binary, or not building it for arm64
 break_image() { sed -i '/netboot-templates\/nfs-watchdog/d' "$1/Dockerfile"; }
@@ -258,6 +261,31 @@ PROBETOOSLOW='12,518,1,-;nfs-watchdog: watching / via statfs every 10s; petting 
 check "a probe interval over the staleness tolerance fails on its own" 1 "$(host_fixture probeslow active 15 "$BOOT_LINE
 $PROBETOOSLOW")"
 says probeslow "goes stale between probes" "explains the probe-interval invariant"
+
+# The bounds are strict: a timing equal to its limit fails (#745). Each case
+# sits exactly on one bound and clears the other two.
+ann() { # <probe> <pet> <stale>
+    printf '12,518,1,-;nfs-watchdog: watching / via statfs every %ss; petting /dev/watchdog0 every %ss; stop petting after %ss without a successful probe' "$1" "$2" "$3"
+}
+check "a staleness tolerance equal to the hardware timeout fails" 1 "$(host_fixture staleeq active 15 "$BOOT_LINE
+$(ann 3 3 15)")"
+says staleeq "staleness tolerance 15s is not under the 15s hardware timeout" "names the staleness bound"
+check "a pet interval of exactly half the timeout fails" 1 "$(host_fixture peteq active 16 "$BOOT_LINE
+$(ann 3 8 9)")"
+says peteq "pet interval 8s is not under half the 16s" "names the pet bound"
+check "a probe interval equal to the staleness tolerance fails" 1 "$(host_fixture probeeq active 15 "$BOOT_LINE
+$(ann 9 3 9)")"
+says probeeq "probe interval 9s is not under the 9s staleness" "names the probe bound"
+
+# The daemon can restart inside one boot with new timings; the ring then
+# holds both announcements and the LAST one is what is running (#745).
+check "a restart onto bad timings is judged on the new ones" 1 "$(host_fixture restartbad active 15 "$BOOT_LINE
+$WD_LINES
+$DEFAULTS")"
+says restartbad "staleness tolerance 36s" "names the timings of the last announcement"
+check "a restart onto good timings is not judged on the old ones" 0 "$(host_fixture restartgood active 15 "$BOOT_LINE
+$DEFAULTS
+$WD_LINES")"
 
 # --- evidence that cannot be read is "cannot check", never a verdict
 check "a non-numeric hardware timeout is 'cannot check'" 2 "$(host_fixture badtimeout active fifteen)"

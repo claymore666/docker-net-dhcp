@@ -320,6 +320,12 @@ BAD_FLAG="$(rmap bad-flag "$(printf "bug:\n  - '/^fix:/s'\n")")"
 run "an unsupported regex flag is red" 1 "not supported" -- \
     st "$GOOD_LABELS" "$BAD_FLAG" "$GOOD_WF" "$GOOD_FIXTURE"
 
+# The action honours only i; m and s change what a pattern means and would
+# pass here while the labeller treats them differently (#745).
+BAD_FLAG_M="$(rmap bad-flag-m "$(printf "bug:\n  - '/^fix:/m'\n")")"
+run "the multiline regex flag is red too" 1 "flag 'm' is not supported" -- \
+    st "$GOOD_LABELS" "$BAD_FLAG_M" "$GOOD_WF" "$GOOD_FIXTURE"
+
 # Declared and applicable, so the declaration rules pass it; only the
 # labeller's own list can say it is unknown to the model pass.
 WF_ONLY_BUG="$TMP/wf-only-bug.yml"
@@ -378,6 +384,12 @@ TAIL_FIXTURE="$TMP/tail.tsv"
 printf 'fix: x\tbug\nfix: y\t-\n' > "$TAIL_FIXTURE"
 run "the target is the title plus a blank line, and the g flag is tolerated" 0 "Label taxonomy OK (static)" -- \
     st "$GOOD_LABELS" "$TAIL_MAP" "$GOOD_WF" "$TAIL_FIXTURE"
+
+# A fixture saved with CRLF endings or a trailing space still says '-'.
+WS_FIXTURE="$TMP/ws.tsv"
+printf 'unrelated words\t- \r\nfix: a bug\tbug \r\n' > "$WS_FIXTURE"
+run "fixture rows tolerate trailing whitespace and CR" 0 "Label taxonomy OK (static)" -- \
+    st "$GOOD_LABELS" "$GOOD_MAP" "$GOOD_WF" "$WS_FIXTURE"
 
 # A title the map must not classify: the gate fails when it does.
 NEG_FIXTURE="$TMP/neg.tsv"

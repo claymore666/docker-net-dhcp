@@ -109,6 +109,12 @@ stub "$withcrane" cosign 'echo "GitVersion:    v3.1.3"'
 stub "$withcrane" crane
 run_case "crane present still passes" 0 "$withcrane" "ABC123"
 
+# The major is matched whole: v30 is not major 3 (#745).
+cosign30="$TMP/bin-cosign30"
+stub "$cosign30" gh
+stub "$cosign30" cosign 'echo "GitVersion:    v30.0.1"'
+run_case "cosign v30 is not major 3" 1 "$cosign30" "ABC123"
+
 # The major comes from scripts/release-tooling.env, the file release.yml and
 # the cosign-major-stated invariant read too (#522, #745). A copy of the
 # script beside its own data file proves the verdict follows that file and

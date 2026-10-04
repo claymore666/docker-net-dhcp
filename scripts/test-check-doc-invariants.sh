@@ -299,6 +299,52 @@ printf '%s\n' '# Readme with no cosign command and no phrase' > "$TMP/c-add/READ
 sed -i 's|^    scope: .*|    file: README.md\n&|' "$TMP/c-add/manifest.txt"
 cosign_check "file: and scope: are both judged" 1 c-add "README.md no longer contains: cosign v3 or newer"
 
+# Three readers take the major from scripts/release-tooling.env: this
+# engine, the release.yml signing step and the preflight. They must read
+# one value from one line (#745). The last two are measured by running the
+# sed each of them contains, taken from the file itself, so an edit to
+# either is seen here.
+sed_of() { # <file> -> the first s/^COSIGN_MAJOR=.../ expression in it
+    local out
+    out="$(grep -o 's/^COSIGN_MAJOR=[^'"'"']*' "$1" || true)"
+    printf '%s' "${out%%$'\n'*}"
+}
+REL_EXPR="$(sed_of "$REPO/.github/workflows/release.yml")"
+PF_EXPR="$(sed_of "$REPO/scripts/preflight-release-tooling.sh")"
+if [ -n "$REL_EXPR" ] && [ "$REL_EXPR" = "$PF_EXPR" ]; then
+    echo "PASS: release.yml and the preflight read the data file with one sed"
+else
+    echo "FAIL: release.yml and the preflight do not share one COSIGN_MAJOR read ('$REL_EXPR' vs '$PF_EXPR')"
+    failures=$((failures + 1))
+fi
+agree() { # <name> <data file body> <major all three must read; empty = none>
+    local root="c-agree-$1" file="$TMP/c-agree-$1/scripts/release-tooling.env" rel pf
+    cosign_root "$root" "$2"
+    rel="$(sed -n "$REL_EXPR" "$file")"; rel="${rel%%$'\n'*}"
+    pf="$(sed -n "$PF_EXPR" "$file")"; pf="${pf%%$'\n'*}"
+    if [ "$rel" = "$3" ] && [ "$pf" = "$3" ]; then
+        echo "PASS: $1: release.yml and the preflight read '$3'"
+    else
+        echo "FAIL: $1: release.yml read '$rel', the preflight '$pf', want '$3'"
+        failures=$((failures + 1))
+    fi
+    if [ -n "$3" ]; then
+        # The page states v3, so the engine passes only if it read 3 as well.
+        cosign_check "$1: the engine reads $3 too" 0 "$root" "1 invariant(s)"
+    else
+        cosign_check "$1: the engine reads no major either" 2 "$root" "no COSIGN_MAJOR=<value> line"
+    fi
+}
+agree plain 'COSIGN_MAJOR=3' 3
+agree dotted 'COSIGN_MAJOR=3.1' 3
+agree crlf $'COSIGN_MAJOR=3\r' 3
+agree trailing 'COSIGN_MAJOR=3 # note' 3
+agree glued 'COSIGN_MAJOR=3x' 3
+agree second $'OTHER=9\nCOSIGN_MAJOR=3' 3
+agree twice $'COSIGN_MAJOR=3\nCOSIGN_MAJOR=4' 3
+agree quoted 'COSIGN_MAJOR="3"' ''
+agree word 'COSIGN_MAJOR=v3' ''
+
 # The committed data file and the signing step must name the same file.
 read_lines="$(grep -A1 "sed -n 's/^COSIGN_MAJOR=" "$REPO/.github/workflows/release.yml" || true)"
 if [[ "$read_lines" == *scripts/release-tooling.env* ]] \

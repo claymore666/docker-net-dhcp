@@ -38,7 +38,7 @@
 #
 # Three optional declarations widen an entry (#745): `scope: <ERE>`
 # replaces the file list with every tracked Markdown page that has a
-# matching line, `var: NAME=<path>` reads NAME from a `NAME=<value>` line
+# matching line, `var: NAME=<path>` reads NAME from a `NAME=<n>` line
 # and fills `${NAME}` in the markers, and `match: text` ignores case,
 # Markdown emphasis and code ticks. The engine's header in
 # scripts/check-doc-invariants.sh has the exit codes.

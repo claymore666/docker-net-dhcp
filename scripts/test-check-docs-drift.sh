@@ -277,6 +277,17 @@ expect 1 "an undocumented endpoint option fails" "FAIL  option ip is parsed by t
 write_reference; sed -i 's/`ip`/ip/' "$DOCS/reference.md"
 expect 1 "an unbackticked mention does not document an option" "FAIL  option ip is parsed by the code"
 
+# An options map is found under either capitalisation: Options["k"] on a
+# receiver field is a per-endpoint key like options["k"] is.
+write_reference
+cat > "$PKG/upper.go" <<'EOF'
+package plugin
+
+func upper() { _ = Options["upper_only"] }
+EOF
+expect 1 "a capitalised Options[...] key is an endpoint option too" "FAIL  option upper_only is parsed by the code"
+rm -f "$PKG/upper.go"
+
 # The option struct vanishing is a failure, not an empty option set.
 write_reference
 cat > "$PKG/endpoints.go" <<'EOF'
