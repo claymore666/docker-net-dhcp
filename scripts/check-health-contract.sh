@@ -5,6 +5,9 @@
 # The `healthy` contract must say the same thing in every place that
 # states it (#638).
 #
+# Expires-when: the reference states the healthy contract once, generated
+#   from the code, so no restatement can disagree (#638).
+#
 # WHY THIS EXISTS
 #
 # `/Plugin.Health` returns one boolean an operator is expected to alert

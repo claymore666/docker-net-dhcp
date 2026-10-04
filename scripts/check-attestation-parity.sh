@@ -5,6 +5,9 @@
 # Pin the GHCR-only provenance asymmetry, and prove the pin is being
 # measured rather than assumed (#776).
 #
+# Expires-when: build provenance is attested for the Docker Hub image too,
+#   so the GHCR-only asymmetry #776 pins no longer exists.
+#
 # WHAT IS ACTUALLY WRONG. `actions/attest-build-provenance` names the GHCR
 # image only, in both the amd64 and arm64 paths, while cosign signs both
 # registries. Measured on the shipped v1.7.1:

@@ -5,6 +5,9 @@
 # No living document may say `dhcpcd` or `udhcpc`, and nothing on this
 # branch may call the 2.0 line a beta (external review row E-4; #911).
 #
+# Expires-when: 1.x is end of life with no branch left to copy documents
+#   from, so dhcpcd prose cannot flow back into 2.x (#911).
+#
 # WHY THIS EXISTS
 #
 # The 2.0 branch performs the DHCP exchange in-process through the

@@ -4,6 +4,9 @@
 
 # Missing-run detector (#418).
 #
+# Expires-when: GitHub reports a dropped push or pull_request event itself,
+#   so a commit with zero runs is visible without this detector (#418).
+#
 # On 2026-08-01 three consecutive pushes to a PR branch created ZERO
 # workflow runs. Actions was healthy — a manual dispatch started
 # immediately, githubstatus reported all systems operational, nothing

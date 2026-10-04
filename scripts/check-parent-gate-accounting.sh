@@ -5,6 +5,10 @@
 # Every netlink.LinkAdd in pkg/ must be accounted for in
 # .github/linkadd-accounting.txt (#571).
 #
+# Expires-when: never: a parent NIC holds one rx_handler, a kernel fact, so
+#   every child link needs an account (#571); ends if pkg/ stops creating
+#   links.
+#
 # WHY THIS EXISTS
 #
 # A parent NIC registers one rx_handler, so it is a macvlan port or an

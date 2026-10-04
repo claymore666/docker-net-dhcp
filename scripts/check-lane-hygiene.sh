@@ -3,6 +3,9 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # Four per-workflow invariants that only one lane was missing (#742).
 #
+# Expires-when: the per-workflow lines live in one reusable workflow every
+#   lane calls, so one lane cannot lack a line its siblings carry (#742).
+#
 # HALF OF #742 WAS THE SAME FINDING FOUR TIMES: a workflow missing a
 # line every sibling already had. None of the four could go red on its
 # own, because none of them is a thing that RUNS — an `if:` that is

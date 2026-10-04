@@ -16,6 +16,9 @@
 #   3. no option, counter, or setting is documented in a *second*
 #      docs page
 #
+# Expires-when: the reference is generated from the code, so a health field
+#   or driver option cannot exist undocumented (#345).
+#
 # (3) is the one that matters most. Before #345 the reference and the
 # macvlan page each carried a full copy of the options table and the
 # counter table; only the reference was gated, so the duplicate silently

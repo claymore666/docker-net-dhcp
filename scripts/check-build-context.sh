@@ -5,6 +5,9 @@
 # Assert that an unreadable path under .claude/ does not break the docker
 # build context (#530).
 #
+# Expires-when: the image builds from a dedicated context directory instead
+#   of the repository root, so .claude/ cannot enter it (#530).
+#
 # The defect this guards: .dockerignore did not exclude .claude/, so the
 # whole directory was sent as build context. Per-instance git worktrees
 # live under .claude/worktrees/, and a worktree that ever ran

@@ -5,6 +5,11 @@
 # Assert the CI fuzz budget is expressed in EXECUTIONS, not wall clock
 # (#324), and that each fuzz invocation carries a bounding -timeout.
 #
+# Expires-when: never as a whole. The #324 race is fixed upstream from
+#   go1.27.0 on (golang/go#75804), but an execution budget also fuzzes
+#   the same amount on every runner, and the -timeout and target-name
+#   checks guard a step that exits 0 having fuzzed nothing (#1010).
+#
 # Why this is a gate and not a comment:
 #
 # `go test -fuzz -fuzztime <duration>` installs a deadline context in

@@ -4,6 +4,9 @@
 
 # The DHCP library in the BINARY is the module go.mod pins.
 #
+# Expires-when: the build labels the image from the module the binary was
+#   compiled with, not from go list's required version (#1009).
+#
 # WHY THIS EXISTS
 #
 # Until 2.0 the library travelled as a directory under internal/, and

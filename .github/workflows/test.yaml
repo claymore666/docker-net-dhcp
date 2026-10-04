@@ -798,6 +798,12 @@ jobs:
       - name: Build-context check
         run: bash scripts/check-build-context.sh
 
+      # Every gate names the condition under which it should be removed
+      # (#749); a gate added without one is red here, and the quarterly
+      # gate-expiry.yml lists every condition for a human to re-read.
+      - name: Gate expiry check
+        run: bash scripts/check-gate-expiry.sh
+
       # The deterministic twin of the build-context check above (#644).
       # That one asserts the property, but can only observe it on a tree
       # that happens to carry root-owned residue — on a fresh CI checkout

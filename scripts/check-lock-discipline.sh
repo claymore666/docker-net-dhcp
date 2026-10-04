@@ -5,6 +5,9 @@
 # Plugin.mu and the tombstone store's lock must never be held together
 # (#643).
 #
+# Expires-when: Plugin.mu and the tombstone store's lock become one lock, or
+#   the tombstone store needs no lock at all (#643).
+#
 # WHY THIS EXISTS
 #
 # The rule was written down as a comment on the mutex declaration for

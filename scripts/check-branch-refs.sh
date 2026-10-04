@@ -5,6 +5,9 @@
 # Every branch name written under `.github/` must resolve to a branch that
 # EXISTS on the remote.
 #
+# Expires-when: never: a branch filter that admits no existing branch yields
+#   no check runs, and GitHub shows that as absent, not red (#907).
+#
 # WHY THIS EXISTS
 #
 # A `branches:` filter that admits no existing branch produces no check

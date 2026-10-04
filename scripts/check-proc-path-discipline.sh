@@ -5,6 +5,9 @@
 # A /proc/<pid> path must never be built as a string outside the one
 # function that revalidates the PID first (#688, and the netns sibling).
 #
+# Expires-when: the plugin stops resolving container state through
+#   /proc/<pid> paths, for example by holding pidfds instead (#688).
+#
 # WHY THIS EXISTS
 #
 # The plugin runs in the HOST PID namespace. Every PID it gets from

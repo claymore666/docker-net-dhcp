@@ -3,6 +3,9 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # Assert the two vulnerability allowlists still agree (#741).
 #
+# Expires-when: the accepted advisories live in one file that both
+#   dependency-review and the govulncheck gate read (#741).
+#
 # THE PRUNING HAPPENED IN ONE FILE. This repository accepts advisories
 # in two places under two naming schemes: `allow-ghsas` in
 # .github/dependency-review-config.yml, and .github/vuln-allowlist.txt

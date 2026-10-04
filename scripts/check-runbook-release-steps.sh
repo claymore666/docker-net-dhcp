@@ -5,6 +5,9 @@
 # The runbook's release walkthrough must describe the workflow that
 # exists (#972).
 #
+# Expires-when: the runbook's release walkthrough is generated from
+#   release.yml, or dropped in favour of the workflow file itself (#972).
+#
 # WHAT WENT WRONG. docs/release-runbook.md walks the release run step by
 # step: which jobs run, in which order, with which steps, and how many
 # jobs the promotion waits on. Adding the Docker Hub alias added three

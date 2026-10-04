@@ -4,6 +4,9 @@
 
 # arm64 lane presence gate (#531).
 #
+# Expires-when: integration-arm64 runs on hosted arm64 runners, so an rc's
+#   arm64 job cannot sit queued for a host that is powered off (#531).
+#
 # The rc tag is the human gate of a release. Everything an rc proves has
 # to follow from that tag on its own — integration-arm64 fires on
 # `v*-rc*` rather than waiting for someone to remember `gh workflow run`.

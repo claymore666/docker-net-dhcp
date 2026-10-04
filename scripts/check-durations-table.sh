@@ -4,6 +4,9 @@
 
 # The shard-balance table must name exactly the tests it balances (#877).
 #
+# Expires-when: scripts/integration-shard.sh stops partitioning the suite by
+#   the measured durations in suite-durations.tsv (#877).
+#
 # WHY THIS EXISTS
 #
 # scripts/integration-shard.sh partitions the main integration suite by

@@ -11,6 +11,11 @@
 # landed in config.json only, and the release-PR coverage run failed
 # the new non-root test against the unfixed cover manifest.
 #
+# Expires-when: config-cover.json stops being a hand-kept copy: it is
+#   generated from config.json, or the cover build uses config.json,
+#   so the two cannot drift. #746 de-duplicates the workflows, not the
+#   manifests, so it does not end this (#317).
+#
 # Cover-specific additions (env like GOCOVERDIR, extra mounts) are
 # expected and NOT compared. Usage:
 #   scripts/check-manifest-parity.sh [config.json] [config-cover.json]
