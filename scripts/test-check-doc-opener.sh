@@ -267,6 +267,23 @@ func TestHelper() {}
 GO
 }
 
+fx_two_directives_bad() {
+    anchor "$1"
+    put "$1" pkg/x/a_test.go <<'GO'
+package x
+
+//go:noinline
+//go:nosplit
+// TestOther checks something else.
+func TestHelper() {}
+GO
+}
+
+fx_tab_opener() {
+    anchor "$1"
+    printf 'package x\n\n//\tTestOther checks something else.\nfunc TestHelper() {}\n' | put "$1" pkg/x/a_test.go
+}
+
 fx_in_non_test_file() {
     anchor "$1"
     put "$1" cmd/y/main.go <<'GO'
@@ -335,6 +352,8 @@ CASES=(
     "a directive line before or after a clean opener passes|fx_directive_first_ok|0"
     "a comment separated by a blank line is not a doc block|fx_blank_line|0"
     "an opener with no space after the slashes fails|fx_no_space|1"
+    "two directive lines before the opener are both skipped, bad opener still fails|fx_two_directives_bad|1"
+    "an opener separated from the slashes by a tab fails|fx_tab_opener|1"
     "a hit in a non-test file fails|fx_in_non_test_file|1"
     "a hit under testdata is out of scope|fx_in_testdata_only|0"
     "a tree with no Go files is refused|fx_no_go_files|2"
