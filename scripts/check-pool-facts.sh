@@ -70,6 +70,8 @@
 #        2 cannot see -- refuse rather than pass
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LIVE=0

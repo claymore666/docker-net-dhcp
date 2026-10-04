@@ -54,6 +54,7 @@ check() {
     local name="$1" want_exit="$2" want_sub="$3" running="$4"; shift 4
     local tmp out got
     guarded_tmpdir tmp
+    git init -q "$tmp"
     make_fixtures "$tmp/requests" "$@"
 
     if [ "$running" = "-" ]; then
@@ -130,6 +131,7 @@ check "unparseable running version fails" 2 "could not read a major.minor" \
 # An empty fixture tree is the shape a botched regeneration leaves
 # behind. "Nothing to compare" must not be reported as "no drift".
 guarded_tmpdir tmp
+git init -q "$tmp"
 mkdir -p "$tmp/requests"
 out="$(FIXTURE_ROOT="$tmp/requests" FIXTURE_ENGINE_VERSION="26.1.5" bash "$GATE" 2>&1)"; got=$?
 rm -rf "$tmp"
@@ -143,6 +145,7 @@ else
 fi
 
 guarded_tmpdir tmp
+git init -q "$tmp"
 out="$(FIXTURE_ROOT="$tmp/gone" FIXTURE_ENGINE_VERSION="26.1.5" bash "$GATE" 2>&1)"; got=$?
 rm -rf "$tmp"
 if [ "$got" -eq 2 ] && printf '%s' "$out" | grep -F "does not exist" >/dev/null; then
@@ -160,6 +163,7 @@ check "no daemon reports NOT INSPECTED, not a pass" 0 "NOT INSPECTED" \
     "-" "macvlan-run=26.1.5"
 
 guarded_tmpdir tmp
+git init -q "$tmp"
 make_fixtures "$tmp/requests" "macvlan-run=26.1.5"
 out="$(FIXTURE_ROOT="$tmp/requests" FIXTURE_ENGINE_VERSION="" \
        PATH="$(no_docker_path "$tmp")" bash "$GATE" 2>&1)"
@@ -175,6 +179,7 @@ fi
 # --report (#1015): a minor apart is a notice and exit 0, the same minor
 # is no notice; a report that went red would fail the arm64 lane by design.
 guarded_tmpdir tmp
+git init -q "$tmp"
 make_fixtures "$tmp/requests" "macvlan-run=29.8.0"
 apart="$(FIXTURE_ROOT="$tmp/requests" FIXTURE_ENGINE_VERSION="29.7.2" bash "$GATE" --report 2>&1)"; apart_rc=$?
 same="$(FIXTURE_ROOT="$tmp/requests" FIXTURE_ENGINE_VERSION="29.8.1" bash "$GATE" --report 2>&1)"; same_rc=$?

@@ -25,6 +25,8 @@ set -u
 GATE="$(dirname "$0")/check-parent-gate-accounting.sh"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 guarded_tmpdir TMP
+# The gate lists subjects through git (#744); every fixture root sits in this work tree.
+git init -q "$TMP"
 
 failures=0
 
@@ -147,6 +149,12 @@ printf 'package plugin\n\nfunc nothing() {}\n' > "$TMP/nosites/pkg/plugin/quiet.
 printf '# nothing declared\n' > "$TMP/nosites/manifest.txt"
 check "zero LinkAdd sites is a broken pattern, not a clean tree" 1 "$TMP/nosites" \
     "$TMP/nosites/manifest.txt" "pattern has stopped matching"
+
+# A pkg/ with no non-test Go source is nothing to judge (#744).
+mkdir -p "$TMP/testsonly/pkg/plugin"
+printf 'package plugin\n' > "$TMP/testsonly/pkg/plugin/quiet_test.go"
+check "a pkg/ with only test files exits 2" 2 "$TMP/testsonly" \
+    "$TMP/nosites/manifest.txt" "no 'go-src' file under"
 
 # Usage errors must be distinguishable from findings: a gate invoked
 # wrongly that exits 1 reads in a log exactly like a gate that found

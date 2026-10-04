@@ -58,6 +58,8 @@
 # Usage: check-lane-hygiene.sh [workflow-dir]
 # Exit:  0 clean, 1 an invariant is broken, 2 cannot check.
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 WF_DIR="${1:-.github/workflows}"
 

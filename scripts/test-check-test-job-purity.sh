@@ -619,6 +619,7 @@ fi
 # This drives the GATE, not a fixture, so it needs its own copy: the
 # gate `cd`s to its own parent, and the workflow is passed absolute.
 mkdir -p "$TMP/lift/scripts"
+cp "$REPO/scripts/gatelib.sh" "$TMP/lift/scripts/"
 LIFT_GATE="$TMP/lift/scripts/check-test-job-purity.sh"
 JOBIF_KEYS="$(python3 - "$REPO/scripts/check-test-job-purity.sh" <<'KEYS'
 import ast
@@ -685,6 +686,7 @@ done
 # because it is the reason the exclusion can be removed by accident
 # without anything going red.
 mkdir -p "$TMP/buyback/scripts"
+cp "$REPO/scripts/gatelib.sh" "$TMP/buyback/scripts/"
 BUYBACK_GATE="$TMP/buyback/scripts/check-test-job-purity.sh"
 if ! python3 - "$REPO/scripts/check-test-job-purity.sh" "$BUYBACK_GATE" <<'BUYBACK'
 import re

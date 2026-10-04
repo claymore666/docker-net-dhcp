@@ -69,6 +69,8 @@
 # Exit: 0 pass, 1 drift, 2 usage error.
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 GITIGNORE="${1:-.gitignore}"
 DOCKERIGNORE="${2:-.dockerignore}"

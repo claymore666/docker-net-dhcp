@@ -111,6 +111,8 @@
 # Exit: 0 reachable, 1 nothing references an issue, 2 cannot check.
 
 set -u
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SYNC="$HERE/sync-issue-state-labels.sh"

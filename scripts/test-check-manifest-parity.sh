@@ -103,6 +103,14 @@ echo "$base" > "$TMP/b.json"
 got=$(bash "$CHECK" "$TMP/a.json" "$TMP/b.json" >/dev/null 2>&1 && echo pass || echo fail)
 check "a manifest declaring no STATE_DIR fails rather than skipping" fail "$got"
 
+# A manifest the gate cannot read is a refusal (exit 2), never a verdict (#744).
+echo "$base" > "$TMP/a.json"
+rc=0; bash "$CHECK" "$TMP/a.json" "$TMP/gone.json" > "$TMP/out" 2>&1 || rc=$?
+check "a missing manifest refuses with exit 2" "2|1" "$rc|$(grep -c 'cannot judge::cannot read' "$TMP/out")"
+printf '{"env": [' > "$TMP/b.json"
+rc=0; bash "$CHECK" "$TMP/a.json" "$TMP/b.json" > "$TMP/out" 2>&1 || rc=$?
+check "a manifest that is not JSON refuses with exit 2" "2|1" "$rc|$(grep -c 'is not a JSON object' "$TMP/out")"
+
 if [ "$fails" -ne 0 ]; then
     echo "check-manifest-parity tests FAILED"
     exit 1

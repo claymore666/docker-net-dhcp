@@ -146,6 +146,7 @@ fi
 # from a line the author never wrote. Reproduced here by handing a copy
 # of the checker its own path.
 SELF="$TMP/self-copy.sh"
+cp "${CHECK%/*}/gatelib.sh" "$TMP/"
 # Strip only the header itself — lines 2 and 3. A blanket delete would
 # also remove the constants the checker compares against, which live in
 # its own source.

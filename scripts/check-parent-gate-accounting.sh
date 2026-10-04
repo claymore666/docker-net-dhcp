@@ -46,6 +46,8 @@
 # Exit: 0 accounted for, 1 drift, 2 bad usage.
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(dirname "$HERE")"
@@ -85,10 +87,14 @@ actual="$(mktemp)"
 trap 'rm -f "$actual" "$declared"' EXIT
 declared="$(mktemp)"
 
-( cd "$ROOT" && grep -rn "netlink\.LinkAdd(" pkg/ --include='*.go' 2>/dev/null \
-    | grep -v '_test\.go:' \
+# gate_subjects (#744) lists the non-test Go files git sees under pkg/.
+gofiles=()
+gate_subjects gofiles go-src "$ROOT/pkg"
+hits="$(grep -Hn "netlink\.LinkAdd(" -- "${gofiles[@]}")"
+[ $? -le 1 ] || gate_refuse "grep failed over $ROOT/pkg"
+printf '%s\n' "$hits" | sed "s|^$ROOT/||" | grep -v '^$' \
     | cut -d: -f1 | sort | uniq -c \
-    | awk '{print $2, $1}' ) > "$actual"
+    | awk '{print $2, $1}' > "$actual"
 
 # Declared entries: "<path> <count>" at column 0, justification indented.
 # An entry whose justification is empty is a bare path and fails — a
@@ -169,8 +175,7 @@ done < "$declared"
 # this type". Test files are excluded for the same reason as above — a
 # unit test building one is exercising the type's contract, not
 # attaching a child link to a contended parent.
-forged="$(grep -rn "parentGuard" "$ROOT/pkg" --include='*.go' 2>/dev/null \
-    | grep -v '_test\.go:' \
+forged="$(grep -Hn "parentGuard" -- "${gofiles[@]}" \
     | grep -v 'parent_gate\.go:' \
     | grep -v '\*parentGuard' \
     | sed "s|^$ROOT/||" || true)"

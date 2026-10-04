@@ -45,6 +45,8 @@
 # Exit:  0 clean, 1 something is unreachable, 2 cannot check.
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="${PYDEPS_ROOT:-$(cd "$HERE/.." && pwd)}"

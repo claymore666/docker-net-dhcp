@@ -48,6 +48,8 @@
 # Usage: check-lock-discipline.sh [<dir>]
 # Exit: 0 clean, 1 violation, 2 cannot check.
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 cd "$(dirname "$0")/.." || exit 2
 DIR="${1:-pkg/plugin}"
@@ -57,12 +59,8 @@ DIR="${1:-pkg/plugin}"
 # gate does when its own engine dies. See the exit-status check below.
 AWK="${AWK:-awk}"
 
-mapfile -t files < <(find "$DIR" -maxdepth 1 -name '*.go' ! -name '*_test.go' | sort)
-if [ "${#files[@]}" -eq 0 ]; then
-    echo "::error title=No Go files inspected::check-lock-discipline found no production Go files in ${DIR}." >&2
-    echo "This gate would otherwise pass having read nothing." >&2
-    exit 2
-fi
+files=()
+GATE_TITLE='No Go files inspected' gate_subjects --shallow files go-src "$DIR"
 
 # Scan function by function. Production Go here is gofmt'd, so a
 # top-level func starts at column 0 and its closing brace is a bare "}".

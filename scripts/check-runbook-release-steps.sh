@@ -51,13 +51,16 @@
 #        2 CANNOT JUDGE -- a file is unreadable, or the declaration is
 #          missing or empty, which would make every rule vacuous
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 RUNBOOK="${1:-docs/release-runbook.md}"
 WORKFLOW="${2:-.github/workflows/release.yml}"
 
 refuse() {
-    echo "::error title=The release walkthrough cannot be judged::$*" >&2
-    exit 2
+
+    GATE_TITLE='The release walkthrough cannot be judged' gate_refuse "$*"
+
 }
 
 [ -f "$RUNBOOK" ]  || refuse "no runbook at '$RUNBOOK'."

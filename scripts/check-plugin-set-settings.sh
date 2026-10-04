@@ -39,6 +39,8 @@
 # widen. This gate answers "does it exist anywhere", which is exactly
 # the question the daemon's error asks.
 set -u
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 cd "$(dirname "$0")/.." || exit 2
 

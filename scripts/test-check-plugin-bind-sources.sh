@@ -22,7 +22,7 @@ mkws() {
     local ws
     guarded_tmpdir ws
     mkdir -p "$ws/scripts" "$ws/.github/workflows"
-    cp "$REPO/$GATE" "$REPO/scripts/workflow-shell-lines.sh" "$ws/scripts/"
+    cp "$REPO/$GATE" "$REPO/scripts/workflow-shell-lines.sh" "$REPO/scripts/gatelib.sh" "$ws/scripts/"
     cp "$REPO/Makefile" "$REPO/config.json" "$REPO/config-cover.json" "$ws/"
     # BOTH extensions, or this suite reproduces the very narrowing it is
     # here to catch: a workspace built from `*.yml` alone cannot tell a
