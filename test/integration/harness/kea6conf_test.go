@@ -104,6 +104,19 @@ func TestKea6Config_CallerTimersAndPDPoolAreRendered(t *testing.T) {
 	}
 }
 
+func TestKea6Config_ACallerPDPoolReplacesTheDefault(t *testing.T) {
+	c := baseKea6()
+	WithKea6PD()(&c)
+	WithKea6PDPool(Kea6PDPool{Prefix: "fd00:99::", PoolLen: 48, DelegatedLen: 56})(&c)
+	pd := parseKea6(t, c).Dhcp6.Subnets[0].PDPools
+	if len(pd) != 1 || pd[0].Prefix != "fd00:99::" || pd[0].PrefixLen != 48 || pd[0].DelegatedLen != 56 {
+		t.Fatalf("pd-pools = %+v, want the one fd00:99::/48 pool delegated as /56", pd)
+	}
+	if DefaultKea6PD().Prefix != Kea6PDPrefix {
+		t.Errorf("the default pool was changed through the option: %+v", DefaultKea6PD())
+	}
+}
+
 func TestKea6Config_AnUnsetTimerIsTheDefaultNotZero(t *testing.T) {
 	c := baseKea6()
 	WithKea6Timers(0, 0)(&c)

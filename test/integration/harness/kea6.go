@@ -187,6 +187,8 @@ func (k *Kea6Fixture) start(keaPath string, conf kea6Confinement) {
 	}
 	defer logF.Close()
 
+	// The log files append across a Restart, so readiness is a DHCP6_STARTED line beyond those already written.
+	startedBefore := strings.Count(k.readLog(), "DHCP6_STARTED")
 	k.startedAt = time.Now()
 	k.cmd = withCLocale(exec.Command("ip", "netns", "exec", Kea6Netns, keaPath, "-c", k.confFile))
 	k.cmd.Env = append(k.cmd.Env, "KEA_PIDFILE_DIR="+Kea6PidDir, "KEA_LOCKFILE_DIR="+Kea6LockDir)
@@ -202,7 +204,7 @@ func (k *Kea6Fixture) start(keaPath string, conf kea6Confinement) {
 		if why := Kea6SocketFailure(window); why != "" {
 			k.t.Fatalf("kea6 started but opened no DHCPv6 socket (%s).\nconfig:\n%s\nlog:\n%s", why, k.rendered, window)
 		}
-		if strings.Contains(window, "DHCP6_STARTED") && k.listensOn547() {
+		if strings.Count(window, "DHCP6_STARTED") > startedBefore && k.listensOn547() {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -267,6 +269,23 @@ func (k *Kea6Fixture) Stop() {
 		<-done
 	}
 	k.cmd = nil
+}
+
+// Restart stops the server, applies opts to its configuration and starts it again on the same lease file and server
+// DUID, as an operator's reconfiguration would.
+func (k *Kea6Fixture) Restart(opts ...Kea6Option) {
+	k.t.Helper()
+	k.Stop()
+	for _, o := range opts {
+		o(&k.cfg)
+	}
+	k.rendered = k.cfg.JSON()
+	if err := os.WriteFile(k.confFile, []byte(k.rendered), 0o644); err != nil {
+		k.t.Fatalf("write %s: %v", k.confFile, err)
+	}
+	conf := kea6ConfinementEvidence()
+	k.t.Logf("kea6 restart: pd=%+v timers=%v %s", k.cfg.PD, timersOf(k.cfg), conf)
+	k.start(requireKea6(k.t), conf)
 }
 
 func (k *Kea6Fixture) teardown() {

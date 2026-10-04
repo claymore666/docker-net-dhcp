@@ -100,6 +100,8 @@ type Kea6Option func(*Kea6Config)
 
 func WithKea6PD() Kea6Option { return func(c *Kea6Config) { c.PD = DefaultKea6PD() } }
 
+func WithKea6PDPool(p Kea6PDPool) Kea6Option { return func(c *Kea6Config) { c.PD = &p } }
+
 func WithKea6Timers(renew, rebind int) Kea6Option {
 	return func(c *Kea6Config) { c.RenewSec, c.RebindSec = renew, rebind }
 }
