@@ -78,6 +78,8 @@
 #                                the ref parsing below is the real one
 # Exit:  0 every name resolves, 1 at least one does not, 2 cannot judge
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(dirname "$HERE")"

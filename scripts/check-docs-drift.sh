@@ -59,6 +59,8 @@
 #
 # Exit: 0 clean, 1 drift found, 2 cannot check (bad usage/inputs).
 set -u
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 PKG_DIR="${1:-pkg/plugin}"
 DOCS_DIR="${2:-docs}"

@@ -41,6 +41,8 @@
 #
 # Exit: 0 clean, 1 a file is missing the header, 2 cannot check.
 set -u
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 MODE="check"
 case "${1:-}" in

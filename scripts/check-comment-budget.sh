@@ -14,6 +14,8 @@
 #        check-comment-budget.sh --whole <rev> [<path>...]
 # Exit:  0 clean or no range to judge, 1 fail, 2 cannot check.
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=scripts/tmpdir-guard.sh

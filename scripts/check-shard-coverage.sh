@@ -76,6 +76,8 @@
 # 2 refused (the gate could not see its subject -- never silent).
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 # Pinned for the whole script, not per command (#554). Every comparison
 # below -- sort, uniq, comm, and the regex classes -- has to agree about

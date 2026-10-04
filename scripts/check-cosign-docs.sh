@@ -27,6 +27,8 @@
 #   bash scripts/check-cosign-docs.sh
 #   DOCS_ROOT=path TOOLING_SCRIPT=path bash scripts/check-cosign-docs.sh
 set -u
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 ROOT="${DOCS_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 TOOLING="${TOOLING_SCRIPT:-$ROOT/scripts/check-release-tooling.sh}"

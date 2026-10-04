@@ -62,6 +62,8 @@
 #        to no target, or a target is not smoked; 2 cannot see.
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 WORKFLOW="${FUZZ_WORKFLOW:-.github/workflows/test.yaml}"
 LANE="${FUZZ_LANE:-scripts/local-lane.sh}"

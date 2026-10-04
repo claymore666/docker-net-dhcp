@@ -13,6 +13,8 @@
 # Exit: 0 every documented option has a valid line, 1 one has not, 2 cannot check.
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 cd "$(dirname "$0")/.." || exit 2
 

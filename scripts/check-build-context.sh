@@ -42,6 +42,8 @@
 # Requires: docker.
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 CONTEXT_DIR="${CONTEXT_DIR:-${1:-.}}"
 

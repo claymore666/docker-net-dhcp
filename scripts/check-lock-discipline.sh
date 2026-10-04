@@ -48,6 +48,8 @@
 # Usage: check-lock-discipline.sh [<dir>]
 # Exit: 0 clean, 1 violation, 2 cannot check.
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 cd "$(dirname "$0")/.." || exit 2
 DIR="${1:-pkg/plugin}"

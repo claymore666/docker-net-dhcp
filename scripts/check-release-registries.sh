@@ -55,6 +55,8 @@
 #       1 the canonical repository is about to publish to GHCR alone
 #       2 cannot judge (an input missing, or not the shape expected)
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 CANONICAL_REPO="${CANONICAL_REPO:-claymore666/docker-net-dhcp}"
 

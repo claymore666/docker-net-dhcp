@@ -26,6 +26,8 @@
 # Requires: docker, awk, sed.
 
 set -euo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 DOCKERFILE="${DOCKERFILE:-Dockerfile}"
 STRICT=0

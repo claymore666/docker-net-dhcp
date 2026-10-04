@@ -17,6 +17,8 @@
 # Usage: check-option-docs.sh [<go-package-dir>] [<reference-doc>]
 #   defaults: pkg/plugin docs/reference.md (run from the repo root)
 set -u
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 PKG_DIR="${1:-pkg/plugin}"
 DOC="${2:-docs/reference.md}"

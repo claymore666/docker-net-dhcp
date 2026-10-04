@@ -57,6 +57,8 @@
 # NOT fail-open. This exists because a silence was read as health; an
 # unreadable API is reported, never treated as clean.
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 SHA="${1:-}"
 WAIT_MIN="${2:-75}"

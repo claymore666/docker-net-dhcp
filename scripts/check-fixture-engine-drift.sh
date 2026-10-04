@@ -41,6 +41,8 @@
 # With no daemon answering it reports NOT INSPECTED rather than a pass —
 # an absent check is not a green check.
 set -euo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 FIXTURE_ROOT="${FIXTURE_ROOT:-pkg/plugin/testdata/requests}"
 

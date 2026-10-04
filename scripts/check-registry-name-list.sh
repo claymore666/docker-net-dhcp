@@ -53,6 +53,8 @@
 #        1 a rebinding, a stray literal, or a Hub name a consumer misses
 #        2 CANNOT JUDGE -- the workflow is unreadable or the list is empty
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 WORKFLOW="${1:-.github/workflows/release.yml}"
 

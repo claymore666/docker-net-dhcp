@@ -90,6 +90,8 @@
 #          read, a value this gate cannot judge, or an empty population)
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 WF_DIR="${1:-.github/workflows}"
 MAKEFILE="${2:-Makefile}"

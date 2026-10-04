@@ -48,6 +48,8 @@
 # Exit 0 pass, 1 the fixture is index-coupled, 2 cannot judge.
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 ROOT="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 SRC="$ROOT/pkg/plugin/endpoints.go"

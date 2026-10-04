@@ -85,6 +85,8 @@
 # Exit: 0 clean, 1 a rule is broken, 2 cannot check (bad usage/inputs/API).
 
 set -u
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 MODE="${1:---static}"
 case "$MODE" in

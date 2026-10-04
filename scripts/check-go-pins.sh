@@ -37,6 +37,8 @@
 #
 # Usage: check-go-pins.sh [<repo-root>]   (defaults to the repo root)
 set -u
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 root="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 cd "$root" || { echo "cannot enter $root" >&2; exit 2; }

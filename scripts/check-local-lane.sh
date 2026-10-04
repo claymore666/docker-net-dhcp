@@ -66,6 +66,8 @@
 # Usage: check-local-lane.sh [<workflow>] [<lane script>] [<scripts dir>]
 # Exit: 0 in sync, 1 drift, 2 cannot check.
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 cd "$(dirname "$0")/.." || exit 2
 

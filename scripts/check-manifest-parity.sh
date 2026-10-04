@@ -15,6 +15,8 @@
 # expected and NOT compared. Usage:
 #   scripts/check-manifest-parity.sh [config.json] [config-cover.json]
 set -euo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 MAIN="${1:-config.json}"
 COVER="${2:-config-cover.json}"

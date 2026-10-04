@@ -59,6 +59,8 @@
 #         between this and a silent pass
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 REPO="${REPO:-}"
 GHCR_DIGEST="${GHCR_DIGEST:-}"

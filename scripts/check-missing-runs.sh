@@ -82,6 +82,8 @@
 # a detector that goes quiet when it cannot read would reproduce the
 # very bug it looks for.
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 GRACE_MIN="${1:-20}"
 

@@ -51,6 +51,8 @@
 # Usage: check-proc-path-discipline.sh [<tree>]
 # Exit: 0 clean, 1 violation, 2 cannot check.
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 cd "$(dirname "$0")/.." || exit 2
 cd "${1:-.}" || exit 2

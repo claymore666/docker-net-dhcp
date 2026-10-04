@@ -32,6 +32,8 @@
 # Usage: check-version-pins.sh [<file>...]
 #   defaults: README.md docs/*.md (run from the repo root)
 set -u
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 IMAGE="ghcr.io/claymore666/docker-net-dhcp"
 

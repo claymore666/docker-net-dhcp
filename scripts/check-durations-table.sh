@@ -77,6 +77,8 @@
 #          it must not read as a table with nothing wrong with it.
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 # Same reason as integration-shard.sh (#554): the sort and the numeric
 # parse below must not depend on who runs this.
