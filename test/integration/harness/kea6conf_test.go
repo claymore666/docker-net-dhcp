@@ -361,3 +361,47 @@ func TestKea6SocketFailure(t *testing.T) {
 		}
 	}
 }
+
+// A config with no vendor options is the one every other Kea test already runs on: no option-data key at all (#1203).
+func TestKea6Config_NoVendorOptionsRendersNoOptionData(t *testing.T) {
+	if got := baseKea6().JSON(); strings.Contains(got, "option-data") {
+		t.Errorf("a default Kea config carries option-data, which every other Kea test would now run with:\n%s", got)
+	}
+}
+
+// The shape keaOptionData documents, one vendor-opts entry and one sub-option entry per enterprise (#1203).
+func TestKea6Config_VendorOptionsRenderOneOption17InstancePerEnterprise(t *testing.T) {
+	c := baseKea6()
+	WithKea6VendorOpts(
+		Kea6VendorOpt{Enterprise: 9, SubCode: 1, SubData: []byte{0x00, 0xaa}},
+		Kea6VendorOpt{Enterprise: 3561, SubCode: 2, SubData: []byte{0xbb, 0xcc}},
+	)(&c)
+	var p struct {
+		Dhcp6 struct {
+			Options []map[string]any `json:"option-data"`
+		}
+	}
+	if err := json.Unmarshal([]byte(c.JSON()), &p); err != nil {
+		t.Fatalf("the rendered configuration is not JSON: %v", err)
+	}
+	want := []map[string]any{
+		{"name": "vendor-opts", "data": "9", "always-send": true},
+		{"space": "vendor-9", "code": float64(1), "data": "00AA", "csv-format": false, "always-send": true},
+		{"name": "vendor-opts", "data": "3561", "always-send": true},
+		{"space": "vendor-3561", "code": float64(2), "data": "BBCC", "csv-format": false, "always-send": true},
+	}
+	if len(p.Dhcp6.Options) != len(want) {
+		t.Fatalf("option-data = %v, want %v", p.Dhcp6.Options, want)
+	}
+	for i := range want {
+		if len(p.Dhcp6.Options[i]) != len(want[i]) {
+			t.Errorf("option-data[%d] = %v, want %v", i, p.Dhcp6.Options[i], want[i])
+			continue
+		}
+		for k, v := range want[i] {
+			if p.Dhcp6.Options[i][k] != v {
+				t.Errorf("option-data[%d][%q] = %v, want %v", i, k, p.Dhcp6.Options[i][k], v)
+			}
+		}
+	}
+}

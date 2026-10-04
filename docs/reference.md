@@ -1481,9 +1481,10 @@ in every mode:
 #### Options captured from the server
 
 Everything the server returns is captured. Some is applied, most of the rest
-is logged; DHCPv6 option 17 is captured but not logged yet. The
-vendor-specific options 43 and 125 are logged but never applied
-([#1034](https://github.com/claymore666/docker-net-dhcp/issues/1034)):
+is logged. The vendor-specific options 43 and 125, and DHCPv6 option 17, are
+logged but never applied
+([#1034](https://github.com/claymore666/docker-net-dhcp/issues/1034),
+[#1203](https://github.com/claymore666/docker-net-dhcp/issues/1203)):
 
 **Applied**, when the matching option is enabled: option 6 (DNS servers)
 and option 119 (search list, falling back to option 15) into
@@ -1505,10 +1506,9 @@ the first event, and the next Reply's own options replace them.
 The plugin logs the timezone options 41 and 42 and the NTP Server option
 56, as described below
 ([#1033](https://github.com/claymore666/docker-net-dhcp/issues/1033),
-[#859](https://github.com/claymore666/docker-net-dhcp/issues/859)); it
-does not read or log option 17 yet
-([#1203](https://github.com/claymore666/docker-net-dhcp/issues/1203)).
-The DHCPv4 vendor options 43 and 125 are logged, as described below.
+[#859](https://github.com/claymore666/docker-net-dhcp/issues/859)). The
+vendor options, DHCPv4 43 and 125 and DHCPv6 17, are logged as described
+below.
 
 **Logged** at info level on every bind and renew, and only when at least
 one is present, so plain LANs get no extra noise: option 42 (NTP; 56 on
@@ -1534,16 +1534,24 @@ dnsmasq's `dhcp-option=option6:ntp-server,[a],[b]` packs both sources into
 one instance, which RFC 5908 does not allow and which is not read today:
 `ntp` is absent and the warning is logged.
 
-The vendor-specific options of DHCPv4 are logged the same way, hex-encoded
-and never interpreted ([#1034](https://github.com/claymore666/docker-net-dhcp/issues/1034)):
-option 43 (RFC 2132 section 8.4) as `vendor_43`, and option 125 (RFC 3925
-section 4) as `vendor_125`, one `enterprise-number:hex` entry per
-enterprise in the order they arrived. An option 43 of zero octets and a
-malformed option 125 are left out.
+The vendor-specific options are logged the same way, hex-encoded
+and never interpreted ([#1034](https://github.com/claymore666/docker-net-dhcp/issues/1034),
+[#1203](https://github.com/claymore666/docker-net-dhcp/issues/1203)):
+DHCPv4 option 43 (RFC 2132 section 8.4) as `vendor_43`, DHCPv4 option 125
+(RFC 3925 section 4) as `vendor_125`, and DHCPv6 option 17 (RFC 8415 section
+21.17) as `vendor_17`. The last two are one `enterprise-number:hex` entry per
+enterprise in the order they arrived; for option 17 that is one entry per
+instance of the option, and the hex is the instance's encapsulated
+sub-options. An option 43 of zero octets and a malformed option 125 are left
+out. An instance of option 17 shorter than the four octets of its enterprise
+number leaves the whole option out, the well-formed instances included,
+because the client library returns no list beside the error.
 
 ```text
 level=info msg="DHCP options received" vendor_43=0104c0a86301
   vendor_125="[9:aabb 3561:]" ...
+level=info msg="DHCP options received" is_ipv6=true
+  vendor_17="[9:00010002aabb 3561:]" ...
 ```
 
 These are not auto-applied because the consuming application owns those

@@ -157,6 +157,7 @@ func TestLogObservedOptions_SilentUnlessSomethingWasObserved(t *testing.T) {
 		{"time offset", dhcp.Info{TimeOffset: "3600"}, "time_offset"},
 		{"vendor option 43", dhcp.Info{VendorSpecific: "0104c0a86301"}, "vendor_43"},
 		{"vendor option 125", dhcp.Info{VendorIdentifying: []dhcp.VendorBlock{{Enterprise: 9, Data: "aabb"}}}, "vendor_125"},
+		{"vendor option 17", dhcp.Info{VendorInformation: []dhcp.VendorBlock{{Enterprise: 9, Data: "00010002"}}}, "vendor_17"},
 	} {
 		t.Run(tc.name+" alone triggers the line and is named in it", func(t *testing.T) {
 			out := captureLog(t, func() {
@@ -179,7 +180,7 @@ func TestLogObservedOptions_AnotherOptionsLineCarriesNoVendorField(t *testing.T)
 	if !strings.Contains(out, "DHCP options received") {
 		t.Fatalf("logged %q, want the observed-options line", out)
 	}
-	for _, key := range []string{"vendor_43", "vendor_125"} {
+	for _, key := range []string{"vendor_43", "vendor_125", "vendor_17"} {
 		if strings.Contains(out, key) {
 			t.Errorf("logged %q, want no %s on a lease that carried no such option", out, key)
 		}
@@ -201,6 +202,29 @@ func TestLogObservedOptions_NamesTheVendorBlobsByOption(t *testing.T) {
 	}
 	if !strings.Contains(out, `vendor_125="[9:aabb 3561:]"`) {
 		t.Errorf("logged %q, want vendor_125 with both blocks in wire order", out)
+	}
+	if strings.Count(strings.TrimRight(out, "\n"), "\n") != 0 {
+		t.Errorf("one observation logged as several lines: %q", out)
+	}
+}
+
+func TestLogObservedOptions_NamesOption17BlocksByEnterpriseInWireOrder(t *testing.T) {
+	out := captureLog(t, func() {
+		(&dhcpManager{}).logObservedOptions(true, dhcp.Info{
+			VendorInformation: []dhcp.VendorBlock{
+				{Enterprise: 9, Data: "00010002aabb"},
+				{Enterprise: 3561, Data: ""},
+				{Enterprise: 66051, Data: "cc"},
+			},
+		})
+	})
+	if !strings.Contains(out, `vendor_17="[9:00010002aabb 3561: 66051:cc]"`) {
+		t.Errorf("logged %q, want vendor_17 with all three instances in wire order", out)
+	}
+	for _, key := range []string{"vendor_43", "vendor_125"} {
+		if strings.Contains(out, key) {
+			t.Errorf("logged %q, want no %s on a lease that carried only option 17", out, key)
+		}
 	}
 	if strings.Count(strings.TrimRight(out, "\n"), "\n") != 0 {
 		t.Errorf("one observation logged as several lines: %q", out)

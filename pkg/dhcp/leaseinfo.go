@@ -110,6 +110,7 @@ func fillV6Observed(info *Info, o wire.OptionsV6, server []byte) {
 	if len(info.NTPServers) == 0 {
 		info.NTPServers = ntpServersV6(o, server)
 	}
+	fillVendorOptions6(info, o)
 }
 
 // ntpServersV6 is every option 56 instance (RFC 5908 section 4) as one string, in wire order: an address as its text,
@@ -186,6 +187,21 @@ func fillVendorOptions(info *Info, o wire.Options) {
 	}
 	for _, b := range blocks {
 		info.VendorIdentifying = append(info.VendorIdentifying, VendorBlock{
+			Enterprise: b.Enterprise,
+			Data:       hex.EncodeToString(b.Data),
+		})
+	}
+}
+
+// fillVendorOptions6 records each instance of DHCPv6 option 17 (RFC 8415 section 21.17), as fillVendorOptions does 125;
+// an instance under four octets leaves the whole option out (#1203).
+func fillVendorOptions6(info *Info, o wire.OptionsV6) {
+	blocks, err := o.VendorOpts()
+	if err != nil {
+		return
+	}
+	for _, b := range blocks {
+		info.VendorInformation = append(info.VendorInformation, VendorBlock{
 			Enterprise: b.Enterprise,
 			Data:       hex.EncodeToString(b.Data),
 		})
