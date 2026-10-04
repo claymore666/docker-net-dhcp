@@ -5,6 +5,7 @@ package dhcp
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -20,6 +21,8 @@ import (
 	"github.com/claymore666/dhcp-golib/lease"
 	"github.com/claymore666/dhcp-golib/proto"
 	dhcpruntime "github.com/claymore666/dhcp-golib/runtime"
+	log "github.com/sirupsen/logrus"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 	"golang.org/x/sys/unix"
 )
 
@@ -1134,4 +1137,545 @@ func TestRecords_ARecordIsAgedFromItsLastLineNotItsFirst(t *testing.T) {
 	if _, ok := rb.ByID("long-lived"); !ok {
 		t.Error("a record created 3 h ago and closed 55 s ago was dropped; the retention is counted from its last line")
 	}
+}
+
+// renewingRecord is joinedRecord with n renewals, each carrying a later expiry so the newest line is the only one
+// that answers Resume (#1192).
+func renewingRecord(t *testing.T, r *Records, id string, mac net.HardwareAddr, base time.Time, n int) lease.Lease {
+	t.Helper()
+	ls := compactLease(base)
+	mustRecord(t, r.Created(id, "net-c", mac, []byte{1, 2, 3, 4, 5, 6, 7}))
+	mustRecord(t, r.Observed(id, lease.Event{Kind: lease.Acquired, Lease: ls}, nil))
+	mustRecord(t, r.Counted(id, r.NewManagerID(), lease.Stats{}))
+	mustRecord(t, r.Bound(id))
+	mustRecord(t, r.Observed(id, lease.Event{Kind: lease.Acquired, Lease: ls}, nil))
+	for i := 1; i <= n; i++ {
+		ls = compactLease(base.Add(time.Duration(i) * time.Minute))
+		mustRecord(t, r.Observed(id, lease.Event{Kind: lease.Renewed, Lease: ls}, nil))
+	}
+	mustRecord(t, r.Counted(id, r.NewManagerID(), lease.Stats{}))
+	return ls
+}
+
+func foldedBy(t *testing.T, path string, now time.Time) int {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, folded := keptLines(b, now, compactRetain)
+	return folded
+}
+
+func recordOf(t *testing.T, r *Records, id string) lease.Record {
+	t.Helper()
+	rb, err := r.Rebuilt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, ok := rb.ByID(id)
+	if !ok {
+		t.Fatalf("record %s is not in the fold", id)
+	}
+	return rec
+}
+
+// sameButCounters asserts the folds differ by exactly the folded counters and are equal once given back (#1192).
+func sameButCounters(t *testing.T, before, after lease.Record, renewed, changed uint64) {
+	t.Helper()
+	if got := before.Counters.Renewals - after.Counters.Renewals; got != renewed {
+		t.Errorf("Counters.Renewals fell by %d, want the %d folded renewals", got, renewed)
+	}
+	if got := before.Counters.Changes - after.Counters.Changes; got != changed {
+		t.Errorf("Counters.Changes fell by %d, want the %d folded changes", got, changed)
+	}
+	after.Counters.Renewals += renewed
+	after.Counters.Changes += changed
+	if !reflect.DeepEqual(before, after) {
+		t.Errorf("the thinned fold differs beyond the counters in %v", differingFields(before, after))
+	}
+}
+
+func differingFields(a, b lease.Record) []string {
+	var out []string
+	va, vb := reflect.ValueOf(a), reflect.ValueOf(b)
+	for i := 0; i < va.NumField(); i++ {
+		if fmt.Sprintf("%+v", va.Field(i)) != fmt.Sprintf("%+v", vb.Field(i)) {
+			out = append(out, va.Type().Field(i).Name)
+		}
+	}
+	return out
+}
+
+func TestRecords_ARenewingRecordStopsGrowingAtCompaction(t *testing.T) {
+	now := time.Now()
+	sizes := map[int]int64{}
+	for _, n := range []int{100, 1000} {
+		t.Run(fmt.Sprintf("renewals-%d", n), func(t *testing.T) {
+			r, path := testRecords(t)
+			want := renewingRecord(t, r, "live-1", compactMAC, now.Add(time.Hour), n)
+			beforeSize := fileSize(t, path)
+			beforeRec := recordOf(t, r, "live-1")
+			_, resBefore, _ := r.Resume("net-c", compactMAC, now)
+			maxSeq := beforeRec.Seq
+			if got := foldedBy(t, path, now); got != n-1 {
+				t.Errorf("the compaction folds %d lines, want the %d superseded renewals", got, n-1)
+			}
+
+			if err := compactNow(t, r, now); err != nil {
+				t.Fatalf("compaction: %v", err)
+			}
+			after := fileSize(t, path)
+			sizes[n] = after
+			t.Logf("N=%d: %d B before, %d B after, %d lines folded", n, beforeSize, after, n-1)
+
+			_, resAfter, ok := r.Resume("net-c", compactMAC, now)
+			if !ok || !reflect.DeepEqual(resBefore, resAfter) {
+				t.Errorf("Resume after compaction = %+v (found %v), want the identical %+v", resAfter, ok, resBefore)
+			}
+			if resAfter.Lease == nil || !resAfter.Lease.Expire.Equal(want.Expire) {
+				t.Errorf("Resume carries lease %+v, want the newest renewal's expiry %v", resAfter.Lease, want.Expire)
+			}
+			sameButCounters(t, beforeRec, recordOf(t, r, "live-1"), uint64(n-1), 0)
+
+			mustRecord(t, r.Counted("live-1", r.NewManagerID(), lease.Stats{}))
+			if got := recordOf(t, r, "live-1").Seq; got != maxSeq+1 {
+				t.Errorf("the next append has seq %d, want the old maximum %d plus one", got, maxSeq)
+			}
+		})
+	}
+	// Only sequence digits and trimmed timestamp digits differ, bytes against the 510 KB 900 renewals add (#1192).
+	if d := sizes[1000] - sizes[100]; d < -32 || d > 32 {
+		t.Errorf("the compacted file is %d B at 100 renewals and %d B at 1000: it still grows per renewal",
+			sizes[100], sizes[1000])
+	}
+}
+
+func TestRecords_TheParamsSnapshotSurvivesThinning(t *testing.T) {
+	now := time.Now()
+	r, path := testRecords(t)
+	params := proto.Params{CHAddr: compactMAC, Hostname: "thin"}
+	ls := compactLease(now.Add(time.Hour))
+	mustRecord(t, r.Created("live-1", "net-c", compactMAC, []byte{1, 2, 3, 4, 5, 6, 7}))
+	mustRecord(t, r.Observed("live-1", lease.Event{Kind: lease.Renewed, Lease: ls}, &params))
+	for i := 0; i < 5; i++ {
+		mustRecord(t, r.Observed("live-1", lease.Event{Kind: lease.Renewed, Lease: ls}, nil))
+	}
+	mustRecord(t, r.Bound("live-1"))
+	before := recordOf(t, r, "live-1")
+	if before.Params == nil {
+		t.Fatal("the fixture's first line did not leave a Params snapshot")
+	}
+	if got := foldedBy(t, path, now); got != 4 {
+		t.Fatalf("the compaction folds %d lines, want the 4 renewals after the Params line", got)
+	}
+
+	if err := compactNow(t, r, now); err != nil {
+		t.Fatal(err)
+	}
+	after := recordOf(t, r, "live-1")
+	if !reflect.DeepEqual(before.Params, after.Params) {
+		t.Errorf("Params after compaction = %+v, want %+v", after.Params, before.Params)
+	}
+	sameButCounters(t, before, after, 4, 0)
+}
+
+func TestRecords_ARunBrokenByOtherLinesKeepsWhatIsNotSuperseded(t *testing.T) {
+	now := time.Now()
+	r, path := testRecords(t)
+	ls := compactLease(now.Add(time.Hour))
+	id := "live-1"
+	renew := func(k lease.EventKind, n int) {
+		for i := 0; i < n; i++ {
+			mustRecord(t, r.Observed(id, lease.Event{Kind: k, Lease: ls}, nil))
+		}
+	}
+	mustRecord(t, r.Created(id, "net-c", compactMAC, []byte{1, 2, 3, 4, 5, 6, 7}))
+	mustRecord(t, r.Bound(id))
+	renew(lease.Acquired, 1)
+	renew(lease.Renewed, 3) // all 3 folded, the third is followed by a Changed
+	renew(lease.Changed, 2) // 1 folded, the second is followed by a Lost
+	mustRecord(t, r.Observed(id, lease.Event{Kind: lease.Lost, Reason: proto.ReasonStopped}, nil))
+	renew(lease.Renewed, 2) // 1 folded, the second is followed by a Counted
+	mustRecord(t, r.Counted(id, r.NewManagerID(), lease.Stats{}))
+	renew(lease.Renewed, 1) // the last line of its run is followed by a Left
+	mustRecord(t, r.Left(id))
+	before := recordOf(t, r, id)
+	beforeLines := countLines(t, path)
+
+	if got := foldedBy(t, path, now); got != 5 {
+		t.Errorf("the compaction folds %d lines, want 5 (3 renewals, 1 change, 1 renewal)", got)
+	}
+	if err := compactNow(t, r, now); err != nil {
+		t.Fatal(err)
+	}
+	if got := countLines(t, path); got != beforeLines-5 {
+		t.Errorf("the file holds %d lines, want %d: only the superseded ones may go", got, beforeLines-5)
+	}
+	sameButCounters(t, before, recordOf(t, r, id), 4, 1)
+
+	// Retained, then rebound: the thinned record still takes both ops.
+	mustRecord(t, r.Retained(id, now.Add(time.Minute)))
+	mustRecord(t, r.Rebound(id, compactMAC))
+	rb, err := r.Rebuilt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rb.Rejects) != 0 {
+		t.Errorf("the thinned record refuses later lines: %+v", rb.Rejects)
+	}
+	if rec, _ := rb.ByID(id); rec.Phase != lease.PhaseCreated {
+		t.Errorf("phase after retain and rebind = %v, want CREATED", rec.Phase)
+	}
+}
+
+func countLines(t *testing.T, path string) int {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bytes.Count(b, []byte("\n"))
+}
+
+func TestRecords_ARenewalTheFoldRefusedIsNeverDropped(t *testing.T) {
+	now := time.Now()
+	r, path := testRecords(t)
+	ls := compactLease(now.Add(time.Hour))
+	id := "live-1"
+	mustRecord(t, r.Created(id, "net-c", compactMAC, []byte{1, 2, 3, 4, 5, 6, 7}))
+	mustRecord(t, r.Observed(id, lease.Event{Kind: lease.Acquired, Lease: ls}, nil))
+	mustRecord(t, r.Bound(id))
+	mustRecord(t, r.Left(id))
+	mustRecord(t, r.Retained(id, now.Add(time.Hour)))
+	// Written to a RETAINED record: the fold refuses each, and a refused line is part of Counters.Rejects.
+	mustRecord(t, r.Observed(id, lease.Event{Kind: lease.Renewed, Lease: ls}, nil))
+	mustRecord(t, r.Observed(id, lease.Event{Kind: lease.Renewed, Lease: ls}, nil))
+	before, err := r.Rebuilt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before.Rejects) != 2 {
+		t.Fatalf("the fixture drew %d rejects, want 2", len(before.Rejects))
+	}
+	if got := foldedBy(t, path, now); got != 0 {
+		t.Errorf("the compaction folds %d lines, want 0: both renewals were refused", got)
+	}
+
+	if err := compactNow(t, r, now); err != nil {
+		t.Fatal(err)
+	}
+	after, err := r.Rebuilt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before.Rejects, after.Rejects) {
+		t.Errorf("Rejects changed: before %+v, after %+v", before.Rejects, after.Rejects)
+	}
+	if !reflect.DeepEqual(before.Records, after.Records) {
+		t.Errorf("the fold changed: before %+v, after %+v", before.Records, after.Records)
+	}
+}
+
+func TestRecords_AV6RecordThinsAndResumesTheSame(t *testing.T) {
+	now := time.Now()
+	r, path := testRecords(t)
+	const network = "net-1"
+	mac := []byte{0x02, 0x42, 0xac, 0x11, 0x00, 0x02}
+	id6 := testIdentity6(t, "02:42:ac:11:00:02")
+	key := bytes.Repeat([]byte{0x7c}, 16)
+	held := func(i int) lease.Lease {
+		return lease.Lease{
+			Addr:                  netip.MustParsePrefix("2001:db8::5/128"),
+			Addrs:                 []lease.Addr6{{Addr: netip.MustParsePrefix("2001:db8::5/128"), Preferred: now.Add(time.Hour), Valid: now.Add(2 * time.Hour)}},
+			Acquired:              now,
+			Renew:                 now.Add(30 * time.Minute),
+			Expire:                now.Add(2*time.Hour + time.Duration(i)*time.Minute),
+			ServerDUID:            []byte{0, 3, 0, 1, 2, 2, 2, 2, 2, 2},
+			ReconfigureKey:        key,
+			ReconfigureReplaySeen: true,
+		}
+	}
+	const n = 50
+	mustRecord(t, r.Created6("ep-v6", network, mac, id6.Bytes()))
+	mustRecord(t, r.Bound("ep-v6"))
+	mustRecord(t, r.Observed("ep-v6", lease.Event{Kind: lease.Acquired, Lease: held(0), Family: lease.FamilyV6}, nil))
+	for i := 1; i <= n; i++ {
+		mustRecord(t, r.Observed("ep-v6", lease.Event{Kind: lease.Renewed, Lease: held(i), Family: lease.FamilyV6}, nil))
+	}
+	mustRecord(t, r.Counted("ep-v6", r.NewManagerID(), lease.Stats{}))
+	beforeID, beforeRes, beforeIdent, ok := r.Resume6(network, mac, now)
+	if !ok {
+		t.Fatal("the fixture does not resume")
+	}
+	if got := foldedBy(t, path, now); got != n-1 {
+		t.Errorf("the compaction folds %d lines, want %d: a v6 renewal carries only its family", got, n-1)
+	}
+
+	if err := compactNow(t, r, now); err != nil {
+		t.Fatal(err)
+	}
+	gotID, gotRes, gotIdent, ok := r.Resume6(network, mac, now)
+	if !ok || gotID != beforeID || !reflect.DeepEqual(gotRes, beforeRes) || !reflect.DeepEqual(gotIdent, beforeIdent) {
+		t.Errorf("Resume6 after compaction = (%q, %+v, %+v, %v), want (%q, %+v, %+v)",
+			gotID, gotRes, gotIdent, ok, beforeID, beforeRes, beforeIdent)
+	}
+}
+
+func TestRecords_TheSelfCheckKeepsARecordWholeWhenTheRuleIsWrong(t *testing.T) {
+	now := time.Now()
+	r, path := testRecords(t)
+	params := proto.Params{CHAddr: compactMAC, Hostname: "thin"}
+	ls := compactLease(now.Add(time.Hour))
+	mustRecord(t, r.Created("live-1", "net-c", compactMAC, []byte{1, 2, 3, 4, 5, 6, 7}))
+	mustRecord(t, r.Observed("live-1", lease.Event{Kind: lease.Renewed, Lease: ls}, &params))
+	for i := 0; i < 5; i++ {
+		mustRecord(t, r.Observed("live-1", lease.Event{Kind: lease.Renewed, Lease: ls}, nil))
+	}
+	mustRecord(t, r.Bound("live-1"))
+	// A second record the wrong rule does not touch, to show the check is per record.
+	renewingRecord(t, r, "live-2", uniqueMAC(2), now.Add(time.Hour), 6)
+	before, err := r.Rebuilt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := countLines(t, path)
+
+	old := droppableLine
+	t.Cleanup(func() { droppableLine = old })
+	droppableLine = func(_ lease.Record, ev lease.RecordEvent) bool { return ev.Op == lease.OpLease }
+	hook := logtest.NewLocal(log.StandardLogger())
+	t.Cleanup(hook.Reset)
+
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _, folded := keptLines(b, now, compactRetain)
+	if got := bytes.Count(out, []byte("\n")); got != lines-folded {
+		t.Fatalf("the output has %d lines, want %d", got, lines-folded)
+	}
+	if err := compactNow(t, r, now); err != nil {
+		t.Fatal(err)
+	}
+	after, err := r.Rebuilt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	live1, _ := after.ByID("live-1")
+	wantLive1, _ := before.ByID("live-1")
+	if !reflect.DeepEqual(live1, wantLive1) {
+		t.Errorf("live-1 changed under a wrong rule: before %+v, after %+v", wantLive1, live1)
+	}
+	if live1.Params == nil {
+		t.Error("live-1 lost its Params snapshot: the self-check let a wrong rule through")
+	}
+	var warned bool
+	for _, e := range hook.AllEntries() {
+		if e.Level == log.WarnLevel && strings.Contains(fmt.Sprint(e.Data["records"]), "live-1") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Error("no warning named the record the self-check kept whole")
+	}
+}
+
+func TestRecords_AThinnedFileFoldsWithNoRejectAndTheSameRecords(t *testing.T) {
+	now := time.Now()
+	r, path := testRecords(t)
+	renewingRecord(t, r, "live-1", compactMAC, now.Add(time.Hour), 40)
+	renewingRecord(t, r, "live-2", uniqueMAC(2), now.Add(time.Hour), 40)
+	before, err := r.Rebuilt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := compactNow(t, r, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	fresh, err := OpenRecords(path, "instance-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = fresh.Close() })
+	rb, err := fresh.Rebuilt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rb.Records) != len(before.Records) {
+		t.Errorf("the thinned file folds to %d records, want %d", len(rb.Records), len(before.Records))
+	}
+	if len(rb.Rejects) != 0 {
+		t.Errorf("the thinned file folds with rejects: %+v", rb.Rejects)
+	}
+	if d := fresh.Damage(); d.Any() {
+		t.Errorf("the thinned file reads as damaged: %+v", d)
+	}
+}
+
+func TestRecords_AFamilyTheRecordDoesNotYetHoldKeepsItsLine(t *testing.T) {
+	now := time.Now()
+	r, path := testRecords(t)
+	ls := compactLease(now.Add(time.Hour))
+	// A create line with no family, as the first lines of an old file have: the first renewal sets it.
+	mustRecord(t, r.append(lease.RecordEvent{ID: "live-1", Op: lease.OpCreate, Scope: "net-c", CHAddr: compactMAC,
+		Identity: []byte{1, 2, 3, 4, 5, 6, 7}}))
+	mustRecord(t, r.Observed("live-1", lease.Event{Kind: lease.Renewed, Lease: ls, Family: lease.FamilyV4}, nil))
+	mustRecord(t, r.Observed("live-1", lease.Event{Kind: lease.Renewed, Lease: ls}, nil))
+	mustRecord(t, r.Observed("live-1", lease.Event{Kind: lease.Renewed, Lease: ls}, nil))
+	mustRecord(t, r.Bound("live-1"))
+	if got := recordOf(t, r, "live-1").Family; got != lease.FamilyV4 {
+		t.Fatalf("the fixture's record has family %v, want v4", got)
+	}
+	if got := foldedBy(t, path, now); got != 1 {
+		t.Errorf("the compaction folds %d lines, want 1: the line that sets the family stays", got)
+	}
+}
+
+func TestRecords_ARefusedRenewalInsideALiveRunIsKeptAndTheRunAroundItThins(t *testing.T) {
+	now := time.Now()
+	r, path := testRecords(t)
+	ls := compactLease(now.Add(time.Hour))
+	id := "live-1"
+	mustRecord(t, r.Created(id, "net-c", compactMAC, []byte{1, 2, 3, 4, 5, 6, 7}))
+	mustRecord(t, r.Bound(id))
+	for i := 0; i < 4; i++ {
+		mustRecord(t, r.Observed(id, lease.Event{Kind: lease.Renewed, Lease: ls}, nil))
+	}
+	// A renewal with no lease: the fold refuses it as a payload reject, and the line after it is accepted.
+	mustRecord(t, r.append(lease.RecordEvent{ID: id, Op: lease.OpLease, Kind: lease.Renewed}))
+	mustRecord(t, r.Observed(id, lease.Event{Kind: lease.Renewed, Lease: ls}, nil))
+	mustRecord(t, r.Counted(id, r.NewManagerID(), lease.Stats{}))
+	before, err := r.Rebuilt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before.Rejects) != 1 {
+		t.Fatalf("the fixture drew %d rejects, want 1", len(before.Rejects))
+	}
+	// The first three renewals fold; the fourth is followed by the refused line, which is never a candidate (#1192).
+	if got := foldedBy(t, path, now); got != 3 {
+		t.Errorf("the compaction folds %d lines, want 3", got)
+	}
+
+	if err := compactNow(t, r, now); err != nil {
+		t.Fatal(err)
+	}
+	after, err := r.Rebuilt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before.Rejects, after.Rejects) {
+		t.Errorf("Rejects changed: before %+v, after %+v", before.Rejects, after.Rejects)
+	}
+	b, _ := before.ByID(id)
+	a, _ := after.ByID(id)
+	sameButCounters(t, b, a, 3, 0)
+}
+
+// linesPerRecord counts the output lines of each record id in a rewritten file.
+func linesPerRecord(t *testing.T, b []byte) map[string]int {
+	t.Helper()
+	out := map[string]int{}
+	for _, line := range bytes.Split(b, []byte("\n")) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var ev lease.RecordEvent
+		if err := json.Unmarshal(line, &ev); err != nil {
+			t.Fatal(err)
+		}
+		out[ev.ID]++
+	}
+	return out
+}
+
+func TestRecords_ARefusedRecordDoesNotKeepItsNeighbourWhole(t *testing.T) {
+	now := time.Now()
+	r, path := testRecords(t)
+	params := proto.Params{CHAddr: compactMAC, Hostname: "thin"}
+	ls := compactLease(now.Add(time.Hour))
+	// live-1 carries a Params line the wrong rule below drops; live-2 is a plain run the real rule thins.
+	mustRecord(t, r.Created("live-1", "net-c", compactMAC, []byte{1, 2, 3, 4, 5, 6, 7}))
+	mustRecord(t, r.Observed("live-1", lease.Event{Kind: lease.Renewed, Lease: ls}, &params))
+	for i := 0; i < 3; i++ {
+		mustRecord(t, r.Observed("live-1", lease.Event{Kind: lease.Renewed, Lease: ls}, nil))
+	}
+	mustRecord(t, r.Bound("live-1"))
+	const n = 20
+	renewingRecord(t, r, "live-2", uniqueMAC(2), now.Add(time.Hour), n)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	was := linesPerRecord(t, b)
+
+	old := droppableLine
+	t.Cleanup(func() { droppableLine = old })
+	droppableLine = func(cur lease.Record, ev lease.RecordEvent) bool {
+		return droppableRenewal(cur, ev) || (ev.Op == lease.OpLease && ev.Params != nil)
+	}
+	out, _, folded := keptLines(b, now, compactRetain)
+	got := linesPerRecord(t, out)
+	if got["live-1"] != was["live-1"] {
+		t.Errorf("live-1 holds %d lines after a refusal, want all %d", got["live-1"], was["live-1"])
+	}
+	if want := was["live-2"] - (n - 1); got["live-2"] != want || folded != n-1 {
+		t.Errorf("live-2 holds %d lines and %d were folded, want %d and %d: a refusal of one record must not keep another whole",
+			got["live-2"], folded, want, n-1)
+	}
+}
+
+func TestRecords_TheComparisonSeesTheRefusalsOfTheRecordsOwnID(t *testing.T) {
+	now := time.Now()
+	line := func(seq uint64, op lease.RecordOp, kind lease.EventKind) lease.RecordEvent {
+		ev := lease.RecordEvent{ID: "r", Op: op, Seq: seq, At: now, Kind: kind}
+		switch op {
+		case lease.OpCreate:
+			ev.Scope, ev.Family, ev.CHAddr, ev.Identity = "net-c", lease.FamilyV4, compactMAC, []byte{1}
+		case lease.OpLease:
+			l := compactLease(now.Add(time.Hour))
+			ev.Lease = &l
+		}
+		return ev
+	}
+	stray := line(1, lease.OpLease, lease.Renewed) // before the create: refused, and in no record's counter
+	body := []lease.RecordEvent{line(2, lease.OpCreate, 0), line(3, lease.OpBind, 0), line(4, lease.OpLease, lease.Acquired)}
+	withStray := lease.Rebuild(append([]lease.RecordEvent{stray}, body...))
+	without := lease.Rebuild(body)
+	if len(withStray.Rejects) != 1 || len(without.Rejects) != 0 {
+		t.Fatalf("the fixture has %d and %d rejects, want 1 and 0", len(withStray.Rejects), len(without.Rejects))
+	}
+	if !sameFold(without, without, "r", 0, 0) {
+		t.Error("the same fold compares unequal to itself")
+	}
+	if sameFold(withStray, without, "r", 0, 0) {
+		t.Error("two folds whose records are equal but whose refusals differ compare equal (#1192)")
+	}
+}
+
+func TestRecords_AnAcquiredLineSupersedesTheRenewalBeforeIt(t *testing.T) {
+	now := time.Now()
+	r, path := testRecords(t)
+	ls := compactLease(now.Add(time.Hour))
+	id := "live-1"
+	mustRecord(t, r.Created(id, "net-c", compactMAC, []byte{1, 2, 3, 4, 5, 6, 7}))
+	mustRecord(t, r.Bound(id))
+	mustRecord(t, r.Observed(id, lease.Event{Kind: lease.Acquired, Lease: ls}, nil))
+	mustRecord(t, r.Observed(id, lease.Event{Kind: lease.Renewed, Lease: ls}, nil))
+	mustRecord(t, r.Observed(id, lease.Event{Kind: lease.Renewed, Lease: ls}, nil))
+	mustRecord(t, r.Observed(id, lease.Event{Kind: lease.Acquired, Lease: ls}, nil))
+	mustRecord(t, r.Counted(id, r.NewManagerID(), lease.Stats{}))
+	before := recordOf(t, r, id)
+	if got := foldedBy(t, path, now); got != 2 {
+		t.Errorf("the compaction folds %d lines, want 2: the second renewal is replaced by the Acquired after it", got)
+	}
+	if err := compactNow(t, r, now); err != nil {
+		t.Fatal(err)
+	}
+	sameButCounters(t, before, recordOf(t, r, id), 2, 0)
 }
