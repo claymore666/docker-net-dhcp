@@ -32,7 +32,7 @@
 #
 # Expires-when: never: a gate added without a stated end is the growth
 #   #749 measured (gates 9 to 47 in twenty days, none retired); this
-#   ends only if gates stop being added as scripts/check-*.sh.
+#   ends only if gates stop being added as scripts at all.
 #
 # Usage: check-gate-expiry.sh [--list] [<scripts dir>]
 #   --list  print every gate and its Expires-when as a markdown table,

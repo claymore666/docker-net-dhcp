@@ -138,6 +138,16 @@ fixture
 gate "$d/check-a.sh" "# Expires-when: the alpha lane is retired by #11 and nothing reads alpha." "# Usage: check-a.sh"
 check "a one-space comment line ends the key" 0 '| `check-a.sh` | the alpha lane is retired by #11 and nothing reads alpha. |' --list "$d"
 
+# root reads a mode-000 file, so the case needs an unprivileged runner.
+if [ "$(id -u)" -ne 0 ]; then
+    fixture
+    chmod 000 "$d/check-a.sh"
+    check "an unreadable gate refuses rather than being skipped" 2 "cannot read" "$d"
+    chmod 644 "$d/check-a.sh"
+else
+    echo "SKIP: unreadable gate (running as root)"
+fi
+
 n=$((n + 1)); mkdir -p "$TMP/case$n"; gate "$TMP/case$n/x-gate.sh" "# Expires-when: the x suite becomes cheap enough to run always (#13)."
 check "no check-*.sh at all refuses" 2 "a pass here would have read nothing" "$TMP/case$n"
 
