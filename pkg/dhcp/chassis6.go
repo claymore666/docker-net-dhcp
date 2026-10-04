@@ -127,7 +127,8 @@ func newLibClient6(iface string, params proto.Params6, opts *DHCPClientOptions) 
 	cfg := dhcpruntime.ClientConfig6{
 		Interface: iface,
 		Params6:   params,
-		// A resumed binding makes the first message a Confirm (RFC 9915 section 18.2.12, #820).
+		// A resumed binding makes the first message a Confirm, or a Rebind when it holds prefixes (RFC 9915 section
+		// 18.2.12, #820, #214).
 		Resume:      resumeFor(opts.Resume, params.PrefixHint),
 		EventBuffer: eventBuffer,
 	}
