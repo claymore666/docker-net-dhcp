@@ -465,6 +465,65 @@ func TestReconcilePrefixRoutes_AFailedInstallIsNotCountedOrOwned(t *testing.T) {
 	}
 }
 
+// A route for the delegated prefix that someone else installed first is never claimed, so a loss, a Leave and a release
+// delete nothing (the fake table keeps a deleted route listed, so the delete log is the observer), and no counter
+// moves (#214).
+func TestReconcilePrefixRoutes_APresentRouteThatIsNotOursIsNeverClaimed(t *testing.T) {
+	const pfx = "fd00:98:0:7::/64"
+	prefixes := pdInfo(pfx).DelegatedPrefixes
+	check := func(t *testing.T, m *dhcpManager, p *Plugin, f *fakeRouteTable) {
+		t.Helper()
+		if len(f.deleted) != 0 {
+			t.Errorf("deleted %v, want the foreign route left alone", destinations(f.deleted))
+		}
+		if len(f.replace) != 0 || len(f.added) != 0 {
+			t.Errorf("installed %v, want the present route left as it is", destinations(append(f.replace, f.added...)))
+		}
+		if got := m.ownedPrefixRoutes(); len(got) != 0 {
+			t.Errorf("the endpoint claims %v, want nothing", got)
+		}
+		if got := p.ipv6PrefixRoutesInstalled.Load(); got != 0 {
+			t.Errorf("installed counter %d, want 0", got)
+		}
+		if got := p.ipv6PrefixRoutesWithdrawn.Load(); got != 0 {
+			t.Errorf("withdrawn counter %d, want 0", got)
+		}
+	}
+	t.Run("leasefail", func(t *testing.T) {
+		m, p, f := v6Manager(t)
+		f.routes = []netlink.Route{aggregate(t, pfx)}
+		if err := m.applyPrefixes(prefixes); err != nil {
+			t.Fatalf("applyPrefixes: %v", err)
+		}
+		m.handleEvent(dhcp.Event{Type: "leasefail"}, true)
+		check(t, m, p, f)
+	})
+	t.Run("leave", func(t *testing.T) {
+		p := &Plugin{endpointFingerprints: map[string]endpointFingerprint{"ep1": {MAC: "02:42:ac:11:00:02"}}}
+		m := stoppingManager(t, p, DHCPNetworkOptions{IPv6: true, Bridge: "br0"}, nil, nil)
+		f := &fakeRouteTable{routes: []netlink.Route{aggregate(t, pfx)}}
+		f.install(t, m)
+		if err := m.applyPrefixes(prefixes); err != nil {
+			t.Fatalf("applyPrefixes: %v", err)
+		}
+		if err := m.StopForLeave(); err != nil {
+			t.Fatalf("StopForLeave: %v", err)
+		}
+		check(t, m, p, f)
+	})
+	t.Run("release", func(t *testing.T) {
+		m, p, f := v6Manager(t)
+		f.routes = []netlink.Route{aggregate(t, pfx)}
+		if err := m.applyPrefixes(prefixes); err != nil {
+			t.Fatalf("applyPrefixes: %v", err)
+		}
+		if err := m.withdrawPrefixRoutes(); err != nil {
+			t.Fatalf("withdrawPrefixRoutes: %v", err)
+		}
+		check(t, m, p, f)
+	})
+}
+
 // ipv6_pd=0 is refused at create, as the reference says; an empty value stays unset (#214).
 func TestValidateIPv6Options_IPv6PDZeroIsRefusedAndEmptyIsUnset(t *testing.T) {
 	for _, tc := range []struct {
