@@ -56,58 +56,32 @@
 # uses; it fails loudly on the day someone writes a multi-line flow
 # sequence, which is the day to teach this parser about it.
 #
-# KEYED ON THE PROPERTY, NOT THE NAMES — BUT THE PROPERTY IS NARROW.
-# A publishing job is one that runs `make` with a target literally
-# named `push`. What it is CALLED does not enter into it, so renaming
-# `release-arm64`, or adding a `release-riscv64` that runs `make ...
-# push`, changes nothing here and needs no edit to this file.
+# THE SUBJECT IS A JOB THAT UPLOADS IMAGE BYTES (#798). Each command a
+# `run:` body executes through a registry tool is BYTES (make `push`,
+# docker/image/plugin/compose push, a docker build with a push output, crane
+# push/append/mutate/rebase/flatten, oras push, cosign upload/load), REFERENCE
+# (a name, signature or attachment over a digest already in a registry: crane
+# tag/copy, imagetools create, manifest push, oras cp/tag/attach, cosign
+# sign/attest), or NONE. One BYTES step makes a job a publisher. REFERENCE jobs
+# stay out on purpose: promote-latest and github-release must wait on both
+# builds (#796), and counting `crane tag` would turn that contract red. What a
+# job is called does not enter into it.
 #
-# That is the whole of the promise, and an earlier version of this
-# paragraph made a larger one — that a future `release-riscv64` is
-# covered the day it is added, full stop. It is not. The bound stated
-# below says a make target publishing under another name is invisible,
-# and `push-riscv64` is the spelling that job would most naturally
-# use. Driven against the real release.yml with such a job appended,
-# `needs: release`, both existing publishers untouched:
+# NOTHING UNCLASSIFIED ANSWERS "NOT A PUBLISHER" (#798). Exit 2 instead for: a
+# verb of a known tool in no table; podman, buildah, skopeo, regctl, nerdctl,
+# ko; a tool word anywhere but command position (sudo, sh -c) or a variable
+# there; a flag before the verb; a make target naming push or publish other
+# than `push`; a step or job-level `uses:` not in the action table; a `shell:`
+# other than bash or sh. Bound: a publisher inside a script or make recipe the
+# workflow calls, or a registry write by a tool in no table (curl to the
+# registry API), is not seen. Make `push` is trusted by its name.
 #
-#     OK: 2 publishing job(s) ... none waiting on another
-#
-# — a genuinely serialised publishing job, and rc=0. Read the bound
-# before adding an architecture; widening the subject is #798.
-#
-# AND THE SAME REFUSAL APPLIES HERE, FOR A REASON THAT WAS ARGUED WRONG
-# ONCE. This detector used to be the regex
-#
-#     make[[:space:]].*[[:space:]]push([[:space:]]|$)
-#
-# which is line-oriented and demands whitespace immediately before
-# `push`, so it misses `make push PLUGIN_NAME=...` and anything split
-# over a line continuation. The defence offered for that was: a missed
-# publisher drops the count below two and the non-vacuity refusal
-# fires, so a miss cannot become a clean pass.
-#
-# THAT ARGUMENT IS UNSOUND, AND NOT SUBTLY. The refusal's domain is
-# computed by the very detector it is supposed to backstop. A missed
-# job does not merely go unchecked — it LEAVES THE POPULATION, so it is
-# absent from the serialisation check and from the count in the same
-# stroke. On a two-publisher file the count happens to fall to one and
-# it looks like the argument held. Add a third architecture spelled in
-# a way the regex does match, leave the serialised one spelled in a way
-# it does not, and the count is two again, the refusal never fires, and
-# a genuinely serialised file reports:
-#
-#     OK: 2 publishing job(s) ... none waiting on another
-#
-# A measurement cannot backstop itself. So the classifier does not get
-# to answer "not a publisher" as a way of saying "I could not tell":
-# it joins line continuations, finds every `make` invocation in a
-# `run:` body — the bound below says which ones that is — and when
-# it cannot decide whether one publishes — a target that is a variable
-# expansion, or no target at all, where the answer lives in the
-# Makefile's default goal — it REFUSES with exit 2 and names the line.
-# Refusing is loud and cheap. Silently dropping a job from the
-# population is the failure this whole file exists to prevent, applied
-# to itself.
+# THE COUNT IS NOT A BACKSTOP. A missed job leaves the population, so it
+# drops out of the serialisation check and the count together: a third
+# publisher the classifier does see keeps the count at two and the file
+# reports OK while serialised. So `make` lines are joined over continuations,
+# and a target that is a variable, or no target at all (the Makefile's default
+# goal), refuses like any other unclassified command (#798).
 #
 # WHAT IT DOES NOT CLAIM. It reads the workflow text. It cannot know
 # whether the runners exist, whether the jobs really start together, or
@@ -115,40 +89,12 @@
 # publishing job wait, directly or transitively, on another" — which is
 # the question that was answered wrong.
 #
-# AND ITS SUBJECT IS BOUNDED, DELIBERATELY. A publishing job here is a
-# job that runs `make` with a target literally named `push`. Two things
-# are therefore INVISIBLE to this gate, and that is a stated scope, not
-# an oversight:
-#
-#   - a job that publishes without calling make at all (a bare `docker
-#     push`, `crane copy`, a registry action);
-#   - a make target that publishes under another name, e.g.
-#     `make push-arm64`.
-#
-# Both are decidably outside the subject, so they are answered "not a
-# publisher" rather than refused.
-#
-# AND THE COUNT DOES NOT BACK THIS UP EITHER. It is tempting to add
-# that a file whose publishers are all invisible falls below two and
-# lands on the non-vacuity refusal anyway. True, and useless: it is
-# the argument demolished thirty lines above, restricted to the one
-# case where it holds. The dangerous file is MIXED — two publishers
-# spelled `make ... push` and a third, serialised one spelled
-# `make push-riscv64`. The count is two, the refusal never fires, and
-# the gate reports OK about a file it has read wrong. Reproduced
-# against the real release.yml; that is #798, and it is open.
-#
-# Widening the subject is #798 (v1.9.0). The point of writing the
-# bound down is that the next person reads it here — and the promise
-# it contradicts, forty lines above, has been corrected rather than
-# left for them to reconcile.
-#
 # Usage: check-build-job-independence.sh [workflow-file]
 # Exit:  0 no publishing job depends on another
 #        1 one does — the serialised shape is back
 #        2 the check cannot render a verdict (unreadable file, a
-#          `needs:` form it cannot parse, a `make` invocation it cannot
-#          classify, or fewer than two publishing jobs, which would
+#          `needs:` form it cannot parse, a command, action or shell it
+#          cannot classify, or fewer than two publishing jobs, which would
 #          make the rule vacuous)
 set -uo pipefail
 # shellcheck source=scripts/gatelib.sh
@@ -162,8 +108,9 @@ if [ ! -f "$WF" ] || [ ! -r "$WF" ]; then
     exit 2
 fi
 
-# Emits `job<TAB>publishes<TAB>needs,needs,...` per job, or a BAD line
-# naming a `needs:` spelling it will not guess at.
+# Emits `job<TAB>publishes<TAB>needs,needs,...<TAB>reference-writes` per
+# job (the fourth column is #798), or a BAD line naming what it will not
+# guess at.
 parsed="$(awk '
     # Cut an unquoted trailing comment. Tracks quote state so a `#`
     # inside "a#b" survives; anything else after whitespace is prose.
@@ -232,7 +179,132 @@ parsed="$(awk '
                 bad("cannot tell whether this `make` publishes -> " trim(segs[i]), fnr)
             else if (v == "indirect")
                 bad("a `make` token that is not a literal `make` invocation -> " trim(segs[i]), fnr)
+            v = classify_reg(segs[i])
+            if (v == "bytes") pub = 1
+            else if (v == "ref") refw = 1
+            else if (v != "none") bad(v " -> " trim(segs[i]), fnr)
         }
+    }
+
+    function bare(w) { gsub(/["\x27]/, "", w); sub(/^[({]+/, "", w); sub(/[)};]+$/, "", w); return w }
+    function istool(w) { return w ~ /^(docker|crane|oras|cosign|podman|buildah|skopeo|regctl|nerdctl|ko)$/ }
+    function isvar(w) { return w ~ /[$`]/ }
+    function unknown(tool) { return "a `" tool "` verb this gate has no class for" }
+
+    # `$(` and a backtick start a new command, so a tool inside a
+    # substitution is read at its own command position (release.yml reads
+    # digests with `X=$(crane digest ...)`, #798).
+    function classify_reg(seg,   p, np, k, v, out) {
+        sub(/^[[:space:]]*/, "", seg); sub(/^-[[:space:]]+/, "", seg)
+        gsub(/\\`/, "", seg)
+        gsub(/\$\(/, "\x02", seg); gsub(/`/, "\x02", seg)
+        np = split(seg, p, "\x02"); out = "none"
+        for (k = 1; k <= np; k++) {
+            v = reg_piece(p[k])
+            if (v != "none" && v != "ref" && v != "bytes") return v
+            if (v == "bytes" || out == "none") out = v
+        }
+        return out
+    }
+
+    # Assignments and reserved words keep the command position; any other
+    # word before a tool is a wrapper whose effect this cannot read (#798).
+    function reg_piece(s,   t, n, i, j, cmd, w, a, na) {
+        n = split(s, t, /[[:space:]]+/)
+        for (i = 1; i <= n; i++) {
+            if (t[i] == "" || t[i] ~ /^[A-Za-z_][A-Za-z0-9_]*=/) continue
+            if (t[i] ~ /^(if|then|else|elif|do|while|until|!|[{(]|time)$/) continue
+            break
+        }
+        if (i > n) return "none"
+        cmd = bare(t[i])
+        if (cmd ~ /^(echo|printf)$/) return "none"
+        na = 0
+        for (j = i + 1; j <= n; j++) {
+            if (t[j] == "") continue
+            if (istool(bare(t[j]))) return "a registry tool that is not at command position"
+            a[++na] = bare(t[j])
+        }
+        w = cmd; sub(/.*\//, "", w)
+        if (!istool(w) && isvar(cmd) && tolower(cmd) ~ /docker|crane|oras|cosign|podman|buildah|skopeo|regctl|nerdctl/)
+            return "a registry tool named by a variable"
+        if (!istool(w)) return "none"
+        if (w ~ /^(podman|buildah|skopeo|regctl|nerdctl|ko)$/)
+            return "`" w "` is a registry tool with no verb table here"
+        if (na == 0) return "none"
+        if (a[1] ~ /^-/) return "a flag before the `" w "` verb"
+        if (isvar(a[1])) return "a `" w "` verb that is a variable"
+        if (isvar(a[2]) && (w == "docker" && a[1] ~ /^(image|builder|plugin|manifest|trust|buildx|compose)$/ ||
+                            w == "oras" && a[1] ~ /^(blob|manifest|repo)$/))
+            return "a `" w " " a[1] "` verb that is a variable"
+        if (a[2] == "imagetools" && isvar(a[3])) return "a `" w " buildx imagetools` verb that is a variable"
+        if (w == "docker") return docker_verb(a, na)
+        if (w == "crane") {
+            if (a[1] ~ /^(push|append|mutate|rebase|flatten)$/) return "bytes"
+            if (a[1] ~ /^(tag|copy|cp|delete|index)$/) return "ref"
+            if (a[1] ~ /^(auth|blob|catalog|config|digest|export|ls|manifest|pull|validate|version|help|completion)$/) return "none"
+            return unknown(w)
+        }
+        if (w == "oras") {
+            if (a[1] == "push") return "bytes"
+            if (a[1] ~ /^(attach|cp|copy|tag)$/) return "ref"
+            if (a[1] ~ /^(discover|login|logout|pull|resolve|version|help|completion)$/) return "none"
+            if (a[1] == "blob" && a[2] == "push") return "bytes"
+            if (a[1] == "blob" && a[2] == "delete") return "ref"
+            if (a[1] == "blob" && a[2] == "fetch") return "none"
+            if (a[1] == "manifest" && a[2] == "push") return "bytes"
+            if (a[1] == "manifest" && a[2] ~ /^(delete|index)$/) return "ref"
+            if (a[1] == "manifest" && a[2] ~ /^(fetch|fetch-config)$/) return "none"
+            if (a[1] == "repo" && a[2] ~ /^(ls|tags)$/) return "none"
+            return unknown(w)
+        }
+        if (a[1] ~ /^(upload|load)$/) return "bytes"
+        if (a[1] ~ /^(sign|attest|attach|copy|clean)$/) return "ref"
+        if (a[1] ~ /^(sign-blob|attest-blob|verify|verify-attestation|verify-blob|verify-blob-attestation|version|triangulate|tree|download|save|generate|generate-key-pair|import-key-pair|public-key|env|initialize|login|manifest|dockerfile|help|completion)$/) return "none"
+        return unknown(w)
+    }
+
+    # The docker CLI commands (27.x); a verb outside them is a CLI
+    # plugin, which may publish (`docker pushrm`), so it refuses (#798).
+    function docker_verb(a, na) {
+        if (a[1] == "push") return "bytes"
+        if (a[1] == "build") return push_output(a, na, 2)
+        if (a[1] == "image" && a[2] == "push") return "bytes"
+        if (a[1] ~ /^(image|builder)$/ && a[2] == "build") return push_output(a, na, 3)
+        if (a[1] == "plugin" && a[2] == "push") return "bytes"
+        if (a[1] == "manifest" && a[2] == "push") return "ref"
+        if (a[1] == "trust" && a[2] ~ /^(sign|revoke|signer)$/) return "ref"
+        if (a[1] ~ /^(image|builder|plugin|manifest|trust)$/) return "none"
+        if (a[1] == "buildx") {
+            if (a[2] ~ /^(build|b)$/) return push_output(a, na, 3)
+            if (a[2] == "bake" && push_output(a, na, 3) == "none")
+                return "a bake whose outputs live in its definition file"
+            if (a[2] == "bake") return push_output(a, na, 3)
+            if (a[2] == "imagetools" && a[3] == "create") return "ref"
+            if (a[2] == "imagetools" && a[3] == "inspect") return "none"
+            if (a[2] ~ /^(create|debug|dial-stdio|du|history|inspect|ls|prune|rm|stop|use|version)$/) return "none"
+            return unknown("docker buildx")
+        }
+        if (a[1] == "compose") {
+            if (a[2] ~ /^-/) return "a flag before the `docker compose` verb"
+            if (a[2] ~ /^(push|publish)$/) return "bytes"
+            if (a[2] == "build") return push_output(a, na, 3)
+            if (a[2] ~ /^(attach|commit|config|cp|create|down|events|exec|export|images|kill|logs|ls|pause|port|ps|pull|restart|rm|run|scale|start|stats|stop|top|unpause|up|version|wait|watch)$/) return "none"
+            return unknown("docker compose")
+        }
+        if (a[1] ~ /^(attach|checkpoint|commit|config|container|context|cp|create|diff|events|exec|export|history|images|import|info|init|inspect|kill|load|login|logout|logs|network|node|pause|port|ps|pull|rename|restart|rm|rmi|run|save|search|secret|service|stack|start|stats|stop|swarm|system|tag|top|unpause|update|version|volume|wait)$/) return "none"
+        return unknown("docker")
+    }
+
+    # A build publishes only through a push output; an output this cannot
+    # read refuses rather than reading as a local build (#798).
+    function push_output(a, na, from,   k) {
+        for (k = from; k <= na; k++) {
+            if (a[k] == "--push" || a[k] ~ /push=true|type=registry/) return "bytes"
+            if (a[k] ~ /^--output=/ && isvar(a[k])) return "a build output that is a variable"
+            if (a[k] ~ /^(--output|-o)$/ && isvar(a[k + 1])) return "a build output that is a variable"
+        }
+        return "none"
     }
 
     # A make invocation publishes when `push` is among its TARGETS.
@@ -291,6 +363,7 @@ parsed="$(awk '
             sawtarget = 1
             if (t == "push") { sawpush = 1; continue }
             if (t ~ /[$`]/) undec = 1     # expands to an unknown target
+            if (tolower(t) ~ /push|publish/) undec = 1     # push-arm64 (#798)
         }
         if (sawpush) return "publishes"
         if (undec) return "undecided"
@@ -298,7 +371,14 @@ parsed="$(awk '
         return "no"
     }
 
-    function flush() { if (job != "") printf "%s\t%s\t%s\n", job, pub, needs }
+    # Only a POSIX shell body is read as commands (#798).
+    function checkshell(line, fnr,   v) {
+        v = line; sub(/^[[:space:]]+(-[[:space:]]+)?shell:/, "", v)
+        v = unquote(trim(decomment(v))); sub(/[[:space:]].*/, "", v); sub(/.*\//, "", v)
+        if (v !~ /^(bash|sh)$/) bad("a shell whose body this does not read as commands -> " v, fnr)
+    }
+
+    function flush() { if (job != "") printf "%s\t%s\t%s\t%s\n", job, pub, needs, refw }
 
     # Shell text enters here and nowhere else. `\`-continuations are
     # joined first: a `make` invocation split over two lines is one
@@ -321,6 +401,7 @@ parsed="$(awk '
     BEGIN { runind = -1 }
 
     /^jobs:[[:space:]]*$/ { injobs = 1; next }
+    !injobs && /^[[:space:]]+(-[[:space:]]+)?shell:[[:space:]]*[^[:space:]#]/ { checkshell($0, FNR); next }
     !injobs { next }
     /^[^[:space:]#]/ { flush(); injobs = 0; runind = -1; next }
 
@@ -338,7 +419,7 @@ parsed="$(awk '
     /^  [A-Za-z0-9_-]+:[[:space:]]*$/ {
         flush()
         job = $1; sub(/:$/, "", job)
-        pub = 0; needs = ""; inneeds = 0; runind = -1
+        pub = 0; refw = 0; needs = ""; inneeds = 0; runind = -1
         next
     }
 
@@ -377,8 +458,8 @@ parsed="$(awk '
 
     # A `run:` VALUE IS THE ONLY SHELL THIS FILE READS, and in this
     # repo the only shell there is. (An action taking a script as a
-    # `with:` input would be shell too; none is used here, and it sits
-    # inside the #798 bound.) The first version
+    # `with:` input would be shell too; an action outside the table
+    # below refuses, #798.) The first version
     # of the command-position rule read every line of every job, so a
     # step called `- name: Make gh-pages available to mike`
     # (pages.yml:162) was reported as a `make` token that could not be
@@ -411,6 +492,22 @@ parsed="$(awk '
     # was the second false universal on this branch. The case that
     # refutes it is now in the suite, so this paragraph is described
     # by something that goes red rather than being trusted.
+
+    # Actions are a closed table (#798): an action outside it may publish
+    # (docker/build-push-action), so it refuses rather than reads as none.
+    # A job-level `uses:` is a reusable workflow, whose steps are unread.
+    /^    uses:/ { bad("a job-level reusable workflow, whose steps this does not read", FNR); next }
+    /^[[:space:]]*(-[[:space:]]+)?uses:([[:space:]]|$)/ {
+        rest = $0
+        sub(/^[[:space:]]*(-[[:space:]]+)?uses:/, "", rest)
+        rest = unquote(trim(decomment(rest))); sub(/@.*/, "", rest)
+        if (rest ~ /^(actions\/(checkout|setup-go|upload-artifact|download-artifact)|anchore\/sbom-action\/download-syft|docker\/login-action|sigstore\/cosign-installer)$/) next
+        if (rest ~ /^(actions\/attest-build-provenance|peter-evans\/dockerhub-description)$/) { refw = 1; next }
+        bad("an action this gate has no class for -> " rest, FNR)
+        next
+    }
+    /^[[:space:]]+(-[[:space:]]+)?shell:[[:space:]]*[^[:space:]#]/ { checkshell($0, FNR); next }
+
     /^[[:space:]]*(-[[:space:]]+)?run:([[:space:]]|$)/ {
         ind = index($0, "run:") - 1
         rest = $0
@@ -431,7 +528,7 @@ awkrc=$?
 
 if [ "$awkrc" -eq 3 ] || printf '%s\n' "$parsed" | grep '^BAD	' >/dev/null; then
     echo "::error title=Cannot classify::this gate will not guess at a" \
-         "\`needs:\` spelling or a \`make\` invocation it does not" \
+         "\`needs:\` spelling, a command, an action or a shell it does not" \
          "understand, because reporting OK about text it could not read is" \
          "the silence it exists to end (#796)." >&2
     printf '%s\n' "$parsed" | awk -F'\t' '$1 == "BAD" { printf "  %s:%s: %s\n", wf, $2, $3 }' wf="$WF" >&2
@@ -440,6 +537,9 @@ if [ "$awkrc" -eq 3 ] || printf '%s\n' "$parsed" | grep '^BAD	' >/dev/null; then
     echo "  quoted), and a block sequence of '      - name' items." >&2
     echo "  Accepted make:   an invocation whose targets are literal words," >&2
     echo "  so 'push' can be found among them whatever the argument order." >&2
+    echo "  Accepted registry commands: docker, crane, oras and cosign verbs" >&2
+    echo "  in the tables in this file, at command position; actions in its" >&2
+    echo "  action table; bash or sh as the shell." >&2
     echo "  Teach the parser the new form -- do not reword the workflow to" >&2
     echo "  suit the gate, and do not let it answer 'not a publisher' when" >&2
     echo "  what it means is 'I could not tell'." >&2
@@ -452,12 +552,11 @@ npub="$(printf '%s' "$publishers" | grep -c . || true)"
 # NON-VACUITY. "No publishing job depends on another" is satisfied for
 # free by a file with one publishing job, or none. A rule that passes
 # by having an empty domain is the failure this tree has hit before, so
-# it refuses a verdict instead -- and this doubles as the backstop for
-# the `make ... push` regex: a publisher that stops being recognised
-# lands here rather than in a clean pass.
+# it refuses a verdict instead. It is not a backstop for the classifier:
+# its count comes from the classifier (#798).
 if [ "$npub" -lt 2 ]; then
-    echo "::error title=Nothing to compare::$WF has $npub job(s) running" \
-         "\`make ... push\`; the rule needs at least two to mean anything." \
+    echo "::error title=Nothing to compare::$WF has $npub job(s) uploading" \
+         "image bytes; the rule needs at least two to mean anything." \
          "Either the per-arch builds were removed or the step that" \
          "identifies them was rewritten -- re-derive this check." >&2
     exit 2
@@ -506,3 +605,5 @@ fi
 
 echo "OK: $npub publishing job(s) in $WF, none waiting on another:" \
      "$(printf '%s' "$publishers" | tr '\n' ' ')"
+echo "Reference writes only, free to wait on publishers:" \
+     "$(printf '%s\n' "$parsed" | awk -F'\t' '$1 != "BAD" && $2 == 0 && $4 == 1 { printf "%s ", $1 }')"

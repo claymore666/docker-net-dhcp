@@ -541,15 +541,9 @@ YAML
 check "'Makefile' and 'MAKEFLAGS' are not make invocations" 0 \
       "$TMP/makefileword.yml" "none waiting on another"
 
-# --- THE STATED BOUND, asserted so it cannot drift into a silent gap --
-#
-# The subject is a job running `make` with a target literally named
-# `push`. A publisher that never calls make, and a make target that
-# publishes under another name, are outside it -- decidably, so they
-# are answered "not a publisher" rather than refused. These cases exist
-# so that bound is a tested property of the gate rather than a sentence
-# in its header, and so widening it in v1.9.0 changes a red test rather
-# than passing unnoticed.
+# --- the two shapes #798 brought into the subject ---------------------
+# A publisher that never calls make is recognised, and a make target
+# that names push without being `push` refuses.
 cat > "$TMP/nonmakepublisher.yml" <<'YAML'
 jobs:
   a:
@@ -562,8 +556,8 @@ jobs:
     steps:
       - run: make PLUGIN_TAG=y push
 YAML
-check "a non-make publisher is outside the subject (stated bound)" 2 \
-      "$TMP/nonmakepublisher.yml" "needs at least two"
+check "a 'docker push' publisher is in the population (#798)" 1 \
+      "$TMP/nonmakepublisher.yml" "b reaches a"
 
 cat > "$TMP/otherpushname.yml" <<'YAML'
 jobs:
@@ -577,8 +571,8 @@ jobs:
     steps:
       - run: make PLUGIN_TAG=y push
 YAML
-check "'make push-arm64' is outside the subject (stated bound)" 2 \
-      "$TMP/otherpushname.yml" "needs at least two"
+check "'make push-arm64' is refused, not called a non-publisher (#798)" 2 \
+      "$TMP/otherpushname.yml" "cannot tell whether this \`make\` publishes"
 
 # --- ONLY A `run:` VALUE IS SHELL, AND ONLY ITS OWN BODY --------------
 #
@@ -724,15 +718,8 @@ YAML
 check "a sibling key after a block scalar is read as YAML, not shell" 1 \
       "$TMP/siblingkey.yml" "b reaches a"
 
-# THE BOUND IS DANGEROUS ON A MIXED FILE, AND THAT IS PINNED HERE.
-# The all-invisible file (above) refuses for non-vacuity, which makes
-# the bound look self-limiting. It is not. Two publishers the gate can
-# see plus one serialised publisher it cannot leaves the count at two,
-# so the refusal never fires and a serialised file reports OK.
-#
-# This case asserts the DEFECT, deliberately: it is #798, it is open,
-# and when #798 widens the subject this case must flip from 0 to 1.
-# A red test is the notification; a sentence in a header is not.
+# On a mixed file two visible publishers keep the count at two, so only
+# the classifier can stop a serialised third from passing (#798).
 cat > "$TMP/mixedbound.yml" <<'YAML'
 jobs:
   resolve:
@@ -755,8 +742,197 @@ jobs:
     steps:
       - run: make PLUGIN_TAG=riscv64 push-riscv64
 YAML
-check "a serialised publisher outside the subject is NOT seen (#798)" 0 \
-      "$TMP/mixedbound.yml" "none waiting on another"
+check "a serialised 'make push-riscv64' third publisher is refused (#798)" 2 \
+      "$TMP/mixedbound.yml" "cannot tell whether this \`make\` publishes"
+
+# --- #798: every shape on a three-publisher file ----------------------
+# Two `make push` builds on `resolve` keep the count at two whatever the
+# third job is, so each verdict below comes from the classifier alone.
+threepub() {   # threepub <out-file> <yaml of the third job's steps>
+    cat > "$1" <<YAML
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo tag
+  release:
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - run: make PLUGIN_TAG=amd64 push
+  release-arm64:
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - run: make PLUGIN_TAG=arm64 push
+  release-riscv64:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+$2
+YAML
+}
+
+# label|want exit|grep|the third job's run: value, serialised on release (#798)
+while IFS='|' read -r label want pat cmd; do
+    [ -n "$label" ] || continue
+    threepub "$TMP/third-$label.yml" "      - run: $cmd"
+    if ! grep -qF -- "$cmd" "$TMP/third-$label.yml"; then
+        fail_case "$label: the fixture does not carry its command"
+        continue
+    fi
+    check "third publisher '$cmd' -> exit $want" "$want" "$TMP/third-$label.yml" "$pat"
+done <<'THIRD'
+docker-push|1|release-riscv64 reaches release|docker push ghcr.io/x:riscv64
+docker-image-push|1|release-riscv64 reaches release|docker image push ghcr.io/x:riscv64
+docker-plugin-push|1|release-riscv64 reaches release|docker plugin push ghcr.io/x:riscv64
+docker-compose-push|1|release-riscv64 reaches release|docker compose push
+docker-buildx-push|1|release-riscv64 reaches release|docker buildx build --push -t ghcr.io/x:riscv64 .
+docker-build-registry|1|release-riscv64 reaches release|docker build --output type=registry -t ghcr.io/x:riscv64 .
+docker-bake-pushtrue|1|release-riscv64 reaches release|docker buildx bake --set *.output=type=image,push=true
+crane-push|1|release-riscv64 reaches release|crane push img.tar ghcr.io/x:riscv64
+crane-mutate|1|release-riscv64 reaches release|crane mutate --label a=b ghcr.io/x:riscv64
+oras-push|1|release-riscv64 reaches release|oras push ghcr.io/x:riscv64 f.tar
+oras-blob-push|1|release-riscv64 reaches release|oras blob push ghcr.io/x@sha256:0 f.tar
+oras-manifest-push|1|release-riscv64 reaches release|oras manifest push ghcr.io/x:riscv64 m.json
+cosign-upload|1|release-riscv64 reaches release|cosign upload blob -f f ghcr.io/x:riscv64
+docker-by-path|1|release-riscv64 reaches release|/usr/bin/docker push ghcr.io/x:riscv64
+docker-in-subst|1|release-riscv64 reaches release|d=$(docker push ghcr.io/x:riscv64)
+docker-in-if|1|release-riscv64 reaches release|if docker push ghcr.io/x:riscv64; then echo ok; fi
+make-push-other|2|cannot tell whether this `make` publishes|make PLUGIN_TAG=r push-riscv64
+make-publish|2|cannot tell whether this `make` publishes|make publish
+sudo-docker|2|not at command position|sudo docker push ghcr.io/x:riscv64
+sh-c-docker|2|not at command position|sh -c "docker push ghcr.io/x:riscv64"
+var-docker|2|named by a variable|"$DOCKER" push ghcr.io/x:riscv64
+docker-global-flag|2|a flag before the `docker` verb|docker --config d push ghcr.io/x:riscv64
+compose-flag|2|a flag before the `docker compose` verb|docker compose -f c.yml push
+docker-verb-var|2|verb that is a variable|docker plugin "$VERB" ghcr.io/x:riscv64
+oras-verb-var|2|verb that is a variable|oras manifest "$VERB" ghcr.io/x:riscv64
+docker-cli-plugin|2|a `docker` verb this gate has no class for|docker pushrm ghcr.io/x
+buildx-unknown|2|a `docker buildx` verb this gate has no class for|docker buildx frobnicate
+compose-unknown|2|a `docker compose` verb this gate has no class for|docker compose frobnicate
+crane-unknown|2|a `crane` verb this gate has no class for|crane frobnicate ghcr.io/x
+oras-unknown|2|a `oras` verb this gate has no class for|oras frobnicate ghcr.io/x
+cosign-unknown|2|a `cosign` verb this gate has no class for|cosign frobnicate ghcr.io/x
+build-output-var|2|a build output that is a variable|docker buildx build --output "$OUT" .
+bake-no-flag|2|a bake whose outputs live in its definition file|docker buildx bake release
+podman|2|`podman` is a registry tool with no verb table here|podman push ghcr.io/x:riscv64
+skopeo|2|`skopeo` is a registry tool with no verb table here|skopeo copy oci:x docker://ghcr.io/x
+regctl|2|`regctl` is a registry tool with no verb table here|regctl image copy a b
+THIRD
+
+threepub "$TMP/third-action.yml" "      - uses: docker/build-push-action@v6
+        with:
+          push: true"
+check "a publishing action outside the table is refused (#798)" 2 \
+      "$TMP/third-action.yml" "an action this gate has no class for -> docker/build-push-action"
+
+threepub "$TMP/third-shell.yml" "      - shell: python
+        run: print(1)"
+check "a non-POSIX shell: is refused, its body is not shell (#798)" 2 \
+      "$TMP/third-shell.yml" "a shell whose body this does not read as commands -> python"
+
+threepub "$TMP/third-defaults.yml" "      - run: echo x"
+sed -i '1i defaults:\n  run:\n    shell: pwsh' "$TMP/third-defaults.yml"
+check "a workflow-level defaults shell: is refused too (#798)" 2 \
+      "$TMP/third-defaults.yml" "a shell whose body this does not read as commands -> pwsh"
+
+threepub "$TMP/third-reusable.yml" "      - run: echo x"
+cat >> "$TMP/third-reusable.yml" <<'YAML'
+  release-reusable:
+    needs: release
+    uses: org/repo/.github/workflows/build.yml@v1
+YAML
+check "a job-level reusable workflow is refused, its steps are unread (#798)" 2 \
+      "$TMP/third-reusable.yml" "a job-level reusable workflow"
+
+# --- #798: reference writes and reads stay out of the population ------
+# A promote job that waits on both builds is the contract (#796), so each
+# command here must leave it out: exit 0, and it is named as reference-only
+# when it writes one.
+promote() {   # promote <out-file> <yaml of the promote job's steps>
+    cat > "$1" <<YAML
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - run: make PLUGIN_TAG=amd64 push
+  release-arm64:
+    runs-on: ubuntu-latest
+    steps:
+      - run: make PLUGIN_TAG=arm64 push
+  promote:
+    needs: [release, release-arm64]
+    runs-on: ubuntu-latest
+    steps:
+$2
+YAML
+}
+
+# label|reference write (1) or read/local (0)|promote's run: value (#798)
+while IFS='|' read -r label refw cmd; do
+    [ -n "$label" ] || continue
+    promote "$TMP/promote-$label.yml" "      - run: $cmd"
+    if [ "$refw" = 1 ]; then
+        check "promote job running '$cmd' is a reference write, not a publisher" 0 \
+              "$TMP/promote-$label.yml" "free to wait on publishers: promote"
+    else
+        check "promote job running '$cmd' is not a publisher" 0 \
+              "$TMP/promote-$label.yml" "free to wait on publishers: \$"
+    fi
+done <<'PROMOTE'
+crane-tag|1|crane tag "${NAME}:${TAG}" latest
+crane-copy|1|crane copy ghcr.io/x:1 docker.io/x:1
+imagetools-create|1|docker buildx imagetools create -t ghcr.io/x:latest ghcr.io/x:1 ghcr.io/x:1-arm64
+manifest-push|1|docker manifest push ghcr.io/x:latest
+oras-cp|1|oras cp ghcr.io/x:1 docker.io/x:1
+oras-attach|1|oras attach --artifact-type a ghcr.io/x:1 f
+cosign-sign|1|cosign sign --yes "${NAME}@${DIGEST}"
+cosign-attest|1|cosign attest --yes --predicate p "${NAME}@${DIGEST}"
+crane-manifest-var|0|crane manifest "${NAME}:${TAG}"
+oras-manifest-fetch|0|oras manifest fetch "${NAME}:${TAG}"
+crane-digest|0|g=$(crane digest "${NAME}:latest" 2>/dev/null) || g="absent"
+imagetools-inspect|0|D=$(docker buildx imagetools inspect "${NAME}:${TAG}" --format '{{.Manifest.Digest}}')
+plugin-install|0|docker plugin install --grant-all-permissions "$REF"
+build-load|0|docker buildx build --load -t x .
+go-install-oras|0|go install oras.land/oras/cmd/oras@v1.3.4
+string-naming-cosign|0|what="cosign bundle signing \`checksums.txt\`"
+echo-docker-push|0|echo "run docker push by hand"
+echo-escaped-backtick|0|echo "run \`docker push\` by hand"
+PROMOTE
+
+promote "$TMP/promote-action.yml" "      - uses: actions/attest-build-provenance@v4
+        with:
+          push-to-registry: true"
+check "a reference-writing action keeps the promote job out (#798)" 0 \
+      "$TMP/promote-action.yml" "free to wait on publishers: promote"
+
+# A job that signs AND uploads is a publisher (#798): a reference write must
+# not outrank its bytes, or release/release-arm64 would leave the population.
+threepub "$TMP/third-signandpush.yml" "      - run: cosign sign --yes x@sha256:0
+      - run: docker push ghcr.io/x:riscv64
+      - run: cosign sign --yes y@sha256:0"
+check "bytes outrank a reference write in the same job (#798)" 1 \
+      "$TMP/third-signandpush.yml" "release-riscv64 reaches release"
+
+# --- #798: release.yml as it ships keeps its downstream contract ------
+# promote-latest re-tags with `crane tag` and github-release cuts the
+# release; both name both builds in needs:, and the file must stay exit 0.
+if [ -f "$REAL" ]; then
+    for j in promote-latest github-release; do
+        n=$((n + 1))
+        line="$(awk -v j="  $j:" '$0 == j { f = 1; next } f && /^    needs:/ { print; exit }' "$REAL")"
+        case "$line" in
+            *release,*release-arm64*) echo "PASS: $j needs both builds in release.yml" ;;
+            *) echo "FAIL: $j does not need both builds in release.yml: '$line'"
+               failures=$((failures + 1)) ;;
+        esac
+    done
+    check "release.yml as it ships: both builds publish, promote-latest only re-tags" 0 \
+          "$REAL" "free to wait on publishers: promote-latest"
+    check "release.yml as it ships: the population is exactly the two builds" 0 \
+          "$REAL" "none waiting on another: release release-arm64\$"
+fi
 
 # --- refusal, not a verdict, on nothing to read -----------------------
 check "a missing file is exit 2" 2 "$TMP/nope.yml" "not a readable file"
