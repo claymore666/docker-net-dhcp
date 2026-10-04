@@ -40,7 +40,7 @@ func TestKea6Option17ReachesTheOptionsLogLine(t *testing.T) {
 		}
 	})
 	answerRouterSolicits(t, f.Bridge(), sender, spec)
-	cap6 := f.StartDHCPv6Capture()
+	cap6 := kea.StartDHCPv6Capture()
 
 	// The first v6 line of this network is the bind's, so a later renew line cannot pass for it (#1033).
 	logMark := harness.MarkPluginLog(t, ctx)
