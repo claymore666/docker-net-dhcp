@@ -740,6 +740,17 @@ jobs:
       - name: Doc opener names its own function
         run: bash scripts/check-doc-opener.sh
 
+      # The upgrade table is what tells an operator which dashboards and
+      # alerts to fix, and nothing compared it with the code: one table
+      # claimed a "_v4/_v6 name split" that /metrics never had and left a
+      # renamed /Plugin.Health key out, on a head green everywhere. The
+      # subject is the difference between the previous release tag and
+      # this tree, so it reads the tags fetched above and runs after that
+      # step; a removed name must be in the section above the previous
+      # release, an addition never is (#856).
+      - name: Changed names are in the release notes
+        run: bash scripts/check-breaking-names.sh
+
       # registerDHCPManager returns the manager it displaced, and
       # dropping that return value leaks a running dhcpcd nothing can
       # stop, bidding for the same lease on the same interface. The
