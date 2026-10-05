@@ -234,6 +234,139 @@ widen_promote_needs() {
 run "a proof added to needs: without a page edit fails" \
     1 none widen_promote_needs "has 9"
 
+# --- 5. every job is named, emphasised (#799) -------------------------
+# `resolve` went unnamed for a cycle and `production-shape` (#1014) after
+# it; rule 3 only looked at `verify-install*`.
+add_job_to_workflow() {
+    python3 - "$1" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+s = s.replace("\n  promote-latest:\n",
+              "\n  publish-to-a-third-registry:\n    needs: [release]\n"
+              "    runs-on: ubuntu-latest\n    steps:\n"
+              "      - name: Push somewhere new\n        run: true\n\n"
+              "  promote-latest:\n", 1)
+open(p, "w").write(s)
+PY
+}
+run "a job added to the workflow and not to the page fails" \
+    1 none add_job_to_workflow "publish-to-a-third-registry"
+
+# shellcheck disable=SC2016 # the backticks are literal markdown
+unname_production_shape() { sed -i 's/\*\*production-shape\*\*/the engine gate/g; s/`production-shape`/the engine gate/g' "$1"; }
+run "the engine gate job unnamed on the page fails" \
+    1 unname_production_shape none "production-shape"
+
+# Prose use is not naming: `resolve` and `release` are ordinary words.
+# shellcheck disable=SC2016 # the backticks are literal markdown
+unemphasise_resolve() { sed -i 's/\*\*resolve\*\*/resolve/g; s/`resolve`/resolve/g' "$1"; }
+run "a job named only as a plain word fails" \
+    1 unemphasise_resolve none "'resolve'"
+
+# --- 6. the page's step chains name real steps, in order (#799) --------
+ghost_step_in_chain() {
+    sed -i 's|Log in to Docker Hub → \*\*Both registries|Log in to Docker Hub → **Warn if Docker Hub credentials missing** → **Both registries|' "$1"
+}
+run "a chain naming a step the job does not run fails" \
+    1 ghost_step_in_chain none "Warn if Docker Hub credentials missing"
+
+foreign_step_opens_chain() {
+    sed -i 's|in this order: checkout → setup-go|in this order: Resolve release tag → checkout → setup-go|' "$1"
+}
+run "a chain opening with another job's step fails" \
+    1 foreign_step_opens_chain none "Resolve release tag"
+
+swap_chain_order() {
+    sed -i 's|Install syft → \*\*Generate SBOM (SPDX + CycloneDX)\*\*|**Generate SBOM (SPDX + CycloneDX)** → Install syft|' "$1"
+}
+run "a chain out of workflow order fails" \
+    1 swap_chain_order none "out of order"
+
+drop_promote_chain() {
+    python3 - "$1" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+a = s.index("Steps: *Refuse to")
+b = s.index(":latest*.", a)
+s = s[:a] + "Steps: see the run." + s[b + len(":latest*."):]
+open(p, "w").write(s)
+PY
+}
+run "a walked job with no chain on the page fails" \
+    1 drop_promote_chain none "no step chain"
+
+# --- 7. the arm64 chain does not wait on the amd64 build (#799) --------
+arm_proof_needs_release() {
+    python3 - "$1" <<'PY'
+import re, sys
+p = sys.argv[1]; s = open(p).read()
+s, n = re.subn(r"(\n  verify-install-hub-alias-arm64:\n    needs: )\[[^\]]*\]",
+               r"\1[release, release-arm64]", s)
+assert n == 1
+open(p, "w").write(s)
+PY
+}
+run "an arm64 install proof that names release fails" \
+    1 none arm_proof_needs_release "verify-install-hub-alias-arm64"
+
+# Through an amd64 proof, in the scalar form `verify-install` itself uses.
+arm_proof_reaches_release() {
+    python3 - "$1" <<'PY'
+import re, sys
+p = sys.argv[1]; s = open(p).read()
+s, n = re.subn(r"(\n  verify-install-arm64:\n    needs: )\[[^\]]*\]",
+               r"\1verify-install", s)
+assert n == 1
+open(p, "w").write(s)
+PY
+}
+run "an arm64 job reaching release through needs fails" \
+    1 none arm_proof_reaches_release "verify-install-arm64"
+
+arm_job_without_suffix() {
+    python3 - "$1" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+s = s.replace("\n  promote-latest:\n",
+              "\n  smoke:\n    needs: [release]\n"
+              "    runs-on: ubuntu-24.04-arm\n    steps:\n"
+              "      - name: Smoke\n        run: true\n\n"
+              "  promote-latest:\n", 1)
+open(p, "w").write(s)
+PY
+}
+run "an arm64 job without the suffix that waits on release fails" \
+    1 none arm_job_without_suffix "'smoke' runs on arm64"
+
+block_needs() {
+    python3 - "$1" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+old = "\n  verify-install:\n    needs: release\n"
+assert s.count(old) == 1
+s = s.replace(old, "\n  verify-install:\n    needs:\n      - release\n")
+open(p, "w").write(s)
+PY
+}
+run "a block-form needs: is a refusal" \
+    2 none block_needs "block form"
+
+no_arm_jobs() {
+    python3 - "$1" <<'PY'
+import re, sys
+p = sys.argv[1]; s = open(p).read()
+s = re.sub(r"\n  [a-z0-9-]*-arm64:\n.*?(?=\n  [a-z0-9_-]+:\n)", "\n", s, flags=re.S)
+s = s.replace("ubuntu-24.04-arm", "ubuntu-24.04")
+open(p, "w").write(s)
+PY
+}
+run "a workflow with no arm64 job is a refusal" \
+    2 none no_arm_jobs "no arm64 job"
+
+rename_release_job() { sed -i 's/^  release:$/  release-amd64:/' "$1"; }
+run "a workflow with no job named release fails" \
+    1 none rename_release_job "no job named 'release'"
+
 echo
 echo "passed: $pass  failed: $fail"
 [ "$fail" -eq 0 ]
