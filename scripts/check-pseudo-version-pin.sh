@@ -87,7 +87,7 @@ git -C "$tree" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
     || gate_refuse "$tree is not in a git work tree; the modules are discovered through git"
 if [ -n "$gitref" ]; then
     git -C "$tree" rev-parse -q --verify "$gitref^{commit}" >/dev/null \
-        || gate_refuse "$gitref is not a commit in $tree"
+        || gate_refuse "$gitref names no revision in $tree"
     mapfile -d '' -t listed < <(git -C "$tree" ls-tree -r -z --name-only "$gitref"; printf 'rc=%s\0' "$?")
 else
     mapfile -d '' -t listed < <(git -C "$tree" ls-files -z --cached --others --exclude-standard; printf 'rc=%s\0' "$?")

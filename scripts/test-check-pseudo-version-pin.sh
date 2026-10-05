@@ -204,7 +204,7 @@ want_in "--ref judges the committed go.mod, not the edited work tree" 1 "only a 
 want_in "without --ref the edited work tree is what is judged" 0 "no refused pin" --event push --target v2.5.0 --tree "$d"
 "${GITC[@]}" -C "$d" tag -a -m t v9 HEAD
 want_in "--ref takes a tag name" 1 "pseudo-version" --event push --target v9 --tree "$d" --ref refs/tags/v9
-want_in "--ref to nothing is cannot-judge" 2 "is not a commit" --event push --target main --tree "$d" --ref refs/heads/nope
+want_in "--ref to nothing is cannot-judge" 2 "names no revision" --event push --target main --tree "$d" --ref refs/heads/nope
 d="$TMP/byref2"; mkrepo "$d" "$(req $LIB v1.4.0)"
 mkdir -p "$d/pkg/testdata"; printf '%smodule f\n%s\n' "" "$(req $LIB "$V_A")" > "$d/pkg/testdata/go.mod"
 "${GITC[@]}" -C "$d" add -A; "${GITC[@]}" -C "$d" commit -qm fixture
