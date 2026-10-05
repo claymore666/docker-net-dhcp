@@ -25,14 +25,20 @@
 #   ledger kinds   the literal first argument of audit( and auditFrom( in Go sources
 #
 # PREVIOUS TAG. The highest vX.Y.Z tag with no suffix, so -rcN is never picked,
-# in version order, and an ancestor of HEAD when the history is complete. A
-# shallow clone (CI, `git fetch --tags --depth=1`) cannot say what is an
-# ancestor and `git describe` finds nothing there, so the ancestor test is
-# skipped when the repository is shallow. Names are read with `git show`.
+# in version order, that is an ancestor of HEAD when the history is complete
+# and whose `## <tag>` heading is in the notes. The CI push event is a depth-1
+# clone (`git fetch --tags --depth=1`): it cannot say what is an ancestor and
+# `git describe` finds nothing there, so the ancestor test is skipped while
+# the repository is shallow; a pull request unshallows it first (the comment
+# budget step), so the test runs there. Names are read with `git show`. A tag
+# with no heading in this tree's notes is a release cut on main and not yet
+# merged back (a hotfix): it is skipped, and the line says so (#856).
 #
 # NOTES REGION. From the first `## v` heading down to the previous tag's
-# heading: every section not yet released. A name is mentioned when its whole
-# identifier is inside a backtick span or a fenced block there.
+# heading: every section not yet released. A heading that is not `## v` above
+# the first one is not part of it. A name is mentioned when its whole
+# identifier is inside a backtick span or a fenced block there. A backtick with
+# no partner in its paragraph makes spans unreadable, so it fails the gate.
 #   changed set empty                        pass, with or without a section
 #   changed set non-empty, no section        fail: a section must be added
 #   changed set non-empty, names unmentioned fail, naming them
@@ -42,10 +48,10 @@
 # sentence says removed or renamed. A name counts on any surface, and a generic
 # word (bound, renew, config, stopped) inside any backtick span of the region
 # satisfies the kind of that name. Labels, options, flags and log lines are
-# not read. Refused (exit 2): no stable tag, the previous tag's heading is not
-# in the notes, a source unreadable or parsing to zero names at either tree, an
-# audit( call whose kind is not a literal, a HealthResponse field with no json
-# tag.
+# not read. A name that a skipped, unmerged tag added and removed is not seen.
+# Refused (exit 2): no stable tag has a heading in the notes, a source
+# unreadable or parsing to zero names at either tree, an audit( call whose kind
+# is not a literal, a HealthResponse field with no json tag.
 #
 # Usage: check-breaking-names.sh [<tree>]
 # Exit:  0 clean, 1 a changed name is not in the notes, 2 cannot check.
@@ -84,7 +90,7 @@ def git(*args):
     return p.returncode, p.stdout.decode("utf-8", "replace"), p.stderr.decode("utf-8", "replace")
 
 
-def previous_tag():
+def previous_tag(lines):
     rc, out, err = git("tag", "--list")
     if rc != 0:
         refuse(f"git tag --list failed: {err.strip()}")
@@ -98,10 +104,24 @@ def previous_tag():
         refuse("no vX.Y.Z release tag resolves here; a shallow clone needs `git fetch --tags --depth=1 origin`, and passing would have compared nothing")
     rc, out, _ = git("rev-parse", "--is-shallow-repository")
     shallow = rc == 0 and out.strip() == "true"
+    top, skipped = None, []
     for _, t in tags:
-        if shallow or git("merge-base", "--is-ancestor", f"refs/tags/{t}", "HEAD")[0] == 0:
+        if not (shallow or git("merge-base", "--is-ancestor", f"refs/tags/{t}", "HEAD")[0] == 0):
+            continue
+        top = top or t
+        if heading_at(lines, t) is not None:
+            for s in skipped:
+                print(f"check-breaking-names: skipping {s}: no `## {s}` heading in {NOTES}, a release not merged back into this tree")
             return t
-    refuse("no release tag is an ancestor of HEAD")
+        skipped.append(t)
+    if top is None:
+        refuse("no release tag is an ancestor of HEAD")
+    refuse(f"{NOTES} has no `## {top}` heading; without it the unreleased region cannot be told from the released ones")
+
+
+def heading_at(lines, tag):
+    pat = re.compile(r"^## " + re.escape(tag) + r"(?:\s|$)")
+    return next((i for i, l in enumerate(lines) if pat.match(l)), None)
 
 
 def tree_file(ref, path):
@@ -191,22 +211,53 @@ SURFACES = (
 )
 
 
-def mentioned(region):
-    prose, tokens, fence = [], set(), False
-    for line in region:
-        if line.lstrip().startswith("```"):
+FENCE = re.compile(r"^\s*(```|~~~)")
+TICKS = re.compile(r"`+")
+
+
+def mentioned(region, offset):
+    """Tokens inside spans and fences, and the unpartnered backticks (line, text)."""
+    tokens, loose, fence, para, start = set(), [], False, [], 0
+
+    def close_paragraph():
+        if not para:
+            return
+        text = "\n".join(para)
+        runs = list(TICKS.finditer(text))
+        i = 0
+        while i < len(runs):
+            j = next((k for k in range(i + 1, len(runs)) if len(runs[k].group()) == len(runs[i].group())), None)
+            if j is None:
+                line = offset + start + text.count("\n", 0, runs[i].start()) + 1
+                loose.append((line, para[text.count("\n", 0, runs[i].start())].strip()))
+                i += 1
+                continue
+            tokens.update(re.findall(r"[A-Za-z0-9_]+", text[runs[i].end():runs[j].start()]))
+            i = j + 1
+        para.clear()
+
+    for n, line in enumerate(region):
+        if FENCE.match(line):
+            close_paragraph()
             fence = not fence
-            continue
-        if fence:
+        elif fence:
             tokens.update(re.findall(r"[A-Za-z0-9_]+", line))
+        elif not line.strip():
+            close_paragraph()
         else:
-            prose.append(line)
-    for span in re.findall(r"`([^`]+)`", "\n".join(prose)):
-        tokens.update(re.findall(r"[A-Za-z0-9_]+", span))
-    return tokens
+            if not para:
+                start = n
+            para.append(line)
+    close_paragraph()
+    return tokens, loose
 
 
-prev = previous_tag()
+if not os.path.isfile(NOTES):
+    refuse(f"{NOTES} is not a file in this tree")
+with open(NOTES, encoding="utf-8") as fh:
+    lines = fh.read().split("\n")
+
+prev = previous_tag(lines)
 rc, sha, _ = git("rev-parse", "--short", f"refs/tags/{prev}^{{commit}}")
 print(f"check-breaking-names: previous release {prev} ({sha.strip()}), notes {NOTES}")
 
@@ -222,16 +273,9 @@ for label, read in SURFACES:
     changed += [(label, n) for n in gone]
 print(f"changed: {len(changed)}")
 
-if not os.path.isfile(NOTES):
-    refuse(f"{NOTES} is not a file in this tree")
-with open(NOTES, encoding="utf-8") as fh:
-    lines = fh.read().split("\n")
 first = next((i for i, l in enumerate(lines) if re.match(r"^## v[0-9]", l)), None)
-heading = re.compile(r"^## " + re.escape(prev) + r"(?:\s|$)")
-at = next((i for i, l in enumerate(lines) if heading.match(l)), None)
-if first is None or at is None:
-    refuse(f"{NOTES} has no `## {prev}` heading; without it the unreleased region cannot be told from the released ones")
-region = lines[first:at]
+at = heading_at(lines, prev)
+region = [] if first is None else lines[first:at]
 
 if not changed:
     print(f"OK: no name changed since {prev}.")
@@ -244,7 +288,13 @@ if not region:
     print("Add the section for the next release and name each one (#856).", file=sys.stderr)
     sys.exit(1)
 
-seen = mentioned(region)
+seen, loose = mentioned(region, first)
+if loose:
+    print(f"FAIL  {NOTES} has a backtick with no partner in its paragraph, so spans there cannot be told from prose:", file=sys.stderr)
+    for n, text in loose:
+        print(f"  line {n}: {text}", file=sys.stderr)
+    print("Close or remove it, then name each changed name in backticks (#856).", file=sys.stderr)
+    sys.exit(1)
 missing = [(l, n) for l, n in changed if n not in seen]
 if missing:
     print(f"FAIL  {len(missing)} of {len(changed)} changed name(s) are not in the unreleased section of {NOTES}:", file=sys.stderr)

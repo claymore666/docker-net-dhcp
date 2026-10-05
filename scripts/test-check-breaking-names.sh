@@ -245,7 +245,7 @@ fx_version_order() {
 }
 fx_unreachable_higher_tag() {
     base "$1"
-    head_ "$1" "$NO_B" "$BK" "$BC" "$B_SILENT"
+    head_ "$1" "$NO_B" "$BK" "$BC" "$B_SILENT"$'## v9.0.0\n\nNine.\n\n'
     local br
     br=$(G "$1" rev-parse --abbrev-ref HEAD)
     G "$1" checkout -q --orphan side
@@ -334,6 +334,89 @@ fx_json_dash() {
     commit "$1" dash
 }
 
+fx_h2_above_first_version() {
+    base "$1"
+    head_ "$1" "$NO_B" "$BK" "$BC" $'## Upgrade notes\n\nThe `net_dhcp_b_total` series is removed.\n\n## v1.1.0\n\nSomething else changed.\n\n'
+}
+fx_rc_section_above_prev() {
+    base "$1"
+    head_ "$1" "$NO_B" "$BK" "$BC" $'## v1.0.0-rc1\n\nThe `net_dhcp_b_total` series is removed.\n\n'
+}
+fx_fenced_in_list_item() {
+    base "$1"
+    head_ "$1" "$NO_B" "$BK" "$BC" $'## v1.1.0\n\nRemoved:\n\n- the series:\n\n  ```\n  a first line\n\n  net_dhcp_b_total\n  ```\n\n'
+}
+fx_tilde_fence() {
+    base "$1"
+    head_ "$1" "$NO_B" "$BK" "$BC" $'## v1.1.0\n\nRemoved:\n\n~~~\nnet_dhcp_b_total\n~~~\n\n'
+}
+fx_lone_backtick() {
+    base "$1"
+    head_ "$1" "$BM" "status alpha gamma" "$BC" $'## v1.1.0\n\nUse a single ` to quote. Check the beta first, and `docker info`.\n\n'
+}
+fx_lone_backtick_other_paragraph() {
+    base "$1"
+    head_ "$1" "$NO_B" "$BK" "$BC" $'## v1.1.0\n\nA lone ` here.\n\nThe `net_dhcp_b_total` series is removed.\n\n'
+}
+fx_lone_backticks_two_paragraphs() {
+    base "$1"
+    head_ "$1" "$NO_B" "$BK" "$BC" $'## v1.1.0\n\nA lone ` here.\n\nAnother lone ` there.\n\nThe `net_dhcp_b_total` series is removed.\n\n'
+}
+fx_prose_beside_span() {
+    base "$1"
+    head_ "$1" "$BM" "status gamma" "$BC" $'## v1.1.0\n\nThe key `beta` is removed and alpha too.\n\n'
+}
+fx_rc_tag_with_heading() {
+    base "$1"
+    head_ "$1" "$NO_B" "$BK" "$BC" $'## v1.1.0-rc1\n\nThe `net_dhcp_b_total` series is removed.\n\n'
+    G "$1" tag v1.1.0-rc1 HEAD~1
+}
+fx_double_span_with_inner_tick() {
+    base "$1"
+    head_ "$1" "$NO_B" "$BK" "$BC" $'## v1.1.0\n\nThe ``net_dhcp_b_total ` series`` is removed.\n\n'
+}
+fx_notes_start_with_heading() {
+    base "$1"
+    src "$1" "$NO_B" "$BK" "$BC"
+    printf '## v1.0.0\n\nFirst release.\n' > "$1/RELEASE_NOTES.md"
+    commit "$1" drop
+}
+fx_double_backtick_span() {
+    base "$1"
+    head_ "$1" "$NO_B" "$BK" "$BC" $'## v1.1.0\n\nThe ``net_dhcp_b_total`` series is removed.\n\n'
+}
+# wrap_auditfrom <dir>: auditFrom forwards to audit with a variable, the shape of dhcp_manager.go.
+wrap_auditfrom() {
+    sed -i 's/^func (m \*dhcpManager) auditFrom(kind, ip, source string) {}$/func (m *dhcpManager) auditFrom(kind, ip, source string) {\n\tm.audit(kind, ip)\n}/' "$1/pkg/plugin/dhcp_manager.go"
+    commit "$1" wrap
+}
+fx_auditfrom_wrapper_at_tag() {
+    base "$1"
+    wrap_auditfrom "$1"
+    G "$1" tag -f v1.0.0 >/dev/null
+    head_ "$1" "$BM" "$BK" "$BC" "$B_SILENT"
+}
+fx_auditfrom_wrapper_at_head() {
+    base "$1"
+    head_ "$1" "$BM" "$BK" "$BC" "$B_SILENT"
+    wrap_auditfrom "$1"
+}
+# hotfix_clone <builder> <dir>: dir is a depth-1 clone of a tree whose newer release tag sits on a branch not merged in.
+hotfix_clone() {
+    local s="$2.src" br
+    "$1" "$s"
+    br=$(G "$s" rev-parse --abbrev-ref HEAD)
+    G "$s" checkout -q -b hotfix v1.0.0
+    printf 'fix\n' > "$s/hotfix.txt"
+    commit "$s" hotfix
+    G "$s" tag v1.0.1
+    G "$s" checkout -q "$br"
+    git clone -q --depth=1 "file://$s" "$2" 2>/dev/null
+    G "$2" fetch -q --tags --depth=1 origin
+}
+fx_hotfix_unmerged_shallow_named() { hotfix_clone fx_removed_named "$1"; }
+fx_hotfix_unmerged_shallow_unnamed() { hotfix_clone fx_removed_unnamed "$1"; }
+
 CASES=(
     "a removed metric named in backticks passes (the direction trap)|fx_removed_named|0"
     "a removed metric absent from the section fails|fx_removed_unnamed|1"
@@ -356,6 +439,22 @@ CASES=(
     "no change and no section passes|fx_no_section_empty_set|0"
     "a change and no section above the previous release fails|fx_no_section_nonempty|1"
     "no change with a section that names nothing passes|fx_section_empty_set|0"
+    "a heading that is not a version above the first one is not unreleased|fx_h2_above_first_version|1"
+    "a release candidate section above the previous release counts as unreleased|fx_rc_section_above_prev|0"
+    "a name in an indented fenced block in a list item counts|fx_fenced_in_list_item|0"
+    "a name in a tilde fence counts|fx_tilde_fence|0"
+    "a double-backtick span counts|fx_double_backtick_span|0"
+    "a name beside a span in the same paragraph is still prose|fx_prose_beside_span|1"
+    "a release candidate tag with its own heading is not the previous release|fx_rc_tag_with_heading|0"
+    "a double-backtick span may hold a single backtick|fx_double_span_with_inner_tick|0"
+    "a notes file that opens with the previous release's heading has no section|fx_notes_start_with_heading|1"
+    "a lone backtick does not turn prose into a span|fx_lone_backtick|1"
+    "a lone backtick in a paragraph of the notes fails even with the name spelled out|fx_lone_backtick_other_paragraph|1"
+    "lone backticks in two paragraphs do not pair across the blank line|fx_lone_backticks_two_paragraphs|1"
+    "an auditFrom wrapper that forwards a variable is not a kind at the tag|fx_auditfrom_wrapper_at_tag|0"
+    "an auditFrom wrapper that forwards a variable is not a kind at HEAD|fx_auditfrom_wrapper_at_head|0"
+    "a release tag not merged back is skipped, and the name is judged against the one before it|fx_hotfix_unmerged_shallow_named|0"
+    "a skipped tag does not excuse an unnamed removal|fx_hotfix_unmerged_shallow_unnamed|1"
     "no stable tag is refused|fx_no_tag|2"
     "only a release candidate tag is refused|fx_only_rc_tag|2"
     "the previous tag's heading missing from the notes is refused|fx_prev_heading_missing|2"
@@ -435,6 +534,8 @@ check_out "a changed set counts every surface" fx_kind_removed_unnamed '^  ledge
 check_out "the missing name is listed with its surface" fx_removed_unnamed 'metric name net_dhcp_b_total'
 check_out "no section says a section must be added" fx_no_section_nonempty 'Add the section for the next release'
 check_out "an addition is not listed" fx_added_only_section '^changed: 0$'
+check_out "a skipped tag is named with the reason" fx_hotfix_unmerged_shallow_named 'skipping v1\.0\.1: no `## v1\.0\.1` heading'
+check_out "a lone backtick is named by line" fx_lone_backtick '^  line 7: Use a single'
 check_out "the previous release is named" fx_removed_named 'previous release v1\.0\.0 '
 
 echo "--- mutants ---"
