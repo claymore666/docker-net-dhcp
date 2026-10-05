@@ -18,7 +18,11 @@ on:
     # then edit it out: no run fires, the green check stands, and the
     # merged PR carries no waiver. A waiver that can be withdrawn after
     # it is honoured is not a waiver.
-    types: [opened, synchronize, reopened, edited]
+    #
+    # `ready_for_review` is load-bearing the same way (#1228): the pin
+    # gate skips a draft, and marking the PR ready fires no other event
+    # that would judge the pin it was allowed to carry meanwhile.
+    types: [opened, synchronize, reopened, edited, ready_for_review]
   # Weekly run so govulncheck surfaces CVEs that publish between
   # commits — new vulnerabilities don't wait for our next push (#127).
   schedule:
@@ -186,6 +190,12 @@ jobs:
   policy-gates:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # pull-requests: read is for the pin gate's live draft-flag read
+    # (#1228); replacing the workflow-level block means contents is
+    # restated.
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -589,6 +599,32 @@ jobs:
           trap 'rm -rf "${d}"' EXIT
           go build -o "${d}/net-dhcp" ./cmd/net-dhcp
           bash scripts/check-library-pin.sh --binary "${d}/net-dhcp"
+
+      # A pseudo-version pin is for testing a library fix on a branch and
+      # may not land (#1228): into dev only when the library's dev or main
+      # holds the commit, into main never. Runs on every event of this
+      # workflow, pushes included, and a draft PR is skipped. The draft
+      # flag is read live, not from the event: a re-run of a draft-time
+      # run replays that run's old payload, and `true` there would skip
+      # the gate on a PR that has since been marked ready.
+      - name: Refuse a pseudo-version pin outside a draft pull request
+        env:
+          EVENT: ${{ github.event_name }}
+          TARGET: ${{ github.event.pull_request.base.ref || github.ref_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          draft=''
+          if [ "$EVENT" = pull_request ]; then
+            draft="$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .draft)" || {
+              echo "::error title=Draft flag unreadable::could not read the draft flag of pull request $PR_NUMBER; the pin gate will not guess." >&2
+              exit 2
+            }
+          fi
+          bash scripts/check-pseudo-version-pin.sh \
+            --event "$EVENT" --target "$TARGET" --draft "$draft"
 
       # netlink v1.3.1 hands ErrDumpInterrupted back ALONGSIDE a usable
       # result set, so a dump call comparing its error against nil turns
