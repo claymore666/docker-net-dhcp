@@ -232,21 +232,46 @@ else
     echo "FAIL: test.yaml pull_request types lack ready_for_review; the draft skip would never be re-judged"
     failures=$((failures + 1))
 fi
-step=$(awk '/- name: Refuse a pseudo-version pin/{f=1} f{print} f&&/check-pseudo-version-pin.sh/{exit}' "$WF")
-if [ -z "$step" ]; then
+# The step ends at its first blank line; every line of it is judged below
+# with leading blanks removed and backslash continuations joined.
+step=$(awk '/- name: Refuse a pseudo-version pin/{f=1} f&&/^$/{exit} f{print}' "$WF")
+if ! command grep -qF 'check-pseudo-version-pin.sh' <<< "$step"; then
     echo "FAIL: test.yaml no longer invokes check-pseudo-version-pin.sh"
     failures=$((failures + 1))
 else
-    if command grep -qE '^\s+if:' <<< "$step"; then
+    flat=$(sed -e 's/^[[:space:]]*//' <<< "$step" | sed -z 's/ \\\n/ /g')
+    if command grep -qE '^if:' <<< "$flat"; then
         echo "FAIL: the pin step carries an if:; a skipped step reads as green"; failures=$((failures + 1))
     else
         echo "PASS: the pin step has no if:"
     fi
-    if command grep -qF 'github.event.pull_request.number' <<< "$step" \
-        && command grep -qE 'pulls/.*\.draft' <<< "$step"; then
-        echo "PASS: the draft flag is re-read live, not taken from the event payload"
+    # Each line below decides what the gate judges (#1228): the target is
+    # the PR's base branch, not its head; the draft flag is the live API
+    # answer; the PR number and event reach the read unchanged. An edit
+    # that still lints and passes the cases above is what these catch.
+    for want in \
+        'EVENT: ${{ github.event_name }}' \
+        'TARGET: ${{ github.event.pull_request.base.ref || github.ref_name }}' \
+        'PR_NUMBER: ${{ github.event.pull_request.number }}' \
+        'REPO: ${{ github.repository }}' \
+        "draft=''" \
+        'if [ "$EVENT" = pull_request ]; then' \
+        'draft="$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .draft)" || {' \
+        'exit 2' \
+        'bash scripts/check-pseudo-version-pin.sh --event "$EVENT" --target "$TARGET" --draft "$draft"'
+    do
+        if command grep -qxF -- "$want" <<< "$flat"; then
+            echo "PASS: the pin step has the line: $want"
+        else
+            echo "FAIL: the pin step lacks the exact line: $want"; failures=$((failures + 1))
+        fi
+    done
+    # A line the list above does not name (a `draft=true` slipped in
+    # between the read and the call) changes the count.
+    if [ "$(wc -l <<< "$step")" -eq 18 ]; then
+        echo "PASS: the pin step has exactly the 18 lines judged above"
     else
-        echo "FAIL: the pin step does not re-read the draft flag from the API"; failures=$((failures + 1))
+        echo "FAIL: the pin step gained or lost a line; judge it, then change this count"; failures=$((failures + 1))
     fi
 fi
 
