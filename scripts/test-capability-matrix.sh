@@ -18,6 +18,7 @@ fail=0
 ok() { echo "ok    $1"; pass=$((pass + 1)); }
 bad() { echo "FAIL  $1"; fail=$((fail + 1)); }
 
+tmp=
 guarded_tmpdir tmp
 mapfile -t COLS < <(bash "$GATE" --columns)
 PASSROW="enables=yes capeff=n/a mount=private bridge=pass macvlan=pass dns=pass user=pass dns_user=pass renew=pass renew_user=pass restart=pass"
@@ -50,7 +51,7 @@ run() {
 }
 # expect <case-label> <exit> <output-fragment>
 expect() {
-    if [ "$got" -eq "$2" ] && { [ -z "$3" ] || printf '%s' "$out" | grep -qF -- "$3"; }; then
+    if [ "$got" -eq "$2" ] && { [ -z "$3" ] || printf '%s' "$out" | grep -F -- "$3" >/dev/null; }; then
         ok "$1"
     else
         bad "$1: exit $got want $2, output: $(printf '%s' "$out" | tr '\n' ' ')"
@@ -112,6 +113,13 @@ sed -i 's/| `CAP_NET_ADMIN` | yes | dropped | private | fail/| `CAP_NET_ADMIN` |
 run badval --reconcile "$tmp/badval/rows"
 expect "a value outside the column's vocabulary is red even when the table agrees" 1 "bridge='maybe' is not a measured value"
 
+for kv in enables=maybe capeff=maybe mount=Private; do
+    k="${kv%%=*}"; v="${kv#*=}"
+    base "vocab-$k"; sed -i "s/ $k=[^ ]*/ $k=$v/" "$tmp/vocab-$k/rows/CAP_NET_ADMIN.row"
+    run "vocab-$k" --reconcile "$tmp/vocab-$k/rows"
+    expect "$k='$v' is outside the column's vocabulary and red" 1 "$k='$v' is not a measured value"
+done
+
 base dropcol; sed -i 's/ restart=fail//' "$tmp/dropcol/rows/CAP_NET_ADMIN.row"
 run dropcol --reconcile "$tmp/dropcol/rows"
 expect "a row missing a column is red" 1 "restart='' is not a measured value"
@@ -168,7 +176,7 @@ d="$tmp/shipped"; mkdir -p "$d"
 mapfile -t cells < <(bash "$GATE" --cells-json | jq -r '.[]')
 for c in "${cells[@]}"; do printf 'CAP_MATRIX_ROW removed=%s result=ok\n' "$c" > "$d/$c.row"; done
 out="$(bash "$GATE" --reconcile "$d" 2>&1)"; got=$?
-if [ "$got" -eq 1 ] && ! printf '%s' "$out" | grep -qE 'no single row|names no cell|table header|no capability-matrix block'; then
+if [ "$got" -eq 1 ] && ! printf '%s' "$out" | grep -E 'no single row|names no cell|table header|no capability-matrix block' >/dev/null; then
     ok "the shipped docs table has one row per cell of the shipped config.json"
 else
     bad "shipped table: exit $got, output: $(printf '%s' "$out" | grep -E 'no single row|names no cell|table header|block' | tr '\n' ' ')"

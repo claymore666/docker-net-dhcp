@@ -162,7 +162,7 @@ restarted() {
     docker restart -t 2 cm-c-mv >/dev/null || { say "restart refused"; return 1; }
     for _ in $(seq 1 20); do
         mac="$(mac_of cm-c-mv)"
-        if [ -n "$mac" ] && tail -n +"$((before + 1))" <(grep DHCPACK "$DLOG") | grep -q " $mac"; then
+        if [ -n "$mac" ] && tail -n +"$((before + 1))" <(grep DHCPACK "$DLOG") | grep -F " $mac" >/dev/null; then
             attached cm-c-mv 10.98.1.; return
         fi
         sleep 1

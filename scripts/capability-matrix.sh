@@ -112,7 +112,7 @@ reconcile() {
     done
     while IFS='|' read -r cell _; do
         [ -z "$cell" ] && continue
-        printf '%s\n' "${all_cells[@]}" | grep -qxF "$cell" \
+        printf '%s\n' "${all_cells[@]}" | grep -xF "$cell" >/dev/null \
             || { echo "::error title=capability matrix::docs table row $cell names no cell of config.json" >&2; rc=1; }
     done <<<"$table"
     return "$rc"
@@ -123,7 +123,7 @@ case "${1:-}" in
     --columns) printf '%s\n' "${COLUMNS[@]}" ;;
     --strip)
         [ $# -eq 3 ] || die "--strip <capability> <config.json>"
-        capabilities | grep -qxF "$2" || die "$2 is not requested by $CONFIG"
+        capabilities | grep -xF "$2" >/dev/null || die "$2 is not requested by $CONFIG"
         jq --arg c "$2" '.linux.capabilities -= [$c]' "$3" ;;
     --reconcile) shift; reconcile "$@" ;;
     *) die "usage: --cells-json | --columns | --strip <capability> <config.json> | --reconcile [--strict] <rows-dir>" ;;
