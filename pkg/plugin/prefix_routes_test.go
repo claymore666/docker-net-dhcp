@@ -578,8 +578,7 @@ func TestApplyPrefixes_ALeaseWithoutTheAskedPrefixSaysSo(t *testing.T) {
 	}
 }
 
-// dhcp-golib v1.4.2 reports a binding whose valid lifetime ends while bound as a Changed lease without it, which pkg/dhcp
-// delivers as "renew" (dhcp-golib#65, #214); the kernel's own tables are read back.
+// dhcp-golib v1.4.2 (#65, #214) reports an ended binding as a Changed lease without it, which pkg/dhcp delivers as "renew".
 func TestHandleEvent_ABindingEndingWhileBoundLeavesTheContainer(t *testing.T) {
 	if !inOwnNetns(t) {
 		return
@@ -626,7 +625,6 @@ func TestHandleEvent_ABindingEndingWhileBoundLeavesTheContainer(t *testing.T) {
 	}
 }
 
-// kernelV6Bindings is the link's global v6 addresses and the namespace's unreachable v6 routes, sorted.
 func kernelV6Bindings(t *testing.T, l renumberLink) []string {
 	t.Helper()
 	out := l.addrs(t, netlink.FAMILY_V6)
@@ -637,7 +635,6 @@ func kernelV6Bindings(t *testing.T, l renumberLink) []string {
 	return out
 }
 
-// unreachableV6Routes lists the namespace's unreachable v6 routes in every table, whoever installed them.
 func unreachableV6Routes(t *testing.T, l renumberLink) []netlink.Route {
 	t.Helper()
 	routes, err := util.DumpResult(l.h.RouteListFiltered(netlink.FAMILY_V6, &netlink.Route{Table: unix.RT_TABLE_UNSPEC},
