@@ -280,7 +280,7 @@ cat >> "$ws/.github/workflows/integration-hosted.yml" <<'YML'
           dir: plugin-nowhere
 YML
 check "a later step's dir is not read into the call" 0 "$ws" "5 plugin install(s)"
-# Beside four judged installs, so the refusal is the only red left.
+# Beside the tree's judged installs, so the refusal is the only red left.
 ws=$(mkws); cp -r "$ws/$(dirname "$ACT")" "$ws/.github/actions/install-copy"
 sed -i -E 's|^( +)PLUGIN_DIR: .*$|\1PLUGIN_DIR: plugin|' "$ws/.github/actions/install-copy/action.yml"
 check "an untraced template is red even when every call is clean" 1 "$ws" "cannot trace"

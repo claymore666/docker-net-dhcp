@@ -5,14 +5,30 @@ name: Capability matrix
 # turn, one hosted cell each, eight scenarios per cell judged on outside
 # evidence by scripts/capability-cell.sh. A cell records; only the
 # reconcile job judges, against the table in docs/reference.md.
-# `push` because a dispatch-only workflow is unreachable until it is on the
-# default branch (.github/dispatch-pending.txt). The paths are what runs in
-# the plugin and the table judged against, so a change that starts needing
-# another capability fails here (#690). Branches only: a tag push ignores
-# path filters and would re-measure an unchanged tree.
+# A pull request into dev or main, and the push after its merge, measure
+# what runs in the plugin and the table judged against, so a change that
+# starts needing another capability fails here (#690). A draft pull request
+# is where the first measurement is taken: a `?` is red once it is ready.
 on:
+  pull_request:
+    branches: [dev, main]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - 'config.json'
+      - 'cmd/**'
+      - 'pkg/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Dockerfile'
+      - 'Makefile'
+      - 'docs/reference.md'
+      - '.github/workflows/capability-matrix.yml'
+      - '.github/actions/install-plugin/action.yml'
+      - '.github/actions/teardown-plugin/action.yml'
+      - 'scripts/capability-cell.sh'
+      - 'scripts/capability-matrix.sh'
   push:
-    branches: ['**']
+    branches: [dev, main]
     paths:
       - 'config.json'
       - 'cmd/**'
@@ -152,14 +168,18 @@ jobs:
           pattern: capability-row-*
           path: downloaded
 
-      # On dev and main an unmeasured "?" in the table is red; on a branch it
-      # is a warning naming the value to commit (#690).
+      # An unmeasured "?" in the table is red where a merge happens and a
+      # warning naming the value to commit elsewhere (#690).
       - name: Reconcile the cells against docs/reference.md
         shell: bash
         env:
+          EVENT: ${{ github.event_name }}
           REF: ${{ github.ref }}
+          DRAFT: ${{ github.event.pull_request.draft || false }}
         run: |
           set -o pipefail
           strict=()
-          case "$REF" in refs/heads/dev|refs/heads/main) strict=(--strict) ;; esac
+          mode="$(bash scripts/capability-matrix.sh --strictness "$EVENT" "$REF" "$DRAFT")" || exit 2
+          echo "unmeasured table cells are $mode here"
+          [ "$mode" = strict ] && strict=(--strict)
           bash scripts/capability-matrix.sh --reconcile "${strict[@]}" downloaded | tee -a "$GITHUB_STEP_SUMMARY"

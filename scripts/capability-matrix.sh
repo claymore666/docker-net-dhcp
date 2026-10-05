@@ -6,6 +6,8 @@
 #
 # Usage: capability-matrix.sh --cells-json
 #        capability-matrix.sh --columns
+#        capability-matrix.sh --dhcp-count <log> <after-line> <mac> <TYPE>
+#        capability-matrix.sh --strictness <event> <ref> <draft>
 #        capability-matrix.sh --strip <capability> <config.json>
 #        capability-matrix.sh --reconcile [--strict] <rows-dir>
 # Exit:  0 agrees, 1 disagrees, 2 cannot check.
@@ -29,6 +31,35 @@ capabilities() {
 }
 
 cells() { echo none; capabilities; }
+
+# dhcp_count prints how many dnsmasq log lines after line N carry a TYPE(
+# message for exactly that MAC as a whole field (#690 D7, D8).
+dhcp_count() {
+    [ -r "$1" ] || die "cannot read $1"
+    awk -v n="$2" -v mac="$3" -v t="$4(" '
+        NR <= n { next }
+        { ty = 0; m = 0
+          for (i = 1; i <= NF; i++) {
+              if (index($i, t) == 1) ty = 1
+              if ($i == mac) m = 1
+          }
+          if (ty && m) c++ }
+        END { print c + 0 }' "$1"
+}
+
+# A `?` is red where a merge happens: a push to dev or main, and a pull
+# request that is not a draft. A draft or another branch is where the
+# first measurement is taken, so there it is a warning (#690).
+strictness() {
+    case "$1:$2:$3" in
+        pull_request:*:false) echo strict ;;
+        pull_request:*:true) echo lenient ;;
+        push:refs/heads/dev:* | push:refs/heads/main:*) echo strict ;;
+        workflow_dispatch:refs/heads/dev:* | workflow_dispatch:refs/heads/main:*) echo strict ;;
+        push:*|workflow_dispatch:*) echo lenient ;;
+        *) die "no strictness for event '$1' ref '$2' draft '$3'" ;;
+    esac
+}
 
 allowed() {
     case "$1" in
@@ -121,10 +152,16 @@ reconcile() {
 case "${1:-}" in
     --cells-json) cells | jq -R . | jq -cs . ;;
     --columns) printf '%s\n' "${COLUMNS[@]}" ;;
+    --dhcp-count)
+        [ $# -eq 5 ] && [[ "$3" =~ ^[0-9]+$ ]] || die "--dhcp-count <log> <after-line> <mac> <TYPE>"
+        dhcp_count "$2" "$3" "$4" "$5" ;;
+    --strictness)
+        [ $# -eq 4 ] || die "--strictness <event> <ref> <draft>"
+        strictness "$2" "$3" "$4" ;;
     --strip)
         [ $# -eq 3 ] || die "--strip <capability> <config.json>"
         capabilities | grep -xF "$2" >/dev/null || die "$2 is not requested by $CONFIG"
         jq --arg c "$2" '.linux.capabilities -= [$c]' "$3" ;;
     --reconcile) shift; reconcile "$@" ;;
-    *) die "usage: --cells-json | --columns | --strip <capability> <config.json> | --reconcile [--strict] <rows-dir>" ;;
+    *) die "usage: --cells-json | --columns | --dhcp-count <log> <line> <mac> <TYPE> | --strictness <event> <ref> <draft> | --strip <capability> <config.json> | --reconcile [--strict] <rows-dir>" ;;
 esac

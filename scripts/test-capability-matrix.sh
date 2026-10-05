@@ -162,6 +162,49 @@ fi
 run cells --strip CAP_SYS_ADMIN "$tmp/cells/config.json"
 expect "--strip of a capability config.json does not request is refused" 2 "is not requested"
 
+# The server-log count the cell's renewal and restart verdicts rest on.
+log="$tmp/dnsmasq.log"
+M1=02:42:0a:00:00:01 M2=02:42:0a:00:00:02
+cat > "$log" <<EOF
+dnsmasq-dhcp[1]: 111 DHCPDISCOVER(cm-mvp) $M1
+dnsmasq-dhcp[1]: 111 DHCPACK(cm-mvp) 10.98.1.50 $M1 host
+dnsmasq-dhcp[1]: 222 DHCPACK(cm-mvp) 10.98.1.51 $M2
+dnsmasq-dhcp[1]: 333 DHCPREQUEST(cm-mvp) 10.98.1.50 $M1
+dnsmasq-dhcp[1]: 333 DHCPACK(cm-mvp) 10.98.1.50 $M1
+dnsmasq-dhcp[1]: 444 DHCPNAK(cm-mvp) 10.98.1.50 $M1 wrong server-ID
+EOF
+count_case() {
+    local label="$1" want="$2"; shift 2
+    out="$(bash "$GATE" --dhcp-count "$@" 2>&1)"; got=$?
+    if [ "$got" -eq 0 ] && [ "$out" = "$want" ]; then ok "$label"; else bad "$label: exit $got, '$out' want '$want'"; fi
+}
+count_case "every ACK for a MAC is counted from the top" 2 "$log" 0 "$M1" DHCPACK
+count_case "an ACK at or before the mark is not counted" 1 "$log" 2 "$M1" DHCPACK
+count_case "nothing after the last ACK counts, a NAK is not an ACK" 0 "$log" 5 "$M1" DHCPACK
+count_case "another MAC's ACK is not counted" 1 "$log" 0 "$M2" DHCPACK
+count_case "a DISCOVER before the mark is not counted" 0 "$log" 1 "$M1" DHCPDISCOVER
+count_case "a DISCOVER after the mark is counted" 1 "$log" 0 "$M1" DHCPDISCOVER
+count_case "a MAC prefix is not the MAC" 0 "$log" 0 "${M1%1}" DHCPACK
+out="$(bash "$GATE" --dhcp-count "$log" x "$M1" DHCPACK 2>&1)"; got=$?
+expect "a mark that is not a line number cannot be counted" 2 "--dhcp-count"
+out="$(bash "$GATE" --dhcp-count "$tmp/nolog" 0 "$M1" DHCPACK 2>&1)"; got=$?
+expect "a missing server log cannot be counted" 2 "cannot read"
+
+# Where a `?` is red: wherever a merge happens.
+strict_case() {
+    out="$(bash "$GATE" --strictness "$2" "$3" "$4" 2>&1)"; got=$?
+    if [ "$got" -eq 0 ] && [ "$out" = "$1" ]; then ok "$2 $3 draft=$4 is $1"; else bad "$2 $3 draft=$4: exit $got, '$out' want $1"; fi
+}
+strict_case strict pull_request refs/pull/7/merge false
+strict_case lenient pull_request refs/pull/7/merge true
+strict_case strict push refs/heads/dev false
+strict_case strict push refs/heads/main false
+strict_case lenient push refs/heads/ci/x false
+strict_case strict workflow_dispatch refs/heads/main false
+strict_case lenient workflow_dispatch refs/heads/ci/x false
+out="$(bash "$GATE" --strictness schedule refs/heads/main false 2>&1)"; got=$?
+expect "an event the workflow does not declare has no strictness" 2 "no strictness"
+
 # The cell prints the keys this script declares, so neither can drift alone.
 keys="$(sed -n 's/.*for k in "\${\(COLUMNS\)\[@\]}".*/\1/p' "$CELL")"
 src="$(grep -c 'capability-matrix.sh" --columns' "$CELL")"

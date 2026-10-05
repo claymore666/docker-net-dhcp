@@ -249,9 +249,11 @@ evidence outside the plugin: an address on the container's `eth0` that
 the DHCP server's lease file also holds, a later `DHCPACK` in the
 server's log, or the server's DNS address in the container's
 `resolv.conf`. The workflow fails when a measured row differs from this
-table, and it runs again on every change to `config.json`, to the Go
-source under `cmd/` and `pkg/`, to `go.mod` or `go.sum`, and to this
-page. A `?` is a cell not measured yet.
+table. It runs on every pull request into `dev` or `main`, and every push
+to them, that changes `config.json`, the Go source under `cmd/` and
+`pkg/`, `go.mod`, `go.sum` or this page. A `?` is a cell not measured
+yet; it fails the workflow on a pull request that is not a draft and on
+`dev` and `main`.
 
 <!-- capability-matrix: begin -->
 | removed | enables | capeff | mount | bridge | macvlan | dns | user | dns_user | renew | renew_user | restart |
@@ -272,8 +274,8 @@ The columns:
 - **bridge**, **macvlan**: a root container attached in that mode.
 - **user**: a `--user 1000` container on macvlan.
 - **dns**, **dns_user**: `propagate_dns` writing the container's `resolv.conf`, for the root and the `--user 1000` container. This is the path that enters the container's mount namespace by PID.
-- **renew**, **renew_user**: a renewal the server acknowledges within 30 seconds of the attach, with the renewal time set to 10 seconds.
-- **restart**: `docker restart` of the macvlan container, with a fresh acknowledgement for its new MAC address.
+- **renew**, **renew_user**: an acknowledgement for the container's MAC address within 30 seconds of the check starting, with no new `DHCPDISCOVER` from it, and the renewal time set to 10 seconds. The check starts after the DNS checks.
+- **restart**: the macvlan container stopped and started again. The plugin can reuse its MAC address across the restart, so the stopped container must go 12 seconds with no acknowledgement for it, and then get one after the start.
 
 The bound: one hosted runner, one engine version, one mount reading,
 and a test bridge rather than an operator's. The rows say what a

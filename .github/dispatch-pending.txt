@@ -187,9 +187,9 @@
 .github/workflows/capability-matrix.yml
   Reason: The capability matrix (#690) is new on this branch, so a
     dispatch cannot start it until it reaches `main`. Until then its
-    `push` trigger runs it on every branch push that touches
-    `config.json`, the Go source, `docs/reference.md` or the matrix's
-    own files.
+    `pull_request` and `push` triggers run it on every pull request into
+    `dev` or `main`, and every push to them, that touches `config.json`,
+    the Go source, `docs/reference.md` or the matrix's own files.
   Clears: The v2.5.0 release merges `dev` into `main`. Remove this entry
     in that release PR; this gate fails on it once the workflow is on the
     default branch.

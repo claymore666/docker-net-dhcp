@@ -107,7 +107,10 @@ net -o mode=macvlan -o parent="$MV" "$MV_NET"
 net -o mode=bridge -o bridge="$BR" "$BR_NET"
 
 mac_of() { docker exec -u 0 "$1" cat /sys/class/net/eth0/address 2>/dev/null; }
-acks() { grep -c "DHCPACK.* $1" "$DLOG" 2>/dev/null || true; }
+# seen <after-line> <mac> <TYPE> — server log lines of that type for that
+# MAC written after the given line (#690).
+seen() { bash "$(dirname "$0")/capability-matrix.sh" --dhcp-count "$DLOG" "$1" "$2" "$3"; }
+mark() { wc -l < "$DLOG"; }
 
 # attached <ctr> <prefix> — running, an address under prefix on eth0, and
 # the server's lease file holding that MAC with that address (#690 D5, D6).
@@ -141,33 +144,45 @@ verdict user attached cm-c-user 10.98.1.
 if [ "${R[macvlan]}" = pass ]; then verdict dns resolv cm-c-mv; else R[dns]=fail; fi
 if [ "${R[user]}" = pass ]; then verdict dns_user resolv cm-c-user; else R[dns_user]=fail; fi
 
-# renewed <ctr> <acks-at-attach> — a DHCPACK strictly later than the ones
-# counted at attach, inside T2 plus slack (#690 D7).
+# renewed <ctr> <mac> — an ACK for the MAC after the wait starts and no new
+# DISCOVER from it, so a fresh lease does not pass as a renewal (#690 D7).
 renewed() {
+    local from
+    from="$(mark)"
     for _ in $(seq 1 30); do
-        [ "$(acks "$2")" -gt "$3" ] && { say "$1: renewal ACK seen"; return 0; }
+        if [ "$(seen "$from" "$2" DHCPACK)" -gt 0 ]; then
+            [ "$(seen "$from" "$2" DHCPDISCOVER)" -eq 0 ] \
+                || { say "$1: a new DHCPDISCOVER, not a renewal"; return 1; }
+            say "$1: renewal ACK seen"; return 0
+        fi
         sleep 1
     done
     say "$1: no renewal ACK within 30 s"; return 1
 }
-mv_mac="$(mac_of cm-c-mv)"; user_mac="$(mac_of cm-c-user)"
-mv_acks="$(acks "${mv_mac:-none}")"; user_acks="$(acks "${user_mac:-none}")"
-if [ "${R[macvlan]}" = pass ]; then verdict renew renewed cm-c-mv "$mv_mac" "$mv_acks"; else R[renew]=fail; fi
-if [ "${R[user]}" = pass ]; then verdict renew_user renewed cm-c-user "$user_mac" "$user_acks"; else R[renew_user]=fail; fi
+if [ "${R[macvlan]}" = pass ]; then verdict renew renewed cm-c-mv "$(mac_of cm-c-mv)"; else R[renew]=fail; fi
+if [ "${R[user]}" = pass ]; then verdict renew_user renewed cm-c-user "$(mac_of cm-c-user)"; else R[renew_user]=fail; fi
 
-# restart: the post-restart MAC, a fresh ACK for it, and the lease (#690 D8).
+# restart as stop then start: the MAC is reused from the tombstone and
+# renews every T1, so the stopped container must go one T1 plus slack with
+# no ACK before an ACK after the start counts (#690 D8).
 restarted() {
-    local before mac
-    before="$(grep -c DHCPACK "$DLOG" || true)"
-    docker restart -t 2 cm-c-mv >/dev/null || { say "restart refused"; return 1; }
+    local mac from
+    mac="$(mac_of cm-c-mv)"
+    docker stop -t 2 cm-c-mv >/dev/null || { say "stop refused"; return 1; }
+    from="$(mark)"
+    sleep 12
+    [ "$(seen "$from" "${mac:-none}" DHCPACK)" -eq 0 ] \
+        || { say "cm-c-mv: $mac acknowledged while stopped"; return 1; }
+    from="$(mark)"
+    docker start cm-c-mv >/dev/null || { say "start refused"; return 1; }
     for _ in $(seq 1 20); do
         mac="$(mac_of cm-c-mv)"
-        if [ -n "$mac" ] && tail -n +"$((before + 1))" <(grep DHCPACK "$DLOG") | grep -F " $mac" >/dev/null; then
+        if [ -n "$mac" ] && [ "$(seen "$from" "$mac" DHCPACK)" -gt 0 ]; then
             attached cm-c-mv 10.98.1.; return
         fi
         sleep 1
     done
-    say "cm-c-mv: no ACK after restart"; return 1
+    say "cm-c-mv: no ACK after the start"; return 1
 }
 if [ "${R[macvlan]}" = pass ]; then verdict restart restarted; else R[restart]=fail; fi
 
