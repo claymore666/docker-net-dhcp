@@ -2438,6 +2438,20 @@ proves the two partitions together cover the roster exactly once.
 The partitioner itself refuses, naming the file and line, a test under
 <code>test/integration/</code> that is neither on the roster nor in a package the
 shard target runs whole (#866).</p>
+<p>The self-hosted pool these jobs run on is declared in
+<a href="https://github.com/claymore666/docker-net-dhcp/blob/main/.github/ci-pool.json"><code>.github/ci-pool.json</code></a>,
+and <code>scripts/check-pool-facts.sh</code> keeps every statement of its size in
+the tree equal to that file. Once a day the Pool live count workflow
+compares the file with the runners registered on the repository (#886),
+using the read-only administration token that Scorecard also uses,
+because the workflow token cannot list runners. It counts registered
+runners, online or not, and sees a resize up to a day late. That the
+token can read the runners list is taken from GitHub's permission table
+and was not measured: no run has read it yet, so the scheduled path stays
+unproven until its first run on the default branch. It runs on
+its own from the v2.5.0 release on; until then, and at any time,
+<code>bash scripts/check-pool-facts.sh --live</code> with a token that has admin
+access to the repository runs the same comparison.</p>
 <p>Use <code>integration-local</code>.</p>
 <p><code>make integration-test</code> and <code>make integration-test-failure</code> only run <code>go
 test</code>. Building and installing the plugin is a separate chain (<code>make
