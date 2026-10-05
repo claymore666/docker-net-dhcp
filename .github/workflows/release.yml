@@ -144,11 +144,14 @@ jobs:
           # load-bearing for the reason above, which never depended on
           # the cleanup.
           path: .resolver
-          # Two files, both OURS: the resolver, and the release-body
-          # extractor the pre-flight below runs against the tag's notes.
+          # Four files, all OURS: the resolver, the release-body
+          # extractor the pre-flight below runs against the tag's notes,
+          # and the pin gate with the library it sources (#1228).
           sparse-checkout: |
             scripts/resolve-dispatch-ref.sh
             scripts/release-body.sh
+            scripts/check-pseudo-version-pin.sh
+            scripts/gatelib.sh
           sparse-checkout-cone-mode: false
 
       # The dispatch input reaches the shell as DATA, through env, and is
@@ -282,6 +285,30 @@ jobs:
             > notes-under-judgement.md
           bash .resolver/scripts/release-body.sh "$TAG" notes-under-judgement.md >/dev/null
           echo "Release notes for $TAG assemble; nothing has been published yet."
+
+      # A release ships on a tagged library release, never on a commit
+      # (#1228): any pseudo-version in the tag's go.mod stops the run
+      # here, before anything is published. A `resolve` step because
+      # every publishing job descends from it. Same treatment as the
+      # notes above: our script, and the tag's go.mod read out of the
+      # object database, never checked out. setup-go is for the parser;
+      # `go mod edit` is what reads the file.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27.1'
+          cache: false
+
+      - name: Refuse a tag that pins a library commit
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          REF: ${{ steps.tag.outputs.ref }}
+        run: |
+          set -euo pipefail
+          git -C .resolver fetch --depth=1 --no-tags origin \
+            "+${REF}:refs/pin-under-judgement"
+          bash .resolver/scripts/check-pseudo-version-pin.sh \
+            --event "$GITHUB_EVENT_NAME" --target "$TAG" \
+            --tree .resolver --ref refs/pin-under-judgement
 
   # THE ENGINE THE DEPLOYMENT RUNS, BEFORE THE IMAGES GO OUT (#1014).
   #
