@@ -14,7 +14,9 @@
 #   Both live in github.com/docker/docker daemon-side code with no
 #   fixed release published (checked v28.5.2, 2026-06-12). This plugin
 #   only uses the client API against the local daemon socket; the
-#   vulnerable AuthZ/privilege paths run in dockerd, not in us.
+#   vulnerable AuthZ/privilege paths run in dockerd, not in us. Since
+#   the first half of #178 only the integration test harness links the
+#   module; the second half removes it and these two entries.
 GO-2026-4887
 GO-2026-4883
 #

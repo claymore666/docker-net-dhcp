@@ -58,7 +58,9 @@ fail-on-severity: high
 # justification in .github/vuln-allowlist.txt (#291/#292). No fix is
 # available: the github.com/docker/docker module is frozen at v28.5.2;
 # the successor github.com/moby/moby/v2 migration is tracked in #178,
-# at which point the acceptance is re-evaluated. Reviewed 2026-06-14
+# at which point the acceptance is re-evaluated. Since its first half
+# the plugin binary no longer links this module; the integration test
+# harness still does, and the second half removes it and this entry. Reviewed 2026-06-14
 # (#193); re-reviewed 2026-07-03 (#291); reconciled 2026-08-22 (#741).
 #
 # Not listed (below fail-on-severity, so this gate never acts on them):
