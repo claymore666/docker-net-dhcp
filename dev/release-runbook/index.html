@@ -1451,9 +1451,13 @@ a refusal, or deciding whether to dispatch anyway:</p>
   is a tag whose registries and release page are mid-replacement.
   <code>integration-arm64.yml</code> groups the same way, on
   <code>integration-arm64-${{ github.ref }}</code>.</li>
-<li><strong>Dispatching an older release is refused,</strong> with a non-zero exit
-  and nothing published. This is the case that used to succeed
-  quietly and move <code>:latest</code> back with it.</li>
+<li><strong>Dispatching an older release is refused at the promotion</strong>, with a
+  non-zero exit from <code>promote-latest</code> before any floating tag moves.
+  The rest of the run is not refused. Both builds have already pushed
+  <code>:vOLD</code> and <code>:vOLD-arm64</code> again with new digests, and once the install
+  proofs pass, <code>github-release</code>, which does not wait for
+  <code>promote-latest</code>, uploads that release's assets again and rewrites its
+  notes. Moving <code>:latest</code> back is the case that used to succeed quietly.</li>
 <li><strong>A genuine backport is refused too</strong>: publishing v1.7.2 after v1.8.0
   exists. Deliberate: moving <code>:latest</code> to a backport is then an explicit
   manual <code>crane tag</code>, so it cannot happen by accident.</li>
@@ -1506,13 +1510,16 @@ to run.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>git<span class="w"> </span>checkout<span class="w"> </span>main<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>pull<span class="w"> </span>--ff-only<span class="w">      </span><span class="c1"># the release commit</span>
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>git<span class="w"> </span>tag<span class="w"> </span>-s<span class="w"> </span>v1.0.0-rc1<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;v1.0.0-rc1&quot;</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>push<span class="w"> </span>origin<span class="w"> </span>v1.0.0-rc1
 </code></pre></div>
-<p>Watch the run; every step including <strong>verify-install</strong>, since v1.7.0
+<p>Watch the run; every job must be green: <strong>resolve</strong>, since #1014
+<strong>production-shape</strong> (both builds wait on it), <strong>release</strong> and
+<strong>verify-install</strong>, since v1.7.0
 <strong>release-arm64</strong> / <strong>verify-install-arm64</strong>, since #776
-<strong>verify-install-hub</strong> / <strong>verify-install-hub-arm64</strong>, and since #972
-<strong>verify-install-hub-alias</strong> / <strong>verify-install-hub-alias-arm64</strong> must
-be green, and since #736 <strong>promote-latest</strong>, which an rc now reaches. Its last step,
-<em>Assert a pre-release did not move :latest</em>, is the one that proves the
-dry-run stayed a dry-run.</p>
+<strong>verify-install-hub</strong> / <strong>verify-install-hub-arm64</strong>, since #972
+<strong>verify-install-hub-alias</strong> / <strong>verify-install-hub-alias-arm64</strong>,
+since #736 <strong>promote-latest</strong>, which an rc now reaches, and
+<strong>github-release</strong>, which publishes an rc as a draft (#469). The last
+step of promote-latest, <em>Assert a pre-release did not move :latest</em>, is
+the one that proves the dry-run stayed a dry-run.</p>
 <p><strong>The rc tag also starts the arm64 integration lane</strong> (#531): pushing
 it triggers <code>integration-arm64</code> on its own. Nothing to dispatch, and
 nothing to remember: the tag is the gate, so what the rc proves follows
@@ -2076,7 +2083,9 @@ be true.</p>
     <a href="https://github.com/claymore666/docker-net-dhcp/actions/workflows/release.yml">https://github.com/claymore666/docker-net-dhcp/actions/workflows/release.yml</a>.
     Expected steps, under the names the run shows. Tag resolution is its
     own job: <strong>resolve</strong> runs first and has one step, <em>Resolve release
-    tag</em>; a releaser watching the run sees two job rows. The <strong>release</strong>
+    tag</em>. Then <strong>production-shape</strong> reads the engine-matrix row recorded
+    for the tag's commit (#1014); both builds wait on it, so when it is
+    red nothing was built or published. The <strong>release</strong>
     job then runs, in this order: checkout → setup-go → Log in to GHCR →
     Log in to Docker Hub → <strong>Both registries, or say why not</strong> → Push to
     GHCR → Push to Docker Hub (or skip) → Sync Docker Hub description
@@ -2116,10 +2125,15 @@ manifest (once still missing 1.4 s after the copy), so the verify
 reads up to six times, 10 s apart, before it fails (#1043). It comes <strong>after</strong> signing on purpose: the alias is the same
 manifest, not a second build (#267). The two Hub description steps
 are separate because the action PATCHes one repository at a time.</p>
-<p>Since v1.7.0 the run carries a parallel arm64 chain (#507):
+<p>Since v1.7.0 the run carries an arm64 chain (#507):
 <strong>release-arm64</strong> (native <code>ubuntu-24.04-arm</code> build, pushes
 <code>vX.Y.Z-arm64</code>; per-arch tags, because a Docker plugin cannot
-install from a manifest list) and <strong>verify-install-arm64</strong>.</p>
+install from a manifest list) and its three install proofs. The
+chain runs beside the amd64 one: the build since #796, the proofs
+since #799. They wait on <strong>resolve</strong> and <strong>release-arm64</strong>, never on
+<strong>release</strong>, so an arm64 tag published beside a failed amd64 build
+is still install-proven. The two chains meet at <strong>promote-latest</strong>
+and <strong>github-release</strong>, which wait for both.</p>
 <p>Then, as separate jobs:</p>
 <ul>
 <li><strong>verify-install</strong> / <strong>verify-install-arm64</strong>: install the
@@ -2149,7 +2163,8 @@ install from a manifest list) and <strong>verify-install-arm64</strong>.</p>
     asserts that dependency. It does not carry a list of proof names:
     it derives them from the workflow's own install-verifying jobs, so
     a ninth proof is required the moment it exists. Steps: <em>Refuse to
-    promote a floating tag backwards</em> → Install crane → the two logins
+    promote a floating tag backwards</em> → Install crane → Log in to GHCR →
+    Log in to Docker Hub
     → <em>Record what :latest resolves to before promotion</em> → <em>Promote the
     GHCR floating tags</em> → <em>Promote the Docker Hub floating tags</em> →
     <em>Promote the Hub alias floating tags</em> → <em>Verify the floating tags
