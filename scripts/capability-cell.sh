@@ -4,7 +4,7 @@
 # One cell of the capability matrix (#690): the installed plugin, with one
 # capability removed or none, driven through eight scenarios on this host's
 # own daemon. Every verdict is outside evidence: the address on the
-# container's eth0, the server's lease file and log, the container's
+# container's link, the server's lease file and log, the container's
 # resolv.conf, the plugin process's CapEff. Prints one CAP_MATRIX_ROW line.
 #
 # Usage: sudo capability-cell.sh <none|CAP_...> <plugin-ref> <expected-caps-json>
@@ -106,23 +106,9 @@ net() {
 net -o mode=macvlan -o parent="$MV" "$MV_NET"
 net -o mode=bridge -o bridge="$BR" "$BR_NET"
 
-mac_of() { docker exec -u 0 "$1" cat /sys/class/net/eth0/address 2>/dev/null; }
 # shellcheck source=scripts/capability-checks.sh
 . "$(dirname "$0")/capability-checks.sh"
 
-# attached <ctr> <prefix> — running, an address under prefix on eth0, and
-# the server's lease file holding that MAC with that address (#690 D5, D6).
-attached() {
-    local ctr="$1" prefix="$2" addr mac
-    [ "$(docker inspect -f '{{.State.Running}}' "$ctr" 2>/dev/null)" = true ] \
-        || { say "$ctr is not running"; return 1; }
-    addr="$(docker exec -u 0 "$ctr" ip -4 -o addr show dev eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -F "$prefix" | head -n1)"
-    mac="$(mac_of "$ctr")"
-    if [ -z "$addr" ] || [ -z "$mac" ]; then say "$ctr: no $prefix address on eth0"; return 1; fi
-    awk -v m="$mac" -v a="$addr" '$2 == m && $3 == a {f=1} END {exit !f}' "$LEASES" \
-        || { say "$ctr: lease file holds no $mac -> $addr"; return 1; }
-    say "$ctr: $mac -> $addr, leased"
-}
 resolv() {
     for _ in $(seq 1 15); do
         docker exec -u 0 "$1" grep -qx "nameserver $DNS_MARK" /etc/resolv.conf 2>/dev/null && return 0
@@ -142,8 +128,8 @@ verdict user attached cm-c-user 10.98.1.
 if [ "${R[macvlan]}" = pass ]; then verdict dns resolv cm-c-mv; else R[dns]=fail; fi
 if [ "${R[user]}" = pass ]; then verdict dns_user resolv cm-c-user; else R[dns_user]=fail; fi
 
-if [ "${R[macvlan]}" = pass ]; then verdict renew renewed cm-c-mv "$(mac_of cm-c-mv)"; else R[renew]=fail; fi
-if [ "${R[user]}" = pass ]; then verdict renew_user renewed cm-c-user "$(mac_of cm-c-user)"; else R[renew_user]=fail; fi
+if [ "${R[macvlan]}" = pass ]; then verdict renew renewed cm-c-mv "$(mac_of cm-c-mv 10.98.1.)"; else R[renew]=fail; fi
+if [ "${R[user]}" = pass ]; then verdict renew_user renewed cm-c-user "$(mac_of cm-c-user 10.98.1.)"; else R[renew_user]=fail; fi
 
 if [ "${R[macvlan]}" = pass ]; then verdict restart restarted; else R[restart]=fail; fi
 

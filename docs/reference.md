@@ -245,8 +245,9 @@ investigating instead of approving.
 installs this tree's plugin on a hosted Ubuntu runner's own daemon, once
 with every capability in `config.json` and once with each one removed,
 and drives eight scenarios per install. A scenario passes only on
-evidence outside the plugin: an address on the container's `eth0` that
-the DHCP server's lease file also holds, a later `DHCPACK` in the
+evidence outside the plugin: an address on the container's link (`eth0`,
+or the bridge's name and an index in bridge mode) that the DHCP server's
+lease file also holds, a later `DHCPACK` in the
 server's log, or the server's DNS address in the container's
 `resolv.conf`. The workflow fails when a measured row differs from this
 table. It runs on every pull request into `dev` or `main`, and every push
@@ -258,7 +259,7 @@ yet; it fails the workflow on a pull request that is not a draft and on
 <!-- capability-matrix: begin -->
 | removed | enables | capeff | mount | bridge | macvlan | dns | user | dns_user | renew | renew_user | restart |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| none | yes | n/a | ? | pass | pass | pass | pass | pass | pass | pass | pass |
+| none | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? |
 | `CAP_NET_ADMIN` | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? |
 | `CAP_NET_RAW` | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? |
 | `CAP_SYS_ADMIN` | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? |

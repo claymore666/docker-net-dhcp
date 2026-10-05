@@ -227,13 +227,13 @@ drive() {
         : > "$DLOG"
         put() { [ $# -eq 0 ] || printf '%s\n' "$@" >> "$DLOG"; }
         put "${PRE[@]}"
+        # shellcheck source=scripts/capability-checks.sh
+        . "$HERE/capability-checks.sh"
         say() { printf '%s\n' "$*"; }
         mac_of() { echo "$M1"; }
         attached() { say "attached $*"; }
         docker() { case "$1" in stop) put "${ON_STOP[@]}"; return "$STOP_RC" ;; start) put "${ON_START[@]}" ;; esac; }
         sleep() { tick=$((tick + 1)); [ "$tick" -ne 1 ] || put "${ON_SLEEP1[@]}"; }
-        # shellcheck source=scripts/capability-checks.sh
-        . "$HERE/capability-checks.sh"
         "$@" 2>&1
     )"
     got=$?
@@ -262,6 +262,66 @@ ON_SLEEP1=("$REQ1")
 drive "renewal refuses a REQUEST with no ACK" 1 "no renewal ACK within 30 s" renewed cm-c-mv "$M1"
 ON_SLEEP1=("$ACK2")
 drive "renewal refuses another MAC's ACK" 1 "no renewal ACK within 30 s" renewed cm-c-mv "$M1"
+
+# The attach check over a scripted container: docker is a stub answering
+# inspect, the container's ip output (all links, or one by name) and the
+# MAC of one link and lo. Bridge mode names the link after the bridge, which
+# the draft run 37294535723 read as a failed attach on eth0 (#690).
+attach_case() {
+    local label="$1" want="$2" frag="$3"; shift 3
+    out="$(
+        LEASES="$tmp/attach.leases"
+        printf '%s\n' "${LEASE_LINES[@]}" > "$LEASES"
+        # shellcheck source=scripts/capability-checks.sh
+        . "$HERE/capability-checks.sh"
+        say() { printf '%s\n' "$*"; }
+        docker() {
+            case "$1" in
+                inspect) echo "$RUNNING" ;;
+                exec)
+                    shift 4
+                    case "$*" in
+                        "ip -4 -o addr show") printf '%s\n' "${IP_LINES[@]}" ;;
+                        "ip -4 -o addr show dev "*)
+                            printf '%s\n' "${IP_LINES[@]}" | awk -v l="${*: -1}" '$2 == l {f=1; print} END {exit !f}' ;;
+                        "cat /sys/class/net/$LINK/address") echo "$LINK_MAC" ;;
+                        "cat /sys/class/net/lo/address") echo 00:00:00:00:00:00 ;;
+                        *) return 1 ;;
+                    esac ;;
+                *) return 1 ;;
+            esac
+        }
+        "$@" 2>&1
+    )"
+    got=$?
+    expect "$label" "$want" "$frag"
+}
+MB=ae:72:73:22:2f:20
+LO_L='1: lo    inet 127.0.0.1/8 scope host lo\       valid_lft forever preferred_lft forever'
+BR_L='7: cm-br00    inet 10.98.2.74/24 brd 10.98.2.255 scope global cm-br00\       valid_lft forever preferred_lft forever'
+MV_L='9: eth0    inet 10.98.1.50/24 brd 10.98.1.255 scope global eth0\       valid_lft forever preferred_lft forever'
+FAR_L='7: cm-br00    inet 110.98.2.74/24 brd 110.98.2.255 scope global cm-br00\       valid_lft forever preferred_lft forever'
+RUNNING=true LINK=cm-br00 LINK_MAC=$MB IP_LINES=("$LO_L" "$BR_L") LEASE_LINES=("1 $MB 10.98.2.74 c1 *")
+attach_case "attach passes on a bridge-mode link named after the bridge" 0 "cm-br00 $MB -> 10.98.2.74, leased" attached cm-c-bridge 10.98.2.
+attach_case "the MAC is read from the link carrying the address" 0 "$MB" mac_of cm-c-bridge 10.98.2.
+LEASE_LINES=()
+attach_case "attach refuses an address the lease file does not hold" 1 "lease file holds no $MB -> 10.98.2.74" attached cm-c-bridge 10.98.2.
+LEASE_LINES=("1 $MB 10.98.2.75 c1 *")
+attach_case "attach refuses a lease for that MAC on another address" 1 "lease file holds no" attached cm-c-bridge 10.98.2.
+LEASE_LINES=("1 $M1 10.98.2.74 c1 *")
+attach_case "attach refuses a lease for that address under another MAC" 1 "lease file holds no" attached cm-c-bridge 10.98.2.
+LEASE_LINES=("1 $MB 110.98.2.74 c1 *") IP_LINES=("$LO_L" "$FAR_L")
+attach_case "attach refuses an address that only contains the prefix" 1 "no 10.98.2. address on any link" attached cm-c-bridge 10.98.2.
+attach_case "mac_of refuses a container with no address under the prefix" 1 "" mac_of cm-c-bridge 10.98.2.
+IP_LINES=("$LO_L" "$BR_L")
+attach_case "mac_of refuses an empty prefix" 1 "" mac_of cm-c-bridge ""
+LEASE_LINES=("1 $MB 10.98.2.74 c1 *") IP_LINES=("$LO_L" "$BR_L") LINK=eth1
+attach_case "attach refuses when the address's own link has no MAC" 1 "no MAC on cm-br00" attached cm-c-bridge 10.98.2.
+LINK=cm-br00 RUNNING=false
+attach_case "attach refuses a container that is not running" 1 "is not running" attached cm-c-bridge 10.98.2.
+RUNNING=true LINK=eth0 LINK_MAC=$M1 IP_LINES=("$LO_L" "$MV_L") LEASE_LINES=("1 $M1 10.98.1.50 c1 *")
+attach_case "attach passes on a macvlan link named eth0" 0 "eth0 $M1 -> 10.98.1.50, leased" attached cm-c-mv 10.98.1.
+attach_case "attach refuses a macvlan address under the bridge prefix" 1 "no 10.98.2. address" attached cm-c-mv 10.98.2.
 
 # The cell prints the keys this script declares, so neither can drift alone.
 keys="$(sed -n 's/.*for k in "\${\(COLUMNS\)\[@\]}".*/\1/p' "$CELL")"
