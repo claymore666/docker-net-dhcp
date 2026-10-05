@@ -259,12 +259,38 @@ yet; it fails the workflow on a pull request that is not a draft and on
 <!-- capability-matrix: begin -->
 | removed | enables | capeff | mount | bridge | macvlan | dns | user | dns_user | renew | renew_user | restart |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| none | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? |
-| `CAP_NET_ADMIN` | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? |
-| `CAP_NET_RAW` | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? |
-| `CAP_SYS_ADMIN` | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? |
-| `CAP_SYS_PTRACE` | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? |
+| none | yes | n/a | shared | pass | pass | pass | pass | pass | pass | pass | pass |
+| `CAP_NET_ADMIN` | yes | dropped | shared | fail | fail | fail | fail | fail | fail | fail | fail |
+| `CAP_NET_RAW` | yes | held | shared | pass | pass | pass | pass | pass | pass | pass | pass |
+| `CAP_SYS_ADMIN` | yes | dropped | shared | pass | pass | fail | pass | fail | fail | fail | pass |
+| `CAP_SYS_PTRACE` | yes | dropped | shared | pass | pass | pass | pass | fail | pass | pass | pass |
 <!-- capability-matrix: end -->
+
+What the rows say, one capability at a time. Each claim names the row and
+column it rests on.
+
+- **`CAP_NET_ADMIN`** is needed to attach anything. With it removed
+  (`capeff` `dropped`) the `bridge` and `macvlan` containers were refused
+  (`failed to create veth pair: operation not permitted`, `failed to create
+  macvlan link: operation not permitted` in that cell's log), so no container
+  existed to check. The other columns of that row read `fail` for that
+  reason alone, and they rank nothing.
+- **`CAP_NET_RAW`** is not measured. Its row has `capeff` `held`: Docker's
+  default set carries it, so the plugin still had it with the manifest line
+  gone. The all-`pass` row proves nothing about what the capability buys.
+- **`CAP_SYS_ADMIN`** is not needed to attach (`bridge`, `macvlan`, `user`
+  and `restart` read `pass`) but is needed to keep a lease: `renew` and
+  `renew_user` read `fail`, and the cell's plugin log refuses the renewal
+  client with `failed to set into network namespace ... operation not
+  permitted`. `dns` and `dns_user` read `fail` too; that cell's log carries
+  no refusal line for them, so the row says the scenario failed and not why.
+- **`CAP_SYS_PTRACE`** buys one scenario: `dns_user` reads `fail`, and the
+  cell's log refuses it with `open container mnt ns (pid ...): permission
+  denied`. `dns` (root) and `user` read `pass`, so on this host the
+  `propagate_dns` write needs it only for a container that runs as a
+  non-root user, and attaching that container does not need it. Every
+  `mount` reads `shared`, the reading where the sandbox key resolves; the
+  matrix says nothing about a host where it is private.
 
 The columns:
 
