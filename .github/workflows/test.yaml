@@ -358,8 +358,7 @@ jobs:
       # size is read from .github/ci-pool.json, because listing
       # self-hosted runners needs repo administration rights and
       # `administration` is not one of GITHUB_TOKEN's permission scopes
-      # at all -- see the script's header, and ci-queue-watchdog.sh's
-      # classify_wait, which measured that first.
+      # at all -- see the script's header.
       #
       # --live is not passed here for that reason. It runs from a
       # workstation, where a token that CAN read the API compares the

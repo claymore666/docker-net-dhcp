@@ -93,7 +93,7 @@ jobs:
       - name: Reject a dispatch ref that is not ours
         run: bash scripts/check-dispatch-ref.sh "${{ inputs.ref }}"
 YAML
-cat > "$TMP/prefix/missing-runs.yml" <<'YAML'
+cat > "$TMP/prefix/reconcile.yml" <<'YAML'
 on:
   workflow_dispatch:
     inputs:
@@ -102,14 +102,14 @@ on:
 jobs:
   reconcile:
     steps:
-      - run: bash scripts/check-missing-runs.sh "${{ inputs.grace-minutes || '20' }}"
+      - run: bash scripts/reconcile.sh "${{ inputs.grace-minutes || '20' }}"
 YAML
 check "pre-#737: input expanded in the signing job" 1 "$TMP/prefix" \
       "release.yml:13"
 check "pre-#737: the guard job expands its own input" 1 "$TMP/prefix" \
       "integration.yml:10"
 check "pre-#737: an input with a || default" 1 "$TMP/prefix" \
-      "missing-runs.yml:9"
+      "reconcile.yml:9"
 check "pre-#737: a secret written into the step script" 1 "$TMP/prefix" \
       "Secret expanded into a shell"
 

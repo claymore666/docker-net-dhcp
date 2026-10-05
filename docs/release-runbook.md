@@ -917,19 +917,18 @@ be true.
    once you know the shape of it.
 7. **Assemble the verification evidence, don't hand-write it.**
    ```sh
-   scripts/run-evidence.sh "$(git rev-parse 'HEAD^{tree}')"
+   gh run list --workflow integration.yml --commit "$(git rev-parse HEAD)" \
+     --json databaseId,event,attempt,status,conclusion,startedAt,updatedAt,url
    ```
-   Prints every integration run that tested exactly this tree, with its
-   window and what else was on the privileged pool at the time. Paste it
-   into the release PR. Do not reconstruct it from memory.
+   Lists every integration run on the release PR's head commit, with its
+   attempt and window. Paste the output into the release PR. Do not
+   reconstruct it from memory. An empty list is not evidence: wait for
+   the run, or find out why none started.
 
-   Read the overlap line literally. An overlap of `none`, printed with
-   `ran alone` after it, and an overlap of `unknown` are different
-   claims: the second means the concurrent-run list did
-   not reach back far enough to judge, which happens once the repo has
-   been busy since. Do not upgrade an `unknown` to "ran alone". The
-   v1.4.0 write-up asserted a concurrency caveat that the data did not
-   support, in both directions, which is what #432 was filed about.
+   The x86 pool runs each job in its own ephemeral container with its own
+   Docker daemon, so another run on the pool at the same time does not
+   share a daemon with this one. Do not add a concurrency caveat the data
+   does not show; #432 was filed about a write-up that did.
 
 8. **Merge the release PR.** Squash or merge commit, both fine;
    match what's in `git log`.

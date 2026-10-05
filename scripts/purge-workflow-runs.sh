@@ -27,20 +27,13 @@
 #      audit trail for software already in someone else's hands.
 #
 #   4. OPEN PR HEADS    every run whose head SHA is the head of an OPEN pull
-#      request. Added after this script broke check-missing-runs.sh on its
-#      first real outing (#740's detector, #837's purge).
-#
-#      That detector answers "was this head ever tested" by counting run
-#      records, because a head that no runner ever saw is indistinguishable
-#      from one still queueing and `gh pr checks` will report the PREVIOUS
-#      commit's checks against it. Deleting an open PR head's runs destroys
-#      the only evidence it was tested, and the detector then reports the
-#      head as never run -- with a remedy attached ("push an empty commit")
-#      that spends a privileged CI cycle repairing a bookkeeping artifact.
+#      request (#740, #837). Deleting an open PR head's runs destroys the
+#      only record that it was tested, and the remedy is a privileged CI
+#      cycle spent repairing a bookkeeping artifact.
 #
 #      Measured 2026-08-27: PR #221's head had runs at 03:31 and none at
-#      14:35, and the scheduled detector went red on a draft that had been
-#      parked since June. Nothing recovers the answer afterwards -- the one
+#      14:35, a draft that had been parked since June. Nothing recovers the
+#      answer afterwards -- the one
 #      check-run that survived on that head belongs to `github-advanced-
 #      security`, not `github-actions`, so filtering the Checks API for
 #      Actions returns zero as well. The evidence is simply gone.
@@ -49,19 +42,14 @@
 #      head stops being protected the moment its PR closes or merges.
 #
 #   5. GATE BRANCH COMMITS  every run whose head SHA is one of the last N
-#      commits of a branch the missing-run detector reconciles.
+#      commits of a branch in .github/gate-branch-scope.env (#874).
 #
-#      Rule 4 closed the collision for OPEN PR HEADS. It left the second
-#      population untouched, and check-missing-runs.sh reconciles both:
-#      besides open PR heads it walks the last GATE_BRANCH_COMMITS commits
-#      of each GATE_BRANCHES branch and demands a run that EXECUTED.
-#
-#      Nothing protected those. TWO SAMPLES OF A FAST-MOVING SERIES, both
+#      Rules 1 and 2 alone do not hold those. TWO SAMPLES OF A FAST-MOVING SERIES, both
 #      2026-08-28 against the live listing, quoted with their hour because
 #      a single sample of this reads like a standing property and is not:
 #
 #        05:37:07Z-05:58:32Z  floor 21 min wide; 15 of `dev`'s 15
-#                             reconciled commits and 14 of `main`'s 15
+#                             scoped commits and 14 of `main`'s 15
 #                             outside it
 #        14:53:45Z-15:48:05Z  floor 54 min wide; 26 of the 30 outside it
 #                             (`dev`'s tip, `main`'s tip and two more had
@@ -75,16 +63,12 @@
 #      releases -- its tip of 2026-08-23 crosses 7 days on 2026-08-30 with
 #      nothing else holding it.
 #
-#      The reachability walk cannot save a branch TIP -- coverage
-#      propagates from a tested descendant to its ancestors, and a tip has
-#      no descendant. So the tip's runs age out, the detector finds no
-#      executed run, and it goes red on a schedule, on main, recurring
-#      every release cycle, for exactly the reason it went red on #221.
+#      So without this rule a branch tip's runs age out with nothing
+#      holding them, and the record of what tested `main`'s release commit
+#      is gone a week after the release.
 #
-#      THE SCOPE IS READ, NOT RESTATED. Both scripts take the branches and
-#      the depth from .github/gate-branch-scope.env. Setting the same
-#      numbers in two workflow files would recreate the bug one edit later,
-#      silently, in the direction that destroys data.
+#      THE SCOPE IS READ, NOT RESTATED. The branches and the depth come
+#      from .github/gate-branch-scope.env, never from the workflow file.
 #
 # PROVENANCE IS KEYED ON WORKFLOW PATH, NEVER ON DISPLAY NAME. This is not
 # a style choice, it is a bug that was already made and caught: a name-keyed
@@ -114,9 +98,7 @@
 #   KEEP_BRANCH_COMMITS 0 = do not protect gate branch commits (default 1).
 #                     The isolation seam for keep rule 5, same as above.
 #   GATE_SCOPE_FILE   where the branch scope comes from
-#                     (default .github/gate-branch-scope.env). Shared with
-#                     check-missing-runs.sh so the population that gate
-#                     READS and the one this SPARES cannot drift (#874).
+#                     (default .github/gate-branch-scope.env, #874).
 #   GATE_BRANCHES / GATE_BRANCH_COMMITS  override the scope file; the
 #                     self-test seams, not set in production.
 #   DRY_RUN           1 = report only, do not delete (default 1)
@@ -132,19 +114,15 @@ PROVENANCE_PATHS="${PROVENANCE_PATHS:-.github/workflows/release.yml .github/work
 KEEP_OPEN_PR_HEADS="${KEEP_OPEN_PR_HEADS:-1}"
 KEEP_BRANCH_COMMITS="${KEEP_BRANCH_COMMITS:-1}"
 
-# Keep rule 5's population, read from the file check-missing-runs.sh reads.
+# Keep rule 5's population, read from .github/gate-branch-scope.env.
 # A missing or incomplete scope REFUSES rather than falling back: a default
-# here could be narrower than the detector's scope, and the whole point of
-# the rule is that the two cannot disagree. Refusing to purge is cheap;
-# deleting the evidence a scheduled gate then demands is not.
+# here could be narrower than the scope file names. Refusing to purge is
+# cheap; deleting run records is not reversible.
 if [ "$KEEP_BRANCH_COMMITS" != "0" ]; then
     SCOPE_FILE="${GATE_SCOPE_FILE:-$(dirname "$0")/../.github/gate-branch-scope.env}"
     # A WORD IN THAT FILE MAY BE A PATTERN (#907/#912), matched the way the
-    # workflow branch filters match. The matcher is a file rather than a
-    # `case` here and a second `case` in check-missing-runs.sh, for the same
-    # reason the scope itself is a file: what this purge SPARES and what
-    # that gate DEMANDS have to be one population, and a rule written twice
-    # is a rule that will be corrected once.
+    # workflow branch filters match, by the one matcher check-branch-refs.sh
+    # also uses: a rule written twice is a rule that will be corrected once.
     # shellcheck source=scripts/branch-glob.sh
     . "$(dirname "$0")/branch-glob.sh"
     if [ ! -f "$SCOPE_FILE" ] || [ ! -r "$SCOPE_FILE" ]; then
@@ -155,8 +133,8 @@ if [ "$KEEP_BRANCH_COMMITS" != "0" ]; then
         # Exit 2 was preserved; the diagnosis is the product of a gate that
         # fires unattended at 03:00.
         echo "::error title=No branch scope::cannot read ${SCOPE_FILE} as a regular file, so the branch" \
-             "commits that check-missing-runs.sh reconciles cannot be determined. Refusing rather than" \
-             "deleting the run records that gate reads (#874)." >&2
+             "commits keep rule 5 spares cannot be determined. Refusing rather than" \
+             "deleting the run records that rule spares (#874)." >&2
         exit 2
     fi
     # A CARRIAGE RETURN IS WHITESPACE TO grep AND A CHARACTER TO THE API.
@@ -180,11 +158,6 @@ if [ "$KEEP_BRANCH_COMMITS" != "0" ]; then
     # gate. So every non-comment line has to be an assignment to one of the
     # two keys, with a value drawn from a character set that cannot expand.
     #
-    # This check is duplicated in check-missing-runs.sh, and the duplication
-    # is safe in the way the SCOPE VALUES are not. If the two copies drift,
-    # one script becomes stricter and refuses -- and a refusal destroys
-    # nothing. Drift in the VALUES is what deletes evidence the other gate
-    # then demands, which is why those live in one file rather than two.
     scope_foreign=$(grep -nE '[^[:space:]]' "$SCOPE_FILE" \
         | grep -vE '^[0-9]+:[[:space:]]*#' \
         | grep -vE '^[0-9]+:[[:space:]]*GATE_SCOPE_(BRANCHES|COMMITS)=("[A-Za-z0-9_./ *?-]*"|[A-Za-z0-9_./*?-]+)[[:space:]]*$')
@@ -198,7 +171,7 @@ if [ "$KEEP_BRANCH_COMMITS" != "0" ]; then
     # A DUPLICATED KEY IS LAST-WINS, AND EVERY LINE OF IT IS INDIVIDUALLY
     # LEGAL, so the guard above passes it. Measured 2026-08-28 against the
     # code as it stood: appending `GATE_SCOPE_COMMITS=1` to the shipped file
-    # narrowed both gates from 15 commits per branch to 1 with both self-test
+    # narrowed the scope from 15 commits per branch to 1 with the self-test
     # suites fully green, and appending a second `GATE_SCOPE_BRANCHES=""`
     # printed "rule DISABLED" and deleted the branch commits keep rule 5
     # exists to spare. A second definition IS a second enumeration, which is
@@ -208,7 +181,7 @@ if [ "$KEEP_BRANCH_COMMITS" != "0" ]; then
     if [ -n "${scope_dups% }" ]; then
         echo "::error title=Branch scope defines a key twice::${SCOPE_FILE} assigns ${scope_dups}more" \
              "than once. The file is sourced, so the last assignment silently wins and the population" \
-             "this purge spares narrows below the one check-missing-runs.sh reconciles. Refusing (#874)." >&2
+             "this purge spares narrows below the one the scope names. Refusing (#874)." >&2
         exit 2
     fi
     # UNSET BEFORE SOURCING. The completeness check below has to be satisfied
@@ -219,13 +192,13 @@ if [ "$KEEP_BRANCH_COMMITS" != "0" ]; then
     # shellcheck source=../.github/gate-branch-scope.env disable=SC1091
     if ! . "$SCOPE_FILE"; then
         echo "::error title=No branch scope::${SCOPE_FILE} could not be sourced, so the branch commits" \
-             "check-missing-runs.sh reconciles cannot be determined. Refusing (#874)." >&2
+             "keep rule 5 spares cannot be determined. Refusing (#874)." >&2
         exit 2
     fi
     if [ -z "${GATE_SCOPE_BRANCHES+x}" ] || [ -z "${GATE_SCOPE_COMMITS:-}" ]; then
         echo "::error title=Branch scope incomplete::${SCOPE_FILE} does not define both" \
              "GATE_SCOPE_BRANCHES and GATE_SCOPE_COMMITS. Refusing rather than protecting a" \
-             "narrower population than check-missing-runs.sh reconciles (#874)." >&2
+             "narrower population than the scope names (#874)." >&2
         exit 2
     fi
     # A BRANCH LIST WITH NO WORDS IS NOT A BRANCH LIST, AND `-n` CANNOT TELL.
@@ -252,7 +225,7 @@ if [ "$KEEP_BRANCH_COMMITS" != "0" ]; then
     if [ "$(set -f; set -- $GATE_SCOPE_BRANCHES; echo $#)" -eq 0 ]; then
         echo "::error title=Branch scope names no branch::${SCOPE_FILE} sets GATE_SCOPE_BRANCHES to a" \
              "value with no words in it, which disarms keep rule 5 while it reports a count of zero as" \
-             "success. Refusing rather than deleting the run records check-missing-runs.sh reads (#874)." >&2
+             "success. Refusing rather than deleting the run records keep rule 5 spares (#874)." >&2
         exit 2
     fi
     # And the depth has to be a positive integer, for the same reason one
@@ -305,9 +278,8 @@ if [ "$KEEP_BRANCH_COMMITS" != "0" ]; then
     # (per_page of 0, abc and -1 each returned 30 commits; 999 returned 100).
     # So a degenerate depth does not protect nothing -- it silently protects
     # a DIFFERENT population from the one the scope file names, and if only
-    # one of the two scripts carries the override the purge and the detector
-    # stop reading one list, which is the collision this whole file exists
-    # to close. Refuse rather than let the seam decide.
+    # the purge spares a list nobody named. Refuse rather than let the seam
+    # decide.
     seam_depth_ok=1
     case "$BRANCH_COMMITS" in
         ''|*[!0-9]*) seam_depth_ok=0 ;;
@@ -317,7 +289,7 @@ if [ "$KEEP_BRANCH_COMMITS" != "0" ]; then
         echo "::error title=Branch depth is not a count::the effective GATE_BRANCH_COMMITS is" \
              "'${BRANCH_COMMITS}', which is not a positive integer. GitHub would answer the commit" \
              "query with its own default page size, protecting a population neither this script nor" \
-             "check-missing-runs.sh named. Refusing (#874)." >&2
+             "the scope file named. Refusing (#874)." >&2
         exit 2
     fi
 fi
@@ -435,7 +407,7 @@ fi
 # rule would silently protect nothing while printing a count that reads
 # like success.
 #
-# NOT `--paginate`. The detector asks for exactly per_page=N commits and
+# NOT `--paginate`. The rule asks for exactly per_page=N commits and
 # stops; paginating would walk the entire history and protect all of it.
 if [ "$KEEP_BRANCH_COMMITS" != "0" ] && [ -n "${BRANCHES:-}" ]; then
     BRRAW=$(mktemp) || exit 2
@@ -444,9 +416,7 @@ if [ "$KEEP_BRANCH_COMMITS" != "0" ] && [ -n "${BRANCHES:-}" ]; then
     #
     # A word carrying `*` or `?` is a pattern over the branches that EXIST.
     # A pattern matching NOTHING refuses rather than protecting an empty
-    # set: the whole reason this rule exists is that a population smaller
-    # than check-missing-runs.sh's gets its evidence deleted and the
-    # detector then goes red naming a cause that never happened.
+    # set, which would delete the records this rule exists to spare.
     #
     # The listing is fetched only when there IS a pattern, so a
     # literal-only scope makes no extra call and behaves exactly as before.
@@ -454,7 +424,7 @@ if [ "$KEEP_BRANCH_COMMITS" != "0" ] && [ -n "${BRANCHES:-}" ]; then
         if ! br_heads=$(api "repos/$REPO/branches?per_page=100" --jq '.[].name' 2>/dev/null); then
             echo "::error title=Cannot list branches::the branch listing for $REPO failed, so the" \
                  "patterns in the branch scope cannot be expanded. Refusing rather than deleting the" \
-                 "run records check-missing-runs.sh reads (#874)." >&2
+                 "run records keep rule 5 spares (#874)." >&2
             exit 2
         fi
         if [ -z "$(printf '%s' "$br_heads" | tr -d '[:space:]')" ]; then
@@ -483,8 +453,8 @@ if [ "$KEEP_BRANCH_COMMITS" != "0" ] && [ -n "${BRANCHES:-}" ]; then
         if ! api "repos/$REPO/commits?sha=${br}&per_page=${BRANCH_COMMITS}" \
                 --jq '.[] | select(.sha != null and .sha != "") | .sha' > "$BRRAW" 2>/dev/null; then
             echo "::error title=Cannot list branch commits::the commit query for '$br' failed for $REPO," \
-                 "so the branch commits check-missing-runs.sh reconciles cannot be determined." \
-                 "Refusing rather than deleting the run records that gate reads (#874)." >&2
+                 "so the branch commits keep rule 5 spares cannot be determined." \
+                 "Refusing rather than deleting the run records that rule spares (#874)." >&2
             exit 2
         fi
         br_n=$(grep -c . "$BRRAW")

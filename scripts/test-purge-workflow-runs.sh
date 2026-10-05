@@ -317,79 +317,6 @@ else
     no "purge-workflow-runs.sh no longer reads the pulls API -- keep rule 4 is gone, or this check's derivation is stale"
 fi
 
-# --- 4d. the purge's first REAL execution must be OBSERVED --------------
-# This script has never deleted anything. run-retention.yml reached `main`
-# with the v1.9.0 release, and GitHub registers schedules only from the
-# default branch, so the first execution of the shipping version is the
-# NEXT scheduled one, on `main`, with DRY_RUN=0, against several hundred
-# runs.
-#
-# The suite below drives a STUBBED transport, so it grades the author's
-# own fixture. The only outside observer of a real purge is the consumer
-# that went red on #221 -- check-missing-runs.sh -- and asking the purge
-# again would be checking the code against itself, because it excludes
-# the keep sets it built.
-#
-# So: every workflow that invokes this script must also invoke the
-# detector, at a LATER live line, in the same file.
-#
-# WHAT THIS CANNOT SEE, four shapes, said rather than claimed away:
-#   - it does not check the two are in the same JOB, only the same file;
-#   - it does not check the `if:` conditions, so a detector step gated
-#     off entirely still satisfies it;
-#   - it does not check that the detector's non-zero exit FAILS the job;
-#   - it requires the detector to be INVOKED as a command
-#     (`bash scripts/check-missing-runs.sh`), so an invocation assembled
-#     through a variable is not counted. MEASURED 2026-08-28: this comment
-#     used to claim the opposite -- "it treats any live mention as an
-#     invocation, so a variable assignment naming the script counts" --
-#     and the patterns beneath it had already been tightened out from
-#     under the sentence. The direction is the safe one: a
-#     variable-assembled detector call leaves the purge's caller looking
-#     UNOBSERVED and this check goes red, rather than passing on a line it
-#     could not read.
-# The bound is: no workflow invokes this purge without invoking the
-# detector after it. Everything above is outside that bound.
-purge_named=$(grep -rlF 'purge-workflow-runs.sh' "$HERE/../.github/workflows/" 2>/dev/null || true)
-purge_callers=$(wf_invokers 'purge-workflow-runs.sh')
-if [ -z "$purge_named" ]; then
-    no "no workflow names purge-workflow-runs.sh -- this check has an empty domain and cannot refuse"
-elif [ -z "$purge_callers" ]; then
-    # Named and never invoked as a command: the invocation is assembled some
-    # way this cannot read. Refuse rather than pass, because passing here is
-    # indistinguishable from the file being correct.
-    no "purge-workflow-runs.sh is named in a workflow but invoked as a command by none of them -- this check cannot judge them and will not report them clean"
-else
-    unobserved=""
-    # `while read`, not `for wf in $purge_callers`: an unquoted expansion
-    # globs, the neighbour dependency this PR documents in both scripts.
-    while IFS= read -r wf; do
-        [ -n "$wf" ] || continue
-        # ORDER only -- membership was settled by wf_invokers. FIRST live
-        # purge invocation vs LAST live detector invocation, both judged as
-        # COMMANDS. This is the second version of this check: the first
-        # tested whether a live line CONTAINED the detector's name, and the
-        # step's own ::error message names the detector, on a live line,
-        # after the purge. It therefore reported the purge observed with the
-        # verification step deleted -- mutants M1 and M2 both SURVIVED.
-        # Prose satisfying a presence check is the defect this PR is about,
-        # written into the guard against it.
-        awk 'BEGIN { pp = "^(bash[[:space:]]+|sh[[:space:]]+)?(\\./)?scripts/purge-workflow-runs\\.sh([[:space:]]|$)"
-                     dp = "^(bash[[:space:]]+|sh[[:space:]]+)?(\\./)?scripts/check-missing-runs\\.sh([[:space:]]|$)" }
-             { probe=$0; sub(/^[[:space:]]+/,"",probe)
-               if (substr(probe,1,1)=="#") next
-               cmd=probe; sub(/^run:[[:space:]]*/,"",cmd)
-               if (cmd ~ pp && p==0) p=FNR
-               if (cmd ~ dp)         c=FNR }
-             END { exit (p>0 && c>p) ? 0 : 1 }' "$wf" || unobserved="$unobserved $wf"
-    done <<EOF
-$purge_callers
-EOF
-    [ -z "$unobserved" ] \
-      && ok "every workflow invoking purge-workflow-runs.sh runs check-missing-runs.sh after it (the purge is observed by its consumer, not by itself)" \
-      || no "these workflows delete runs with nothing outside the purge checking the result:$unobserved -- the first real execution would be unobserved, which is how #740's detector went red on #221"
-fi
-
 # --- 5. a run still in flight is never deleted --------------------------
 grep -qE '(^|/)7777$' "$D/deleted.log" \
   && no "an in_progress run was deleted" \
@@ -413,7 +340,7 @@ drive "$D" env RETENTION_DAYS=30 KEEP_GROUPS=0 DRY_RUN=0
 # --- 8. KEEP RULE 4: an open PR head survives, however old --------------
 # THE REGRESSION THIS RULE EXISTS FOR. On 2026-08-27 this purge deleted the
 # runs of PR #221's head -- a draft parked since June, so far outside both
-# the window and the group floor -- and check-missing-runs.sh (#740) then
+# the window and the group floor -- and the run detector of #740 then
 # reported that head as never tested, on a schedule, on main. Nothing
 # recovers the answer afterwards: the one surviving check-run on that head
 # belongs to `github-advanced-security`, so even the Checks API answers
@@ -490,13 +417,13 @@ drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=0
   || no "empty open-PR list: rc=$RC, deleted=$DELS (want rc 0, 57 deleted)"
 
 # --- 13. KEEP RULE 5: a gate branch commit survives, however old --------
-# THE COLLISION RULE 4 DID NOT CLOSE (#874). check-missing-runs.sh
-# reconciles TWO populations. Rule 4 covers the first (open PR heads); the
-# second is the last N commits of each gate branch, and nothing protected
-# those.
+# THE COLLISION RULE 4 DID NOT CLOSE (#874). The run detector of #740
+# (deleted in #747) read TWO populations. Rule 4 covers the first (open PR
+# heads); the second is the last N commits of each gate branch, and nothing
+# protected those.
 #
 # Measured 2026-08-28 against the live listing: the keep-10 group set
-# spanned twenty-one MINUTES, so all 15 of `dev`'s reconciled commits and
+# spanned twenty-one MINUTES, so all 15 of `dev`'s scoped commits and
 # 14 of `main`'s were outside it, leaving the 7-day window as the only
 # thing holding a branch commit. `main` moves at releases; its tip of
 # 2026-08-23 crossed 7 days on 2026-08-30 with nothing else holding it,
@@ -563,9 +490,9 @@ drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=0
 # --- 17. an unreadable scope file refuses -------------------------------
 # THE ANTI-DRIFT PROPERTY, driven. If the scope cannot be read the purge
 # must not fall back to a built-in default: a default could be NARROWER
-# than what check-missing-runs.sh reconciles, and then the purge deletes
-# evidence that gate demands while both look healthy. That silent
-# disagreement is the entire bug being closed, so it has to be loud.
+# than the scope file names, and then the purge deletes the branch
+# commits' runs while looking healthy. That silent narrowing is the
+# entire bug being closed, so it has to be loud.
 D="$TMP/noscope"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
 rm -f "$D/scope.env"
 drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=0
@@ -584,28 +511,28 @@ drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=0
   && ok "a scope file defining only half the scope refuses" \
   || no "half scope: rc=$RC, deleted=$DELS (want rc 2, 0 deleted)"
 
-# --- 19. the two gates read ONE scope, and it is the shipped one --------
-# The populations can only agree if both scripts read the same file, so
-# the file has to exist where both defaults point. A test that only ever
+# --- 19. the purge reads ONE scope, and it is the shipped one ----------
+# The scope is a file so that it has one definition, so the file has to
+# exist where the purge's default points. A test that only ever
 # drives GATE_SCOPE_FILE would pass with the shipped file absent or
 # defining different keys -- which is the drift this closes, one edit
 # later. Assert the real artifact, not the fixture.
 SHIPPED="$HERE/../.github/gate-branch-scope.env"
 [ -r "$SHIPPED" ] \
-  && ok "the shipped scope file exists at the path both scripts default to" \
-  || no "no scope file at $SHIPPED -- both gates would refuse in production"
+  && ok "the shipped scope file exists at the path the purge defaults to" \
+  || no "no scope file at $SHIPPED -- the purge would refuse in production"
 if [ -r "$SHIPPED" ]; then
     ( set -u
       # shellcheck disable=SC1090
       . "$SHIPPED"
       [ -n "${GATE_SCOPE_BRANCHES+x}" ] && [ -n "${GATE_SCOPE_COMMITS:-}" ] ) \
       && ok "the shipped scope defines both GATE_SCOPE_BRANCHES and GATE_SCOPE_COMMITS" \
-      || no "the shipped scope is incomplete -- both gates would refuse in production"
+      || no "the shipped scope is incomplete -- the purge would refuse in production"
     # AND THE BRANCH LIST IS NOT EMPTY. Presence is not the property, and
     # the difference is not academic: measured 2026-08-28 on the shipped
     # code, `GATE_SCOPE_BRANCHES=""` in this file disables the branch phase
-    # on BOTH gates -- the purge prints "rule DISABLED", the detector
-    # reconciles `[none]` -- and BOTH self-test suites stayed fully green.
+    # -- the purge prints "rule DISABLED" -- and the self-test suites of
+    # the time stayed fully green.
     # That is a universal gate satisfied by emptying its domain, arriving
     # through the one file this design made load-bearing. An empty value is
     # a legitimate SELF-TEST seam, driven through the environment; it is
@@ -613,7 +540,7 @@ if [ -r "$SHIPPED" ]; then
     # COUNT WORDS, DO NOT TEST PRESENCE. `-n` is one character to the side of
     # the property and it is the side that fails silently: measured
     # 2026-08-28, `GATE_SCOPE_BRANCHES="   "` in this file satisfies the
-    # foreign-content guard, satisfies `-n` in BOTH suites, makes `for br in
+    # foreign-content guard, satisfies `-n` in the suites of the time, makes `for br in
     # $BRANCHES` iterate zero times so the shape refusal never runs, and the
     # purge then deletes the branch commits keep rule 5 exists to spare --
     # exiting 0, printing "0 commit(s) protected across [   ]" as though a
@@ -624,8 +551,8 @@ if [ -r "$SHIPPED" ]; then
       . "$SHIPPED"
       # shellcheck disable=SC2086
       [ "$(set -- ${GATE_SCOPE_BRANCHES:-}; echo $#)" -ge 1 ] ) \
-      && ok "the shipped scope names at least one branch, counted as WORDS (an empty or blank list silently disarms both gates)" \
-      || no "the shipped GATE_SCOPE_BRANCHES has no words in it -- the branch phase is off on both gates and nothing else says so"
+      && ok "the shipped scope names at least one branch, counted as WORDS (an empty or blank list silently disarms keep rule 5)" \
+      || no "the shipped GATE_SCOPE_BRANCHES has no words in it -- the branch phase is off in the purge and nothing else says so"
 fi
 # And no workflow may restate the scope: a copy in a workflow file is the
 # second enumeration this design exists to remove.
@@ -633,18 +560,18 @@ fi
 # TWO SPELLINGS ENUMERATED MEANS A THIRD EXISTS. The first version of this
 # scan matched only the YAML `env:` KEY spelling, and measured 2026-08-28 the
 # same restatement written INLINE on the `run:` line --
-#   run: GATE_BRANCH_COMMITS=10 bash scripts/check-missing-runs.sh 20
+#   run: GATE_BRANCH_COMMITS=10 bash scripts/purge-workflow-runs.sh
 # -- survived both suites: a live second enumeration overriding the scope
 # file, which is exactly the collision being closed. So the separator is now
 # `[:=]`, covering the env key and the inline assignment, and the key set
-# includes GATE_SCOPE_FILE -- pointing either gate at a different scope file
+# includes GATE_SCOPE_FILE -- pointing the purge at a different scope file
 # restates the scope wholesale without naming a branch or a number.
 #
 # WHAT THIS SCAN CANNOT SEE, stated rather than claimed away. Its domain is
 # `.github/workflows/` only, so a caller outside it -- a Makefile target, a
 # composite action, a local script -- is invisible to it; today the
-# composites under `.github/actions/` (#746) invoke neither gate, and
-# `missing-runs.yml` is the only workflow invoking either. It is a text scan, so a value assembled at runtime
+# composites under `.github/actions/` (#746) invoke no scope reader, and
+# `run-retention.yml` is the only workflow invoking the purge. It is a text scan, so a value assembled at runtime
 # (`GATE_BRANCH""ES=dev`, or a name built from `${{ }}` fragments) passes it.
 # And it judges the checked-out tree, so a scope restated in repository or
 # environment VARIABLES in the GitHub settings is out of reach entirely.
@@ -705,7 +632,7 @@ fi
 # ANYWHERE to the left of the assignment rather than asking whether the line
 # is a comment. MEASURED against the previous version at 83c27b1:
 #
-#     - run: echo "a#b" && GATE_BRANCHES=dev bash scripts/check-missing-runs.sh 20
+#     - run: echo "a#b" && GATE_BRANCHES=dev bash scripts/purge-workflow-runs.sh
 #
 # is a live restatement in a workflow file and was NOT returned; the same
 # line without the `#` was. So the sentence above was itself a literal
@@ -821,12 +748,12 @@ restate_case "the YAML env-key spelling" 'jobs:
     steps:
       - env:
           GATE_BRANCH_COMMITS: "10"
-        run: bash scripts/check-missing-runs.sh 20
+        run: bash scripts/purge-workflow-runs.sh
 '
 restate_case "the inline run-line spelling" 'jobs:
   x:
     steps:
-      - run: GATE_BRANCH_COMMITS=10 GATE_BRANCHES="dev" bash scripts/check-missing-runs.sh 20
+      - run: GATE_BRANCH_COMMITS=10 GATE_BRANCHES="dev" bash scripts/purge-workflow-runs.sh
 '
 restate_case "a redirected GATE_SCOPE_FILE" 'jobs:
   x:
@@ -840,7 +767,7 @@ restate_case "an exported assignment inside a run block" 'jobs:
     steps:
       - run: |
           export GATE_BRANCHES=dev
-          bash scripts/check-missing-runs.sh 20
+          bash scripts/purge-workflow-runs.sh
 '
 # THE SHAPE THAT DEFEATED THE PREVIOUS PATTERN. A `#` anywhere left of the
 # assignment made the whole line invisible, so a live restatement only had
@@ -848,12 +775,12 @@ restate_case "an exported assignment inside a run block" 'jobs:
 restate_case "a live assignment on a line that also contains a #" 'jobs:
   x:
     steps:
-      - run: echo "a#b" && GATE_BRANCHES=dev bash scripts/check-missing-runs.sh 20
+      - run: echo "a#b" && GATE_BRANCHES=dev bash scripts/purge-workflow-runs.sh
 '
 restate_case "a live assignment after a URL fragment" 'jobs:
   x:
     steps:
-      - run: curl https://example.invalid/a#b; GATE_BRANCH_COMMITS=1 bash scripts/check-missing-runs.sh 20
+      - run: curl https://example.invalid/a#b; GATE_BRANCH_COMMITS=1 bash scripts/purge-workflow-runs.sh
 '
 restate_case "an indented live assignment inside a block scalar with a # above it" 'jobs:
   x:
@@ -871,14 +798,14 @@ restate_case "a DOUBLE-quoted env key" 'jobs:
     steps:
       - env:
           "GATE_BRANCHES": "dev"
-        run: bash scripts/check-missing-runs.sh 20
+        run: bash scripts/purge-workflow-runs.sh
 '
 restate_case "a SINGLE-quoted env key" 'jobs:
   x:
     steps:
       - env:
           '"'"'GATE_BRANCH_COMMITS'"'"': '"'"'1'"'"'
-        run: bash scripts/check-missing-runs.sh 20
+        run: bash scripts/purge-workflow-runs.sh
 '
 restate_case "a quoted env key with a space before the colon" 'jobs:
   x:
@@ -897,7 +824,7 @@ unparse_case "the YAML explicit-key form, which no separator pattern matches" 'j
       - env:
           ? GATE_BRANCHES
           : dev
-        run: bash scripts/check-missing-runs.sh 20
+        run: bash scripts/purge-workflow-runs.sh
 '
 # THE UNREADABLE ARM'"'"'S COST, PINNED. A workflow that only READS one of
 # these keys is reported. Asserting today'"'"'s answer with the reason in the
@@ -906,7 +833,7 @@ unparse_case "the YAML explicit-key form, which no separator pattern matches" 'j
 unparse_case "a workflow that merely READS a scope key (accepted report: a workflow taking the scope from its environment is an opinion about the scope)" 'jobs:
   x:
     steps:
-      - run: echo "the scope is $GATE_BRANCHES" && bash scripts/check-missing-runs.sh 20
+      - run: echo "the scope is $GATE_BRANCHES" && bash scripts/purge-workflow-runs.sh
 '
 # THE OTHER DIRECTION FOR THE UNREADABLE ARM. A name that is not contiguous
 # in the file is the named escape, and it must stay escaped: firing here
@@ -915,24 +842,23 @@ unparse_case "a workflow that merely READS a scope key (accepted report: a workf
 printf '%s' 'jobs:
   x:
     steps:
-      - run: GATE_BRANC""HES=dev bash scripts/check-missing-runs.sh 20
+      - run: GATE_BRANC""HES=dev bash scripts/purge-workflow-runs.sh
 ' > "$RESTATE/wf.yml"
 [ -z "$(scan_restates "$RESTATE")" ] \
   && ok "neither arm fires on a name assembled at runtime (the escape named in the bound is really an escape)" \
   || no "the scan fires on GATE_BRANC\"\"HES -- the bound above names runtime assembly as an escape and the tree now falsifies it"
-# THE OTHER DIRECTION: prose about the scope is not a restatement of it, and
-# missing-runs.yml carries exactly that prose today. A scan that refused it
-# would be unusable, and the clean verdict above would be meaningless.
+# THE OTHER DIRECTION: prose about the scope is not a restatement of it.
+# A scan that refused it would be unusable, and the clean verdict above would be meaningless.
 printf '%s' '# GATE_BRANCHES: not set here, it lives in the scope file
 jobs:
   x:
     steps:
       # the scope file defines GATE_BRANCHES and GATE_BRANCH_COMMITS
-      - run: bash scripts/check-missing-runs.sh 20
+      - run: bash scripts/purge-workflow-runs.sh
 ' > "$RESTATE/wf.yml"
 [ -z "$(scan_restates "$RESTATE")" ] \
   && ok "the restatement scan does NOT fire on commented prose naming the variables" \
-  || no "the restatement scan fires on a comment -- missing-runs.yml's own prose would trip it"
+  || no "the restatement scan fires on a comment -- a workflow comment naming the variables would trip it"
 
 # THE TRADE, PINNED. Asserting today's answer, with the reason in the name:
 # the structural form reports a trailing comment on a live line, because a
@@ -943,7 +869,7 @@ jobs:
 printf '%s' 'jobs:
   x:
     steps:
-      - run: bash scripts/check-missing-runs.sh 20  # GATE_BRANCHES= lives in the scope file
+      - run: bash scripts/purge-workflow-runs.sh  # GATE_BRANCHES= lives in the scope file
 ' > "$RESTATE/wf.yml"
 [ -n "$(scan_restates "$RESTATE")" ] \
   && ok "the restatement scan reports a TRAILING comment on a live line (accepted false positive: a text scan cannot tell an inert shell comment from a live assignment)" \
@@ -961,7 +887,7 @@ verdict_case() {   # verdict_case <expected> <label> <file-content>
 verdict_case CLEAN      "a workflow naming none of the keys" 'jobs:
   x:
     steps:
-      - run: bash scripts/check-missing-runs.sh 20
+      - run: bash scripts/purge-workflow-runs.sh
 '
 verdict_case NAMED      "a readable restatement" 'jobs:
   x:
@@ -1012,7 +938,7 @@ else
     ok "the per-key coverage loop has a non-empty domain ($scope_key_n key(s) read from the shipped scope file, not from the scan)"
     while IFS= read -r k; do
         [ -n "$k" ] || continue
-        printf 'jobs:\n  x:\n    steps:\n      - env:\n          %s: something\n        run: bash scripts/check-missing-runs.sh 20\n' "$k" > "$RESTATE/wf.yml"
+        printf 'jobs:\n  x:\n    steps:\n      - env:\n          %s: something\n        run: bash scripts/purge-workflow-runs.sh\n' "$k" > "$RESTATE/wf.yml"
         if [ -n "$(scan_restates "$RESTATE" | awk '$1 == "named"')" ]; then
             ok "the restatement scan sees a workflow restating $k (key derived from the shipped scope file)"
         else
@@ -1043,8 +969,8 @@ drive "$D" env GATE_SCOPE_COMMITS=15 RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=0
 # against it, and the difference is measurable: with `GATE_SCOPE_COMMITS=1`
 # appended to the shipped file -- a duplicated key, last-wins -- every
 # assertion above still passed, because every other case in this suite
-# supplies its own fixture scope. The detector's suite went red; this one
-# did not. So drive the REAL artifact through the REAL script, and let any
+# supplies its own fixture scope. Only the suite of the run detector
+# (#740, deleted in #747) went red. So drive the REAL artifact through the REAL script, and let any
 # degenerate shipped value (blank list, duplicate key, CRLF, bad depth)
 # turn this suite red on its own.
 #
@@ -1068,7 +994,7 @@ drive "$D" env GATE_SCOPE_FILE="$SHIPPED" RETENTION_DAYS=0 KEEP_GROUPS=1
 # --- 19b. the degenerate scope values, each driven ALONE (#874) ---------
 # Every shape below is individually legal to the foreign-content guard and
 # each one silently narrows or disarms keep rule 5 -- the direction that
-# DELETES the run records check-missing-runs.sh then demands. Asserted by
+# DELETES the run records of the gate branches' recent commits. Asserted by
 # EXIT CODE and by zero deletions, never by message text.
 #
 # ASSERT WHICH REFUSAL FIRED, not merely that one did. A shape caught by a
@@ -1167,7 +1093,7 @@ drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=1 GATE_BRANCHES="dev"
 # The scope file carried `2.*` while the 2.x line had its own branch, which
 # was renamed once per milestone, so both globbing sites carry `set -f` and
 # a pattern is resolved against the BRANCHES THAT EXIST, by the matcher
-# check-missing-runs.sh uses for the same words. The cases below supply
+# check-branch-refs.sh uses for the same words. The cases below supply
 # their own scope values, so they keep driving pattern words now that the
 # shipped file is two literals.
 #
@@ -1194,8 +1120,8 @@ grep -qF "resolves to [dev main 2.0.0 1.9.x]" <<<"$OUT" \
   || no "the summary still hides the expansion: $OUT"
 
 # A PATTERN THAT MATCHES NOTHING REFUSES. It is the empty word list one
-# door along: the population silently becomes smaller than the one
-# check-missing-runs.sh reconciles, in the direction that deletes evidence.
+# door along: the population silently becomes smaller than the one the
+# scope file names, in the direction that deletes evidence.
 D="$TMP/globnone"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
 drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=0 GATE_BRANCHES='9.*'
 [ "$RC" = 2 ] && [ "$DELS" = 0 ] && grep -q "Branch scope unresolvable" <<<"$OUT" \
@@ -1305,10 +1231,8 @@ DELS=$(wc -l < "$D/deleted.log")
 # the number in the file is the number this script asks GitHub for -- and
 # a script that read the file, ignored it, and used a built-in default
 # would pass every assertion above while protecting a different population
-# from the one check-missing-runs.sh reconciles. That silent disagreement
-# IS the bug. So drive an unusual depth and read it back off the wire.
-# test-check-missing-runs.sh asserts the same property on the other gate;
-# together they are what makes the two populations one population.
+# from the one the scope file names. That silent disagreement IS the bug.
+# So drive an unusual depth and read it back off the wire.
 D="$TMP/depth"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
 cat > "$D/scope.env" <<'SCOPE'
 GATE_SCOPE_BRANCHES="dev"
@@ -1325,8 +1249,8 @@ depth_call=$(grep -c 'commits?sha=dev&per_page=3' "$D/calls.log") || depth_call=
 # that replaced the scope's branch list with a built-in "dev" SURVIVED the
 # depth case above, because that case names one branch and the fixture
 # answers every branch identically. A branch the purge does not walk is a
-# branch whose commits it does not protect while the detector still
-# reconciles them -- the collision again, one branch at a time. So name
+# branch whose commits it does not protect while the scope names them --
+# the narrowing again, one branch at a time. So name
 # branches nothing could guess and require BOTH on the wire.
 D="$TMP/brnames"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
 cat > "$D/scope.env" <<'SCOPE'
@@ -1342,7 +1266,7 @@ got_beta=$(grep -c 'commits?sha=beta&' "$D/calls.log")   || got_beta=0
 
 # --- 22. the branch-commits query does NOT paginate ---------------------
 # The script's own comment calls this out -- "NOT --paginate ... the
-# detector asks for exactly per_page=N commits and stops; paginating would
+# rule asks for exactly per_page=N commits and stops; paginating would
 # walk the entire history and protect all of it" -- and nothing asserted
 # it. Measured 2026-08-28: adding `--paginate` to that one call SURVIVED
 # every case above, because the stub, like every stub, ignores the flag.

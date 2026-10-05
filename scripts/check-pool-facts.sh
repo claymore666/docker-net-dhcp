@@ -8,10 +8,7 @@
 # operands move on their own schedule — the pool has been resized, the
 # suite matrix has been resharded three times — so each statement decays
 # silently and is trusted by exactly the readers who will not go and
-# measure. Two of the stale sites were `advise()` output in
-# ci-queue-watchdog.sh: the text an operator reads DURING an incident,
-# on the STARVATION and POOL SHORT paths. A diagnostic that misdirects
-# is worse than a comment that is merely stale.
+# measure.
 #
 # Expires-when: the runner pool size and the jobs per run are no longer
 #   stated in prose anywhere in the tree (#879).
@@ -27,8 +24,7 @@
 #                           from .github/ci-pool.json.
 #
 # WHY THE POOL SIZE IS A DECLARED CONSTANT AND NOT AN API READ.
-# MEASURED, and already written down in ci-queue-watchdog.sh's
-# classify_wait: listing self-hosted runners needs repo administration
+# MEASURED in #513: listing self-hosted runners needs repo administration
 # rights, and `administration` is not one of the workflow
 # GITHUB_TOKEN's permission scopes -- so this is not a matter of adding
 # a permission, an in-lane query cannot be made to work at all. The

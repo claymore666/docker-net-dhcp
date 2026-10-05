@@ -16,7 +16,7 @@
 # because a cwd holding a match silently drops the
 # pattern-must-match-a-branch obligation.
 #
-# `check-missing-runs.sh` and `purge-workflow-runs.sh` were guarded with
+# The readers of the time were guarded with
 # `set -f` at each of their splitting sites, and the scope file's own prose
 # said so and counted them. `check-branch-refs.sh` was added later, split
 # the same value, and was not guarded -- and the count in the prose did not
@@ -156,10 +156,6 @@ drive() { # <script> <cwd> -> "<rc>\n<output>"
         check-branch-refs.sh)
             out=$( cd "$dir" && BRANCH_REFS_HEADS_FILE="$WORK/heads.txt" \
                    BRANCH_REFS_SCOPE="$WORK/scope.env" bash "$script" 2>&1 )
-            rc=$? ;;
-        check-missing-runs.sh)
-            out=$( cd "$dir" && PATH="$WORK/bin:$PATH" GATE_REPO=claymore666/docker-net-dhcp \
-                   GATE_SCOPE_FILE="$WORK/scope.env" bash "$script" 2>&1 )
             rc=$? ;;
         branch-glob.sh)
             # A sourced library, so it is driven by calling the two functions
