@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"time"
 
-	dNetwork "github.com/docker/docker/api/types/network"
+	dNetwork "github.com/moby/moby/api/types/network"
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
@@ -152,7 +152,7 @@ func (p *Plugin) refuseSiblingSubMode(networkID string, opts DHCPNetworkOptions)
 			}
 		}
 	}
-	nets, err := p.docker.NetworkList(context.Background(), dNetwork.ListOptions{})
+	nets, err := listNetworks(context.Background(), p.docker)
 	if err != nil {
 		log.WithError(err).WithField("network", shortID(networkID)).
 			Warn("Could not list Docker networks to compare sub-modes on the parent; checking the stored records only")

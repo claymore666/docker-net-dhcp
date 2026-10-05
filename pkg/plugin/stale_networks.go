@@ -7,7 +7,7 @@ import (
 	"context"
 
 	cerrdefs "github.com/containerd/errdefs"
-	dNetwork "github.com/docker/docker/api/types/network"
+	dNetwork "github.com/moby/moby/api/types/network"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/claymore666/dhcp-golib/lease"
@@ -38,7 +38,7 @@ func (p *Plugin) dropStaleNetworks(ctx context.Context, live []dNetwork.Summary)
 			continue
 		}
 		netCtx, cancel := context.WithTimeout(ctx, recoveryPerNetworkTimeout)
-		_, err := p.docker.NetworkInspect(netCtx, id, dNetwork.InspectOptions{})
+		_, err := inspectNetwork(netCtx, p.docker, id)
 		cancel()
 		if !cerrdefs.IsNotFound(err) {
 			continue

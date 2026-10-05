@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	dNetwork "github.com/docker/docker/api/types/network"
+	dNetwork "github.com/moby/moby/api/types/network"
 
 	"github.com/claymore666/dhcp-golib/lease"
 
@@ -155,7 +155,7 @@ func TestReacquireEndpoint_IsNotSubjectToRequireMAC(t *testing.T) {
 	}
 	f := &fakeDocker{inspectResult: map[string]dNetwork.Inspect{
 		network: {Containers: map[string]dNetwork.EndpointResource{
-			"ctr": {EndpointID: endpoint, MacAddress: requireMACTestMAC},
+			"ctr": {EndpointID: endpoint, MacAddress: engineMAC(requireMACTestMAC)},
 		}},
 	}}
 	p := &Plugin{docker: f, joinHints: make(map[string]joinHint)}

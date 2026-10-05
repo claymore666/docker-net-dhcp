@@ -9,7 +9,8 @@ import (
 	"fmt"
 	"time"
 
-	docker "github.com/docker/docker/client"
+	cerrdefs "github.com/containerd/errdefs"
+	docker "github.com/moby/moby/client"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -32,6 +33,10 @@ const MinEngineAPIVersion = "1.41"
 func (p *Plugin) probeEngine(ctx context.Context) error {
 	id, err := p.identifyEngine(ctx)
 	p.daemonAnswered.Store(!errors.Is(err, errDaemonUnreachable))
+	if errors.Is(err, errEngineTooOld) {
+		p.engine.Store(&id)
+		return err
+	}
 	if err != nil {
 		p.engine.Store(&engineIdentity{Version: unknownEngineField, APIVersion: unknownEngineField})
 		log.WithError(err).WithField("floor", MinEngineVersion).
@@ -53,6 +58,11 @@ func (p *Plugin) reprobeEngine(ctx context.Context) {
 		return
 	}
 	id, err := p.identifyEngine(ctx)
+	if errors.Is(err, errEngineTooOld) {
+		p.engine.Store(&id)
+		log.WithError(err).Error("engine: this daemon is below the minimum engine version; the plugin is running unsupported")
+		return
+	}
 	if err != nil {
 		log.WithError(err).Debug("engine: the daemon still does not answer a version query")
 		return
@@ -93,20 +103,28 @@ func (p *Plugin) judgeEngine(id engineIdentity) error {
 	return nil
 }
 
-// /version reports the daemon's maximum API; ClientVersion after a ping is the negotiated one the health
+// /version reports the daemon's maximum API; ClientVersion after the negotiating ping is the one the health
 // document publishes (#670).
 func (p *Plugin) identifyEngine(ctx context.Context) (engineIdentity, error) {
 	ctx, cancel := context.WithTimeout(ctx, engineProbeTimeout)
 	defer cancel()
 
-	if _, err := p.docker.Ping(ctx); err != nil {
+	ping, err := p.docker.Ping(ctx, docker.PingOptions{NegotiateAPIVersion: true})
+	if err != nil {
 		// Transport failures are connection failures or context errors; a status error is an answer (#383, #1176).
 		if docker.IsErrConnectionFailed(err) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			return engineIdentity{}, fmt.Errorf("pinging the Docker daemon: %w: %w", errDaemonUnreachable, err)
 		}
+		// The client refuses to negotiate below its MinAPIVersion and would then call /version on its own maximum,
+		// which the daemon rejects; the ping's API version is all such an engine tells us (#178).
+		if below, ok := engineBelowFloor(ping.APIVersion, docker.MinAPIVersion); ok && below && cerrdefs.IsInvalidArgument(err) {
+			id := engineIdentity{Version: unknownEngineField, APIVersion: ping.APIVersion}
+			return id, fmt.Errorf("%w: engine API %s, below the %s the Docker client speaks; minimum engine %s (measured, see docs/reference.md)",
+				errEngineTooOld, ping.APIVersion, docker.MinAPIVersion, MinEngineVersion)
+		}
 		return engineIdentity{}, fmt.Errorf("pinging the Docker daemon: %w", err)
 	}
-	v, err := p.docker.ServerVersion(ctx)
+	v, err := p.docker.ServerVersion(ctx, docker.ServerVersionOptions{})
 	if err != nil {
 		return engineIdentity{}, fmt.Errorf("reading the Docker Engine version: %w", err)
 	}

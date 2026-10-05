@@ -62,6 +62,10 @@ on:
       # edit to the row list does.
       - 'docs/reference.md'
       - 'pkg/plugin/engine_floor.go'
+      # The Docker client library picks the API version every row is
+      # spoken to in and decodes what each engine answers, so a dependency
+      # change retakes the measurement as well (#178).
+      - 'go.mod'
   schedule:
     - cron: '41 5 * * 2'   # weekly Tue 05:41 UTC, off-peak odd minute
   workflow_dispatch:

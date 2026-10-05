@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	docker "github.com/moby/moby/client"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,7 +18,6 @@ import (
 	"strings"
 	"testing"
 
-	dNetwork "github.com/docker/docker/api/types/network"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -332,13 +332,12 @@ func TestNewDockerClient_InstallsTheReadOnlyTransport(t *testing.T) {
 	}
 
 	// Asserted through behaviour, since the client wraps the given transport in an OpenTelemetry one.
-	if _, err := cli.NetworkList(context.Background(), dNetwork.ListOptions{}); err != nil {
+	if _, err := cli.NetworkList(context.Background(), docker.NetworkListOptions{}); err != nil {
 		t.Fatalf("NetworkList through the wrapped client: %v", err)
 	}
 
-	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1.51/containers/create", nil)
-	if resp, err := cli.HTTPClient().Transport.RoundTrip(req); err == nil {
-		resp.Body.Close()
+	// A real POST method of the client, so every wrapper the client adds sits between the call and the daemon.
+	if _, err := cli.ContainerStart(context.Background(), "ctr", docker.ContainerStartOptions{}); err == nil {
 		t.Fatal("the wired client passed a POST to the daemon")
 	} else if !strings.Contains(err.Error(), errUnsafeMethodToDaemon.Error()) {
 		t.Errorf("the POST failed with %v, which is not this plugin's refusal — it may have been "+

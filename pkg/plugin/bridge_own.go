@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	dNetwork "github.com/docker/docker/api/types/network"
+	dNetwork "github.com/moby/moby/api/types/network"
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
@@ -471,7 +471,7 @@ func (p *Plugin) retireBridge(ctx context.Context, self string, opts DHCPNetwork
 		return
 	}
 	listCtx, cancel := context.WithTimeout(ctx, vlanListBudget)
-	nets, err := p.docker.NetworkList(listCtx, dNetwork.ListOptions{})
+	nets, err := listNetworks(listCtx, p.docker)
 	cancel()
 	if err != nil {
 		keep("cannot list Docker networks: %v", err)

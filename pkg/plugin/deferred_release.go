@@ -12,7 +12,6 @@ import (
 
 	"github.com/claymore666/dhcp-golib/lease"
 	cerrdefs "github.com/containerd/errdefs"
-	dNetwork "github.com/docker/docker/api/types/network"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
@@ -124,7 +123,7 @@ func (p *Plugin) networkGone(networkID string) bool {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), recoveryPerNetworkTimeout)
 	defer cancel()
-	_, err := p.docker.NetworkInspect(ctx, networkID, dNetwork.InspectOptions{})
+	_, err := inspectNetwork(ctx, p.docker, networkID)
 	return cerrdefs.IsNotFound(err)
 }
 

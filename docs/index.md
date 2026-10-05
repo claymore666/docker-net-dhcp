@@ -136,7 +136,8 @@ this project will not do, is on the [roadmap](roadmap.md).
   `docker restart`. Pulling the published plugin from a registry is not
   part of that measurement. It runs weekly and on every change to the
   measurement. Below 20.10 the plugin refuses to start, and the refusal
-  names the minimum and the engine it saw. 19.03 is `unsupported`
+  names the minimum and the engine it saw; an engine older than 19.03
+  is named by the API version it reported. 19.03 is `unsupported`
   because it is unmeasured: on a cgroup v2 host it cannot start a
   container at all, so nothing there tests this plugin.
   Every change is also tested against the engine the integration suite
@@ -146,7 +147,9 @@ this project will not do, is on the [roadmap](roadmap.md).
   plugin manifest declares. The plugin negotiates the Docker API version
   with the daemon. It publishes both numbers on `/Plugin.Health` as
   `engine_version` and `api_version`. The minimum above is a version of
-  the engine, not of the API, and nothing is refused on the API version.
+  the engine, not of the API. The one refusal on the API version is below
+  1.40, the oldest the plugin's Docker client speaks, which only engines
+  older than 19.03 report.
 - **One directory, created once per host, before `docker plugin install`**
   (the line is in the quick start below). Docker will not create a missing
   bind source, so without it the install fails at start-up and leaves the

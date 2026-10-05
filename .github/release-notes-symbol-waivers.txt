@@ -73,12 +73,6 @@ tombstoneMu
 #   old name has to appear for the sentence to mean anything.
 ParseJSONBody
 #
-# EXTERNAL — "Changes vs. upstream", line 3292. NetworkInspectOptions is
-#   a Docker API type (github.com/docker/docker/api/types), named in a
-#   list of upstream API changes. It is not ours and will not resolve
-#   here.
-NetworkInspectOptions
-#
 # HISTORICAL — line 1613, in the coverage note of the release that
 #   published the combined number. The sentence names "the `BuildEvent`
 #   extraction in pkg/udhcpc" — a package that had already been renamed

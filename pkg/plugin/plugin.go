@@ -23,9 +23,9 @@ import (
 
 	"github.com/claymore666/dhcp-golib/proto"
 	cerrdefs "github.com/containerd/errdefs"
-	dNetwork "github.com/docker/docker/api/types/network"
 	"github.com/gorilla/handlers"
 	"github.com/mitchellh/mapstructure"
+	dNetwork "github.com/moby/moby/api/types/network"
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 
@@ -1088,7 +1088,7 @@ func (p *Plugin) consumeTombstone(networkID string, h dhcpHostname) (mac, ipv4, 
 func (p *Plugin) listNetworksWhenReady(ctx context.Context) ([]dNetwork.Summary, error) {
 	var lastErr error
 	for {
-		nets, err := p.docker.NetworkList(ctx, dNetwork.ListOptions{})
+		nets, err := listNetworks(ctx, p.docker)
 		if err == nil {
 			return nets, nil
 		}
@@ -1133,7 +1133,7 @@ func (p *Plugin) recoverEndpoints(ctx context.Context, daemonWait time.Duration)
 		}
 		// Per-network deadline so one hung call cannot consume recoveryBudget (#76).
 		netCtx, netCancel := context.WithTimeout(ctx, recoveryPerNetworkTimeout)
-		netInfo, err := p.docker.NetworkInspect(netCtx, n.ID, dNetwork.InspectOptions{})
+		netInfo, err := inspectNetwork(netCtx, p.docker, n.ID)
 		if err != nil {
 			netCancel()
 			if cerrdefs.IsNotFound(err) {
@@ -1163,7 +1163,7 @@ func (p *Plugin) recoverEndpoints(ctx context.Context, daemonWait time.Duration)
 			if strings.HasPrefix(cid, "ep-") {
 				continue
 			}
-			adopted, err := p.recoverOneEndpoint(ctx, cid, n.ID, info.EndpointID, info.MacAddress, info.IPv4Address, info.IPv6Address, opts)
+			adopted, err := p.recoverOneEndpoint(ctx, cid, n.ID, info.EndpointID, info.MacAddress.String(), prefixString(info.IPv4Address), prefixString(info.IPv6Address), opts)
 			if err != nil {
 				log.WithError(err).WithFields(log.Fields{
 					"network":  shortID(n.ID),
@@ -1229,7 +1229,7 @@ func (p *Plugin) containerGone(ctx context.Context, containerID string) bool {
 	ctx, cancel := context.WithTimeout(ctx, recoveryPerNetworkTimeout)
 	defer cancel()
 
-	ctr, err := p.docker.ContainerInspect(ctx, containerID)
+	ctr, err := inspectContainer(ctx, p.docker, containerID)
 	if err != nil {
 		return cerrdefs.IsNotFound(err)
 	}
@@ -1249,7 +1249,7 @@ func (p *Plugin) recoveredHostname(ctx context.Context, containerID string) (dhc
 	ctx, cancel := context.WithTimeout(ctx, initialDHCPHostnameLookupTimeout)
 	defer cancel()
 
-	ctr, err := p.docker.ContainerInspect(ctx, containerID)
+	ctr, err := inspectContainer(ctx, p.docker, containerID)
 	if err != nil || ctr.Config == nil || ctr.Config.Hostname == "" {
 		// Counted, since this endpoint loses its address on the next restart (#721).
 		p.recoveryFingerprintsSkipped.Add(1)
@@ -1385,13 +1385,13 @@ func (p *Plugin) recoverOneEndpoint(ctx context.Context, containerID, networkID,
 
 // lookupEndpointMAC reads Docker's stored MAC for an endpoint so a restart rebuilds the link with that MAC.
 func (p *Plugin) lookupEndpointMAC(ctx context.Context, networkID, endpointID string) (string, error) {
-	dockerNet, err := p.docker.NetworkInspect(ctx, networkID, dNetwork.InspectOptions{})
+	dockerNet, err := inspectNetwork(ctx, p.docker, networkID)
 	if err != nil {
 		return "", fmt.Errorf("failed to inspect network: %w", err)
 	}
 	for _, info := range dockerNet.Containers {
 		if info.EndpointID == endpointID {
-			return info.MacAddress, nil
+			return info.MacAddress.String(), nil
 		}
 	}
 	return "", fmt.Errorf("endpoint %v not found in network %v's container list", endpointID, networkID)
@@ -1438,7 +1438,7 @@ func (p *Plugin) initialDHCPHostname(ctx context.Context, networkID, endpointID 
 	_ = util.AwaitCondition(ctx, func() (bool, error) {
 		inner, innerCancel := context.WithTimeout(ctx, dockerCallTimeout)
 		defer innerCancel()
-		dockerNet, err := p.docker.NetworkInspect(inner, networkID, dNetwork.InspectOptions{})
+		dockerNet, err := inspectNetwork(inner, p.docker, networkID)
 		if err != nil {
 			return false, nil
 		}
@@ -1450,7 +1450,7 @@ func (p *Plugin) initialDHCPHostname(ctx context.Context, networkID, endpointID 
 			if strings.HasPrefix(ctrID, "ep-") {
 				return false, nil
 			}
-			ctr, err := p.docker.ContainerInspect(inner, ctrID)
+			ctr, err := inspectContainer(inner, p.docker, ctrID)
 			if err != nil {
 				return false, nil
 			}

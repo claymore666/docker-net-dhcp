@@ -423,9 +423,11 @@ The lane also runs on its own `push` trigger, over
 `.github/workflows/engine-matrix.yml`,
 `.github/engine-rows.txt`,
 `scripts/engine-baseline.sh`,
-`scripts/engine-floor.sh`
+`scripts/engine-floor.sh`,
+`docs/reference.md`,
+`pkg/plugin/engine_floor.go`
 and
-`pkg/plugin/engine_floor.go`.
+`go.mod`.
 That run is the measurement for any tree in which none of those paths
 has changed since, which is the ordinary case for a patch release: read
 it and dispatch nothing.
