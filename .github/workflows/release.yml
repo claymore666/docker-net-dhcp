@@ -1334,15 +1334,20 @@ jobs:
   # Install mechanics only — enable proves the binary starts. Functional
   # proof on real hardware is the rc-time integration-arm64 run (#531);
   # a hosted VM cannot replace it, but it can catch a 500 on install.
+  #
+  # The three arm64 proofs need resolve, not release (#799): the tag is
+  # resolve's output, which release only passes through, so an amd64
+  # failure no longer skips the proof of an arm64 tag already published.
+  # scripts/check-runbook-release-steps.sh fails if one names release.
   verify-install-arm64:
-    needs: [release, release-arm64]
+    needs: [resolve, release-arm64]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     permissions:
       contents: read
       packages: read
     env:
-      TAG: ${{ needs.release.outputs.tag }}-arm64
+      TAG: ${{ needs.resolve.outputs.tag }}-arm64
     steps:
       - name: Log in to GHCR
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
@@ -1462,13 +1467,13 @@ jobs:
   # The Hub half for arm64, on an arm64 host. Same reasoning as
   # verify-install-hub throughout, including why it is its own job.
   verify-install-hub-arm64:
-    needs: [release, release-arm64]
+    needs: [resolve, release-arm64]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     permissions:
       contents: read
     env:
-      TAG: ${{ needs.release.outputs.tag }}-arm64
+      TAG: ${{ needs.resolve.outputs.tag }}-arm64
       # From release-arm64, not from release: the arm64 Hub image is a
       # separate push and a separate tag, and the amd64 job's answer says
       # nothing about whether this one exists.
@@ -1607,13 +1612,13 @@ jobs:
   # the hyphenated `needs.` dereference as verify-install-hub-arm64,
   # where the measurement behind that choice is written down.
   verify-install-hub-alias-arm64:
-    needs: [release, release-arm64]
+    needs: [resolve, release-arm64]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     permissions:
       contents: read
     env:
-      TAG: ${{ needs.release.outputs.tag }}-arm64
+      TAG: ${{ needs.resolve.outputs.tag }}-arm64
       HUB_PUSHED: ${{ needs['release-arm64'].outputs.hub_pushed }}
       HAS_HUB_CREDS: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
     steps:
