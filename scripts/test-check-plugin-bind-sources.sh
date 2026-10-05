@@ -298,6 +298,51 @@ jobs:
         run: docker plugin create "$REF" "${DIR}"
 YML
 check "a variable dir in a workflow is not a template" 1 "$ws" "plugin dir '\${DIR}'"
+# A composite that calls the shared install hides that call from this
+# gate, which reads workflow calls only: it is refused, in either spelling
+# of the step (#746).
+for spelling in 'on a dash line:      - uses: ./.github/actions/install-plugin' 'on its own line:      - name: nested\n        uses: ./.github/actions/install-plugin' 'quoted:      - uses: "./.github/actions/install-plugin/"'; do
+    ws=$(mkws)
+    mkdir "$ws/.github/actions/lane-install"
+    printf 'name: n\nruns:\n  using: composite\n  steps:\n%b\n        with:\n          ref: x\n          dir: ${{ inputs.dir }}\n' \
+        "${spelling#*:}" > "$ws/.github/actions/lane-install/action.yml"
+    mutate_wf "$ws" integration-arm64.yml 's|^( +)uses: \./\.github/actions/install-plugin$|\1uses: ./.github/actions/lane-install|'
+    check "a composite calling the shared install is red: ${spelling%%:*}" 1 "$ws" "calls a local action"
+done
+ws=$(mkws)
+mkdir "$ws/.github/actions/lane-install"
+printf 'name: n\nruns:\n  using: composite\n  steps:\n    - uses: ./.github/actions/install-plugin\n' \
+    > "$ws/.github/actions/lane-install/action.yaml"
+check "a composite spelled action.yaml is refused too" 1 "$ws" "calls a local action"
+ws=$(mkws)
+mkdir "$ws/.github/actions/lane-note"
+printf 'name: n\nruns:\n  using: composite\n  steps:\n    # uses: ./.github/actions/install-plugin\n    - shell: bash\n      run: echo hi\n' \
+    > "$ws/.github/actions/lane-note/action.yml"
+check "a comment naming a local action in a composite is not a call" 0 "$ws" "4 plugin install(s)"
+
+# A remote action inside a composite is no call to a local action.
+ws=$(mkws)
+mkdir "$ws/.github/actions/lane-remote"
+printf 'name: n\nruns:\n  using: composite\n  steps:\n    - uses: actions/checkout@0000000000000000000000000000000000000000\n' \
+    > "$ws/.github/actions/lane-remote/action.yml"
+check "a composite using a remote action is not refused" 0 "$ws" "4 plugin install(s)"
+
+# A call with no dir after one that had one reads no dir at all, not the
+# earlier call's (#746).
+ws=$(mkws)
+cat >> "$ws/.github/workflows/integration-hosted.yml" <<'YML'
+      - name: a second install with no dir
+        uses: ./.github/actions/install-plugin
+        with:
+          ref: dnd:second
+YML
+check "a dir-less call after a call with a dir is red" 1 "$ws" "cannot read"
+
+# A create from a path under the template variable is a literal dir the
+# Makefile never populates, not the caller's dir (#746).
+ws=$(mkws); mutate_act "$ws" 's|^( +docker plugin create "\$\{PLUGIN_REF\}" )"\$\{PLUGIN_DIR\}"$|\1"${PLUGIN_DIR}/x"|'
+check "a create from a path under the variable is not the template" 1 "$ws" "plugin dir '\${PLUGIN_DIR}/x'"
+
 echo
 echo "passed: $pass  failed: $fail"
 [ "$fail" -eq 0 ]

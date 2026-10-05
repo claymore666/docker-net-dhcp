@@ -5,7 +5,8 @@
 # Every workflow step that runs `docker plugin create` must first create
 # every /var/lib bind source declared by the manifest it is installing. An
 # install inside a composite action is judged at each step calling it,
-# with that caller's dir (#746).
+# with that caller's dir (#746); a composite that calls another local
+# action is refused, since that call site would go unjudged.
 #
 # Expires-when: the engine creates a missing plugin bind source instead of
 #   failing docker plugin enable, or no manifest declares one (#440).
@@ -180,6 +181,14 @@ shopt -s nullglob
 WF_FILES=("$WORKFLOW_DIR"/*.yml "$WORKFLOW_DIR"/*.yaml)
 ACTION_FILES=("$ACTIONS_DIR"/*/action.yml "$ACTIONS_DIR"/*/action.yaml)
 shopt -u nullglob
+
+for af in "${ACTION_FILES[@]}"; do
+    if grep -E "^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*[\"']?\./" "$af" >/dev/null; then
+        echo "FAIL: $af calls a local action, so the installs behind it would"
+        echo "      go unjudged: the gate reads a workflow's calls, not a composite's."
+        rc=1
+    fi
+done
 
 # An install in a composite action takes its dir from an input, so it is
 # judged once per call site with the caller's dir in place of the

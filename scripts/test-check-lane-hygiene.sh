@@ -310,6 +310,40 @@ rm -rf "$d/.github/actions/teardown"
     || no "a missing local action should exit 2"
 rm -rf "$d"
 
+# A composite that calls another local action hides its commands from this
+# gate, so it is refused in either spelling of the step (#746).
+for spelling in 'on a dash line:    - uses: ./.github/actions/install' 'on its own line:    - name: nested\n      uses: ./.github/actions/install' 'quoted:    - uses: "./.github/actions/install/"'; do
+    guarded_tmpdir d; mk_composite_lane "$d" none
+    mkdir "$d/.github/actions/lane-install"
+    printf 'name: n\nruns:\n  using: composite\n  steps:\n%b\n' "${spelling#*:}" \
+        > "$d/.github/actions/lane-install/action.yml"
+    sed -i 's|uses: ./.github/actions/install$|uses: ./.github/actions/lane-install|' "$d/.github/workflows/lane.yml"
+    [ "$(verdict "$d/.github/workflows")" = 2 ] \
+        && ok "a composite calling a local action is rc2, not a step with no commands: ${spelling%%:*}" \
+        || no "a nested local action call should exit 2"
+    rm -rf "$d"
+done
+
+guarded_tmpdir d; mk_composite_lane "$d" always
+mkdir "$d/.github/actions/lane-note"
+printf 'name: n\nruns:\n  using: composite\n  steps:\n    # uses: ./.github/actions/install\n    - shell: bash\n      run: echo hi\n' \
+    > "$d/.github/actions/lane-note/action.yml"
+sed -i 's|^      - name: Enable$|      - uses: ./.github/actions/lane-note\n      - name: Enable|' "$d/.github/workflows/lane.yml"
+[ "$(verdict "$d/.github/workflows")" = 0 ] \
+    && ok "a comment naming a local action in a composite is not a call" \
+    || no "a commented uses: in a composite should not be refused"
+rm -rf "$d"
+
+guarded_tmpdir d; mk_composite_lane "$d" always
+mkdir "$d/.github/actions/lane-remote"
+printf 'name: n\nruns:\n  using: composite\n  steps:\n    - uses: actions/checkout@0000000000000000000000000000000000000000\n' \
+    > "$d/.github/actions/lane-remote/action.yml"
+sed -i 's|^      - name: Enable$|      - uses: ./.github/actions/lane-remote\n      - name: Enable|' "$d/.github/workflows/lane.yml"
+[ "$(verdict "$d/.github/workflows")" = 0 ] \
+    && ok "a composite using a remote action is not refused" \
+    || no "a remote action inside a composite should not be refused"
+rm -rf "$d"
+
 # The real lanes, with one teardown removed: the arm64 runner is the
 # standing one, so its teardown is the one that matters (#742).
 guarded_tmpdir d

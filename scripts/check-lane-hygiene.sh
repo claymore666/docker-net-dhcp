@@ -97,7 +97,10 @@ BODY_GATES='check-test-weakening\.sh|check-no-ai-attribution\.sh|check-issue-ref
 # GitHub resolves ./x against the checkout, two levels above the
 # workflow directory. The lanes install and tear down through two such
 # composites (#746), so their commands count as the step's own; one that
-# cannot be read is a refusal, never a step with nothing in it.
+# cannot be read is a refusal, never a step with nothing in it. That
+# includes one that calls another local action: its commands would count
+# as none, so a nested call is refused rather than followed.
+LOCAL_USES='^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*["'"'"']?\./'
 ROOT="$(cd "$WF_DIR/../.." && pwd)"
 action_file() {
     local a
@@ -205,11 +208,16 @@ for f in "${WF_FILES[@]}"; do
     fi
 
     while IFS= read -r use; do
-        action_file "$use" >/dev/null || {
+        af=$(action_file "$use") || {
             echo "::error title=Nothing to inspect::$rel uses ./$use, and $ROOT/$use" \
                  "holds no action.yml. Its commands would count as none." >&2
             exit 2
         }
+        if grep -E "$LOCAL_USES" "$af" >/dev/null; then
+            echo "::error title=Nothing to inspect::$rel uses ./$use, which itself" \
+                 "calls a local action. Its commands would count as none." >&2
+            exit 2
+        fi
     done < <(step_facts "$f" | cut -f6 | grep -v '^-$')
 
     # --- A. teardown for a lane that installs a plugin -----------------
