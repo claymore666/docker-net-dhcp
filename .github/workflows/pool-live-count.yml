@@ -1,0 +1,48 @@
+name: Pool live count
+
+# Compares .github/ci-pool.json to the runners registered on this repo
+# (#886). The tree's own gate keeps every prose statement equal to that
+# file; only this job keeps the file equal to the pool. Exit 1 means the
+# file is wrong, exit 2 means the API could not be read: both are red.
+#
+# GITHUB_TOKEN has no `administration` scope, so it cannot list runners.
+# The token is the read-only single-repo PAT with Administration: read
+# that scorecard.yml holds and fork-execution-policy.yml already reuses;
+# no new credential. Schedule and dispatch only: no fork PR reaches it.
+
+on:
+  schedule:
+    # Daily, offset from the other API-reading jobs (#886).
+    - cron: '53 8 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pool-live-count:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The gate's static half parses the workflows; the hosted image has
+      # no PyYAML (see test.yaml), so it is installed when absent.
+      - name: Provide PyYAML
+        run: |
+          python3 -c 'import yaml' 2>/dev/null || {
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends python3-yaml
+          }
+          python3 -c 'import yaml; print("PyYAML", yaml.__version__)' || {
+            echo "::error title=PyYAML unavailable::python3 cannot import yaml" >&2
+            exit 1
+          }
+
+      - name: The declared pool is the registered pool
+        env:
+          GH_TOKEN: ${{ secrets.SCORECARD_TOKEN }}
+          GATE_REPO: ${{ github.repository }}
+        run: bash scripts/check-pool-facts.sh --live

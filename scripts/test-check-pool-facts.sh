@@ -252,6 +252,108 @@ fi
 cp "$TMP/integration.yml.bak" "$wf"
 check "RESTORED: green again" 0 "$SHIPPED" "marker(s) agree with the derivation"
 
+# --- --live: the declared pool against the registered runners (#886) ---
+#
+# `gh` is a stub on PATH that answers the Nth call with $STUB/N (first line
+# its exit code, the rest its stdout), so the refusals are driven, not
+# assumed. Pages are built by `runners`, never spelled, for the reason MK is.
+
+mkdir -p "$TMP/bin"
+cat > "$TMP/bin/gh" <<'GH'
+#!/usr/bin/env bash
+n=$(( $(cat "$STUB/count" 2>/dev/null || echo 0) + 1 ))
+echo "$n" > "$STUB/count"
+printf '%s\n' "$*" >> "$STUB/argv"
+f="$STUB/$n"; [ -e "$f" ] || f="$STUB/last"
+tail -n +2 "$f"
+rc=$(head -n 1 "$f")
+[ "$rc" -eq 0 ] || echo "gh: stub failure $rc" >&2
+exit "$rc"
+GH
+chmod +x "$TMP/bin/gh"
+
+# runners TOTAL NAME=LABEL[,LABEL] ... prints a runners API page
+runners() {
+    python3 - "$@" <<'PY'
+import json, sys
+total, rs = int(sys.argv[1]), []
+for i, spec in enumerate(sys.argv[2:]):
+    name, labels = spec.split("=")
+    rs.append({"id": 100 + i, "name": name, "status": "online",
+               "labels": [{"name": n} for n in ["self-hosted"] + labels.split(",")]})
+print(json.dumps({"total_count": total, "runners": rs}))
+PY
+}
+X3=(a=dhcp-ci b=dhcp-ci c=dhcp-ci p=dhcp-ci-arm64)
+
+# live NAME WANT_EXIT ROOT WANT_GREP READS RESPONSE... (a response is
+# "RC" followed by its stdout lines, written as one argument with \n)
+live() {
+    local name="$1" want_exit="$2" root="$3" want_grep="$4" reads="$5" i=0
+    shift 5
+    STUB="$TMP/stub-$((++stubs))"; mkdir -p "$STUB"
+    for r in "$@"; do i=$((i + 1)); printf '%b\n' "$r" > "$STUB/$i"; cp "$STUB/$i" "$STUB/last"; done
+    STUB="$STUB" PATH="$TMP/bin:$PATH" GATE_REPO=o/r CI_POOL_LIVE_GAP=0 \
+        CI_POOL_LIVE_READS="$reads" bash "$GATE" --live --root "$root" > "$TMP/out" 2>&1
+    local got=$?
+    if [ "$got" -eq "$want_exit" ] && grep -q -- "$want_grep" "$TMP/out"; then
+        echo "PASS: $name"
+    else
+        echo "FAIL: $name (exit $got, want $want_exit, wanted /$want_grep/)"
+        sed 's/^/    /' "$TMP/out"
+        failures=$((failures + 1))
+    fi
+}
+stubs=0
+okpage="0\n$(runners 4 "${X3[@]}")"
+
+d=$(tree live3 3); prose "$d" "<!-- ${MK}: pool-runners=3 -->"
+live "live: the registered pool matches the file, and an arm64 label is not counted as dhcp-ci" \
+     0 "$d" "3 carry 'dhcp-ci' over 1 read" 1 "$okpage"
+if grep -q -- '^api repos/o/r/actions/runners?per_page=100 --paginate$' "$STUB/argv"; then
+    echo "PASS: live: it asks the runners API of GATE_REPO, every page"
+else
+    echo "FAIL: live: the stub saw $(cat "$STUB/argv")"; failures=$((failures + 1))
+fi
+
+d=$(tree live4 4); prose "$d" "<!-- ${MK}: pool-runners=4 -->"
+live "ABSENCE: a facts file one runner over the registered pool is red, and named" \
+     1 "$d" "declares x64_runners=4; o/r has 3 runner name(s)" 4 "$okpage"
+live "live: an arm64 runner missing from the API is red" \
+     1 "$d" "declares arm64_runners=1" 1 "0\n$(runners 4 a=dhcp-ci b=dhcp-ci c=dhcp-ci d=dhcp-ci)"
+
+d=$(tree live3b 3); prose "$d" "<!-- ${MK}: pool-runners=3 -->"
+live "live: an API that cannot be read is a refusal, not a match" \
+     2 "$d" "Live pool unreadable" 1 '1\n{"message":"Bad credentials","status":"401"}'
+live "live: a later read that fails still refuses" \
+     2 "$d" "Live pool unreadable" 3 "$okpage" '1\n{"message":"Bad credentials"}'
+live "live: an error object answered with exit 0 is a refusal, not a pool of zero" \
+     2 "$d" "not a runners page" 1 '0\n{"message":"Not Found","status":"404"}'
+live "live: an answer that is not JSON is a refusal" \
+     2 "$d" "is not JSON" 1 '0\n<html>rate limited</html>'
+live "live: an empty answer is a refusal" \
+     2 "$d" "answered nothing" 1 '0\n'
+live "live: a page short of total_count is a refusal" \
+     2 "$d" "Live pool read incomplete" 1 "0\n$(runners 6 "${X3[@]}")"
+live "live: a runner with no label list is a refusal" \
+     2 "$d" "no readable name or label list" 1 '0\n{"total_count":1,"runners":[{"name":"a"}]}'
+live "PRESERVATION: two pages, one total, read as one pool" \
+     0 "$d" "3 carry 'dhcp-ci'" 1 "0\n$(runners 4 a=dhcp-ci b=dhcp-ci)\n$(runners 4 c=dhcp-ci p=dhcp-ci-arm64)"
+live "PRESERVATION: a JIT gap in one read is filled by the next (union of names)" \
+     0 "$d" "3 carry 'dhcp-ci' over 3 read" 3 \
+     "0\n$(runners 3 a=dhcp-ci b=dhcp-ci p=dhcp-ci-arm64)" "$okpage" \
+     "0\n$(runners 3 b=dhcp-ci c=dhcp-ci p=dhcp-ci-arm64)"
+live "ABSENCE: a name missing from every read is red, however many reads" \
+     1 "$d" "has 2 runner name(s)" 3 "0\n$(runners 3 a=dhcp-ci b=dhcp-ci p=dhcp-ci-arm64)"
+live "live: a non-numeric read count is a refusal" \
+     2 "$d" "not a positive integer" x "$okpage"
+
+d=$(tree livenoarm 3); prose "$d" "<!-- ${MK}: pool-runners=3 -->"
+printf '{"x64_label": "dhcp-ci", "x64_runners": 3}\n' > "$d/.github/ci-pool.json"
+git -C "$d" add -A
+live "live: a file with no arm64 count is a refusal, not a skipped comparison" \
+     2 "$d" "Pool constant incomplete" 1 "$okpage"
+
 # --- wiring --------------------------------------------------------------
 
 if grep -q 'check-pool-facts.sh' "$REPO/.github/workflows/test.yaml"; then
@@ -264,6 +366,29 @@ if grep -q 'check-pool-facts.sh' "$REPO/scripts/local-lane.sh"; then
     echo "PASS: gate is wired into scripts/local-lane.sh"
 else
     echo "FAIL: gate is not run by scripts/local-lane.sh"
+    failures=$((failures + 1))
+fi
+
+# The scheduled comparison (#886): parsed, because a `continue-on-error`,
+# an `|| true` or the workflow token would each turn every verdict green
+# or amber without touching the gate.
+if python3 - "$REPO/.github/workflows/pool-live-count.yml" <<'PY'
+import sys, yaml
+wf = yaml.safe_load(open(sys.argv[1]))
+on = wf.get("on", wf.get(True)) or {}
+assert isinstance(on, dict) and on.get("schedule"), "no schedule trigger"
+steps = [(j, s) for j in wf["jobs"].values() for s in j.get("steps", [])
+         if "check-pool-facts.sh" in str(s.get("run", ""))]
+assert len(steps) == 1, f"{len(steps)} steps run the gate"
+job, step = steps[0]
+assert step["run"].strip() == "bash scripts/check-pool-facts.sh --live", step["run"]
+assert not job.get("continue-on-error") and not step.get("continue-on-error"), "continue-on-error"
+assert step.get("env", {}).get("GH_TOKEN") == "${{ secrets.SCORECARD_TOKEN }}", "token"
+PY
+then
+    echo "PASS: pool-live-count.yml runs --live on a schedule with the admin-read token, exit code intact"
+else
+    echo "FAIL: pool-live-count.yml does not run the --live comparison as built (#886)"
     failures=$((failures + 1))
 fi
 
