@@ -227,9 +227,9 @@ for f in "$ws"/.github/workflows/*.y*ml "$ws"/.github/actions/*/action.y*ml; do
 done
 check "control: the creates deleted" 1 "$ws" "never inspected"
 ws=$(mkws); mutate_act "$ws" "s#^( +)$DERIVE#\1sudo -E mkdir -p $ALL3#"
-check "a mkdir behind sudo and its flags still creates" 0 "$ws" "4 plugin install(s)"
+check "a mkdir behind sudo and its flags still creates" 0 "$ws" "5 plugin install(s)"
 ws=$(mkws); mutate_act "$ws" 's|^( +)(docker plugin create .*)$|\1\2\n\1echo docker plugin create x plugin|'
-check "an echoed create beside a real one is not a second install" 0 "$ws" "4 plugin install(s)"
+check "an echoed create beside a real one is not a second install" 0 "$ws" "5 plugin install(s)"
 ws=$(mkws); mutate_act "$ws" 's|\$\{PLUGIN_DIR\}/config\.json|${PLUGIN_DIR}/other.json|'
 check "a jq over another file derives nothing" 1 "$ws" "/var/lib/dh-capture"
 
@@ -241,7 +241,7 @@ for form in '\1docker plugin create \2 \|\| exit 1' '\1docker plugin create \2 2
         '\1if ! docker plugin create \2; then exit 1; fi' \
         '\1timeout 120 docker plugin create \2' '\1env FOO=1 docker plugin create \2'; do
     ws=$(mkws); mutate_act "$ws" "$PC$form|"
-    check "form '$form' with its mkdir kept is an install" 0 "$ws" "4 plugin install(s)"
+    check "form '$form' with its mkdir kept is an install" 0 "$ws" "5 plugin install(s)"
     ws=$(mkws); mutate_act "$ws" "$PC$form|"
     mutate_act "$ws" "/$DERIVE/d"
     check "form '$form' with its mkdir deleted is red" 1 "$ws" "/var/lib/net-dhcp"
@@ -264,14 +264,14 @@ check "a call with no dir is red, not skipped" 1 "$ws" "cannot read"
 ws=$(mkws); mutate_act "$ws" 's|^( +)PLUGIN_DIR: .*$|\1PLUGIN_DIR: plugin|'
 check "a template whose dir comes from no input is red" 1 "$ws" "cannot trace"
 ws=$(mkws); mutate_wf "$ws" coverage.yml 's|^( +)uses: \./\.github/actions/install-plugin$|\1uses: "./.github/actions/install-plugin/"|'
-check "a quoted, slash-terminated call is still judged" 0 "$ws" "4 plugin install(s)"
+check "a quoted, slash-terminated call is still judged" 0 "$ws" "5 plugin install(s)"
 ws=$(mkws); mutate_wf "$ws" coverage.yml 's|^( +)uses: \./\.github/actions/install-plugin$|\1uses: "./.github/actions/install-plugin/"|'
 mutate_act "$ws" "s#^( +)$DERIVE#\1mkdir -p /var/lib/net-dhcp#"
 check "and its dir is the one judged" 1 "$ws" "/var/lib/dh-capture"
 ws=$(mkws); mutate_wf "$ws" integration-hosted.yml 's|^( +)dir: plugin$|\1dir: "plugin"|'
-check "a quoted dir is read as the dir" 0 "$ws" "4 plugin install(s)"
+check "a quoted dir is read as the dir" 0 "$ws" "5 plugin install(s)"
 ws=$(mkws); mutate_act "$ws" 's#\$\{PLUGIN_DIR\}#$PLUGIN_DIR#g'
-check "an unbraced \$VAR dir is a template too" 0 "$ws" "4 plugin install(s)"
+check "an unbraced \$VAR dir is a template too" 0 "$ws" "5 plugin install(s)"
 ws=$(mkws)
 cat >> "$ws/.github/workflows/integration-hosted.yml" <<'YML'
       - name: a later step's dir belongs to that step
@@ -279,8 +279,8 @@ cat >> "$ws/.github/workflows/integration-hosted.yml" <<'YML'
         with:
           dir: plugin-nowhere
 YML
-check "a later step's dir is not read into the call" 0 "$ws" "4 plugin install(s)"
-# Beside four judged installs, so the refusal is the only red left.
+check "a later step's dir is not read into the call" 0 "$ws" "5 plugin install(s)"
+# Beside the tree's judged installs, so the refusal is the only red left.
 ws=$(mkws); cp -r "$ws/$(dirname "$ACT")" "$ws/.github/actions/install-copy"
 sed -i -E 's|^( +)PLUGIN_DIR: .*$|\1PLUGIN_DIR: plugin|' "$ws/.github/actions/install-copy/action.yml"
 check "an untraced template is red even when every call is clean" 1 "$ws" "cannot trace"
@@ -318,14 +318,14 @@ ws=$(mkws)
 mkdir "$ws/.github/actions/lane-note"
 printf 'name: n\nruns:\n  using: composite\n  steps:\n    # uses: ./.github/actions/install-plugin\n    - shell: bash\n      run: echo hi\n' \
     > "$ws/.github/actions/lane-note/action.yml"
-check "a comment naming a local action in a composite is not a call" 0 "$ws" "4 plugin install(s)"
+check "a comment naming a local action in a composite is not a call" 0 "$ws" "5 plugin install(s)"
 
 # A remote action inside a composite is no call to a local action.
 ws=$(mkws)
 mkdir "$ws/.github/actions/lane-remote"
 printf 'name: n\nruns:\n  using: composite\n  steps:\n    - uses: actions/checkout@0000000000000000000000000000000000000000\n' \
     > "$ws/.github/actions/lane-remote/action.yml"
-check "a composite using a remote action is not refused" 0 "$ws" "4 plugin install(s)"
+check "a composite using a remote action is not refused" 0 "$ws" "5 plugin install(s)"
 
 # A call with no dir after one that had one reads no dir at all, not the
 # earlier call's (#746).

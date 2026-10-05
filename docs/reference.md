@@ -241,6 +241,75 @@ in which the plugin works without it. Expect the prompt once, on the
 upgrade; if you get one you were not expecting, that is worth
 investigating instead of approving.
 
+**What each capability buys, measured** (v2.5.0+, #690). The
+[capability matrix](https://github.com/claymore666/docker-net-dhcp/blob/main/.github/workflows/capability-matrix.yml)
+installs this tree's plugin on a hosted Ubuntu runner's own daemon, once
+with every capability in `config.json` and once with each one removed,
+and drives eight scenarios per install. A scenario passes only on
+evidence outside the plugin: an address on the container's link (`eth0`,
+or the bridge's name and an index in bridge mode) that the DHCP server's
+lease file also holds, a later `DHCPACK` in the
+server's log, or the server's DNS address in the container's
+`resolv.conf`. The workflow fails when a measured row differs from this
+table. It runs on every pull request into `dev` or `main`, and every push
+to them, that changes `config.json`, the Go source under `cmd/` and
+`pkg/`, `go.mod`, `go.sum` or this page. A `?` is a cell not measured
+yet; it fails the workflow on a pull request that is not a draft and on
+`dev` and `main`.
+
+<!-- capability-matrix: begin -->
+| removed | enables | capeff | mount | bridge | macvlan | dns | user | dns_user | renew | renew_user | restart |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| none | yes | n/a | shared | pass | pass | pass | pass | pass | pass | pass | pass |
+| `CAP_NET_ADMIN` | yes | dropped | shared | fail | fail | fail | fail | fail | fail | fail | fail |
+| `CAP_NET_RAW` | yes | held | shared | pass | pass | pass | pass | pass | pass | pass | pass |
+| `CAP_SYS_ADMIN` | yes | dropped | shared | pass | pass | fail | pass | fail | fail | fail | pass |
+| `CAP_SYS_PTRACE` | yes | dropped | shared | pass | pass | pass | pass | fail | pass | pass | pass |
+<!-- capability-matrix: end -->
+
+What the rows say, one capability at a time. Each claim names the row and
+column it rests on.
+
+- **`CAP_NET_ADMIN`** is needed to attach anything. With it removed
+  (`capeff` `dropped`) the `bridge` and `macvlan` containers were refused
+  (`failed to create veth pair: operation not permitted`, `failed to create
+  macvlan link: operation not permitted` in that cell's log), so no container
+  existed to check. The other columns of that row read `fail` for that
+  reason alone, and they rank nothing.
+- **`CAP_NET_RAW`** is not measured. Its row has `capeff` `held`: Docker's
+  default set carries it, so the plugin still had it with the manifest line
+  gone. The all-`pass` row proves nothing about what the capability buys.
+- **`CAP_SYS_ADMIN`** is not needed to attach (`bridge`, `macvlan`, `user`
+  and `restart` read `pass`) but is needed to keep a lease: `renew` and
+  `renew_user` read `fail`, and the cell's plugin log refuses the renewal
+  client with `failed to set into network namespace ... operation not
+  permitted`. `dns` and `dns_user` read `fail` too; that cell's log carries
+  no refusal line for them, so the row says the scenario failed and not why.
+- **`CAP_SYS_PTRACE`** buys one scenario: `dns_user` reads `fail`, and the
+  cell's log refuses it with `open container mnt ns (pid ...): permission
+  denied`. `dns` (root) and `user` read `pass`, so on this host the
+  `propagate_dns` write needs it only for a container that runs as a
+  non-root user, and attaching that container does not need it. Every
+  `mount` reads `shared`, the reading where the sandbox key resolves; the
+  matrix says nothing about a host where it is private.
+
+The columns:
+
+- **removed**: the capability taken out of the manifest; `none` is the shipped set.
+- **enables**: whether `docker plugin enable` succeeded. A plugin that does not enable fails every scenario.
+- **capeff**: whether the removed capability is still in the running plugin's effective set (`held`) or gone (`dropped`). Docker adds its default set on top of the manifest, so a capability that set already carries stays `held` when the manifest drops it, and that row then says nothing about the capability itself.
+- **mount**: the propagation of the mount covering `/run/docker/netns` on the runner. It decides whether attaches enter the container through the sandbox key or through `/proc/<pid>/ns/net`, as described above, so a row is a reading for that kind of host.
+- **bridge**, **macvlan**: a root container attached in that mode.
+- **user**: a `--user 1000` container on macvlan.
+- **dns**, **dns_user**: `propagate_dns` writing the container's `resolv.conf`, for the root and the `--user 1000` container. This is the path that enters the container's mount namespace by PID.
+- **renew**, **renew_user**: an acknowledgement for the container's MAC address within 30 seconds of the check starting, with no new `DHCPDISCOVER` from it, and the renewal time set to 10 seconds. The check starts after the DNS checks.
+- **restart**: the macvlan container stopped and started again. The plugin can reuse its MAC address across the restart, so the stopped container must go 12 seconds with no acknowledgement for it, and then get one after the start.
+
+The bound: one hosted runner, one engine version, one mount reading,
+and a test bridge rather than an operator's. The rows say what a
+capability buys there; another host with another `mount` reading can
+differ.
+
 The `/var/run/docker` mount lets the plugin list the daemon's sandbox
 netns entries, so "the container went away mid-attach" is reported as
 that instead of as a generic failure (`sandbox_netns_visible`). It is
