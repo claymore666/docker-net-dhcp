@@ -327,6 +327,8 @@ live "live: an API that cannot be read is a refusal, not a match" \
      2 "$d" "Live pool unreadable" 1 '1\n{"message":"Bad credentials","status":"401"}'
 live "live: a later read that fails still refuses" \
      2 "$d" "Live pool unreadable" 3 "$okpage" '1\n{"message":"Bad credentials"}'
+live "live: a gh that exits non-zero is a refusal even when its stdout is a complete runners page" \
+     2 "$d" "could not be read" 1 "1\n$(runners 4 "${X3[@]}")"
 live "live: an error object answered with exit 0 is a refusal, not a pool of zero" \
      2 "$d" "not a runners page" 1 '0\n{"message":"Not Found","status":"404"}'
 live "live: an answer that is not JSON is a refusal" \
@@ -353,6 +355,65 @@ printf '{"x64_label": "dhcp-ci", "x64_runners": 3}\n' > "$d/.github/ci-pool.json
 git -C "$d" add -A
 live "live: a file with no arm64 count is a refusal, not a skipped comparison" \
      2 "$d" "Pool constant incomplete" 1 "$okpage"
+
+# The default read count and gap, and the gap itself, driven through a stub
+# `sleep` on PATH that logs its argument and returns at once. The pool's JIT
+# churn made a point read short in 8 of 72 reads and a dip lasted at most two
+# reads 5 s apart (#886), so the defaults must be several reads, spaced more
+# than the dip.
+cat > "$TMP/bin/sleep" <<'SL'
+#!/usr/bin/env bash
+echo "$*" >> "$STUB/sleeps"
+SL
+chmod +x "$TMP/bin/sleep"
+
+# liveenv NAME WANT_EXIT ROOT WANT_GREP RESPONSE ENV... (no READS/GAP of its own)
+liveenv() {
+    local name="$1" want_exit="$2" root="$3" want_grep="$4" resp="$5"
+    shift 5
+    STUB="$TMP/stub-$((++stubs))"; mkdir -p "$STUB"
+    printf '%b\n' "$resp" > "$STUB/last"
+    env STUB="$STUB" PATH="$TMP/bin:$PATH" GATE_REPO=o/r "$@" bash "$GATE" --live --root "$root" > "$TMP/out" 2>&1
+    local got=$?
+    if [ "$got" -eq "$want_exit" ] && grep -q -- "$want_grep" "$TMP/out"; then
+        echo "PASS: $name"
+    else
+        echo "FAIL: $name (exit $got, want $want_exit, wanted /$want_grep/)"
+        sed 's/^/    /' "$TMP/out"
+        failures=$((failures + 1))
+    fi
+}
+
+d=$(tree livedef 3); prose "$d" "<!-- ${MK}: pool-runners=3 -->"
+liveenv "live: with no settings it reads four times, so a JIT dip is outvoted" \
+        0 "$d" "over 4 read" "$okpage"
+if [ "$(cat "$STUB/count")" -eq 4 ]; then
+    echo "PASS: live: the default is four calls to the runners API"
+else
+    echo "FAIL: live: the default made $(cat "$STUB/count") calls, want 4"; failures=$((failures + 1))
+fi
+if [ "$(wc -l < "$STUB/sleeps")" -eq 3 ] && ! grep -qvx '[0-9]*' "$STUB/sleeps" \
+   && [ "$(sort -n "$STUB/sleeps" | head -n 1)" -ge 10 ]; then
+    echo "PASS: live: the default waits between reads (three sleeps, each at least 10 s, past the longest measured dip)"
+else
+    echo "FAIL: live: the default sleeps were: $(tr '\n' ' ' < "$STUB/sleeps" 2>/dev/null)"; failures=$((failures + 1))
+fi
+
+liveenv "live: a configured gap is honoured between reads and not before the first" \
+        0 "$d" "over 3 read" "$okpage" CI_POOL_LIVE_READS=3 CI_POOL_LIVE_GAP=7
+if [ "$(tr '\n' ' ' < "$STUB/sleeps")" = "7 7 " ]; then
+    echo "PASS: live: gap 7 over 3 reads sleeps 7 twice"
+else
+    echo "FAIL: live: gap 7 over 3 reads slept: $(tr '\n' ' ' < "$STUB/sleeps" 2>/dev/null)"; failures=$((failures + 1))
+fi
+
+liveenv "live: a non-numeric gap is a refusal before any read" \
+        2 "$d" "not a whole number of seconds" "$okpage" CI_POOL_LIVE_GAP=5s
+if [ ! -e "$STUB/count" ]; then
+    echo "PASS: live: a bad gap made no API call"
+else
+    echo "FAIL: live: a bad gap still called the API"; failures=$((failures + 1))
+fi
 
 # --- wiring --------------------------------------------------------------
 
