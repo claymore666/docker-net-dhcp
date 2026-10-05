@@ -234,6 +234,270 @@ widen_promote_needs() {
 run "a proof added to needs: without a page edit fails" \
     1 none widen_promote_needs "has 9"
 
+# --- 5. every job is named, emphasised (#799) -------------------------
+# `resolve` went unnamed for a cycle and `production-shape` (#1014) after
+# it; rule 3 only looked at `verify-install*`.
+add_job_to_workflow() {
+    python3 - "$1" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+s = s.replace("\n  promote-latest:\n",
+              "\n  publish-to-a-third-registry:\n    needs: [release]\n"
+              "    runs-on: ubuntu-latest\n    steps:\n"
+              "      - name: Push somewhere new\n        run: true\n\n"
+              "  promote-latest:\n", 1)
+open(p, "w").write(s)
+PY
+}
+run "a job added to the workflow and not to the page fails" \
+    1 none add_job_to_workflow "publish-to-a-third-registry"
+
+# shellcheck disable=SC2016 # the backticks are literal markdown
+unname_production_shape() { sed -i 's/\*\*production-shape\*\*/the engine gate/g; s/`production-shape`/the engine gate/g' "$1"; }
+run "the engine gate job unnamed on the page fails" \
+    1 unname_production_shape none "production-shape"
+
+# Prose use is not naming: `resolve` and `release` are ordinary words.
+# shellcheck disable=SC2016 # the backticks are literal markdown
+unemphasise_resolve() { sed -i 's/\*\*resolve\*\*/resolve/g; s/`resolve`/resolve/g' "$1"; }
+run "a job named only as a plain word fails" \
+    1 unemphasise_resolve none "'resolve'"
+
+# --- 6. the page's step chains name real steps, in order (#799) --------
+ghost_step_in_chain() {
+    sed -i 's|Log in to Docker Hub → \*\*Both registries|Log in to Docker Hub → **Warn if Docker Hub credentials missing** → **Both registries|' "$1"
+}
+run "a chain naming a step the job does not run fails" \
+    1 ghost_step_in_chain none "Warn if Docker Hub credentials missing"
+
+foreign_step_opens_chain() {
+    sed -i 's|in this order: checkout → setup-go|in this order: Resolve release tag → checkout → setup-go|' "$1"
+}
+run "a chain opening with another job's step fails" \
+    1 foreign_step_opens_chain none "Resolve release tag"
+
+swap_chain_order() {
+    sed -i 's|Install syft → \*\*Generate SBOM (SPDX + CycloneDX)\*\*|**Generate SBOM (SPDX + CycloneDX)** → Install syft|' "$1"
+}
+run "a chain out of workflow order fails" \
+    1 swap_chain_order none "out of order"
+
+# Preservation: prose with an arrow and one step name in it is not a chain
+# of that job, so it is not judged as one.
+prose_arrow_with_one_step() {
+    sed -i '1a\\nIf it hangs, read in turn: Install cosign → the runner logs.' "$1"
+}
+run "a prose arrow sharing one step name is not judged as a chain" \
+    0 prose_arrow_with_one_step none
+
+# Triggers sit at a job's indent under `on:`; they are not jobs.
+add_unnamed_trigger() {
+    sed -i 's/^  workflow_dispatch:$/  repository_dispatch:\n    types: [rebuild]\n  workflow_dispatch:/' "$1"
+}
+run "a trigger the page never names is not demanded as a job" \
+    0 none add_unnamed_trigger
+
+drop_promote_chain() {
+    python3 - "$1" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+a = s.index("Steps: *Refuse to")
+b = s.index(":latest*.", a)
+s = s[:a] + "Steps: see the run." + s[b + len(":latest*."):]
+open(p, "w").write(s)
+PY
+}
+run "a walked job with no chain on the page fails" \
+    1 drop_promote_chain none "no step chain"
+
+# --- 7. the arm64 chain does not wait on the amd64 build (#799) --------
+arm_proof_needs_release() {
+    python3 - "$1" <<'PY'
+import re, sys
+p = sys.argv[1]; s = open(p).read()
+s, n = re.subn(r"(\n  verify-install-hub-alias-arm64:\n    needs: )\[[^\]]*\]",
+               r"\1[release, release-arm64]", s)
+assert n == 1
+open(p, "w").write(s)
+PY
+}
+run "an arm64 install proof that names release fails" \
+    1 none arm_proof_needs_release "verify-install-hub-alias-arm64"
+
+# Through an amd64 proof, in the scalar form `verify-install` itself uses.
+arm_proof_reaches_release() {
+    python3 - "$1" <<'PY'
+import re, sys
+p = sys.argv[1]; s = open(p).read()
+s, n = re.subn(r"(\n  verify-install-arm64:\n    needs: )\[[^\]]*\]",
+               r"\1verify-install", s)
+assert n == 1
+open(p, "w").write(s)
+PY
+}
+run "an arm64 job reaching release through needs fails" \
+    1 none arm_proof_reaches_release "'verify-install-arm64' is in the arm64 chain and reaches 'release'"
+
+arm_job_without_suffix() {
+    python3 - "$1" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+s = s.replace("\n  promote-latest:\n",
+              "\n  smoke:\n    needs: [release]\n"
+              "    runs-on: ubuntu-24.04-arm\n    steps:\n"
+              "      - name: Smoke\n        run: true\n\n"
+              "  promote-latest:\n", 1)
+open(p, "w").write(s)
+PY
+}
+run "an arm64 job without the suffix that waits on release fails" \
+    1 none arm_job_without_suffix "'smoke' is in the arm64 chain"
+
+# The other key: an arm64-tag job on an amd64 runner is still in the chain.
+arm_suffix_on_amd64_runner() {
+    python3 - "$1" <<'PY'
+import re, sys
+p = sys.argv[1]; s = open(p).read()
+s, n = re.subn(r"(\n  verify-install-hub-alias-arm64:\n)    needs: \[[^\]]*\]\n    runs-on: [^\n]*\n",
+               r"\1    needs: [release, release-arm64]\n    runs-on: ubuntu-latest\n", s)
+assert n == 1
+open(p, "w").write(s)
+PY
+}
+run "an -arm64 job on an amd64 runner that waits on release fails" \
+    1 none arm_suffix_on_amd64_runner "'verify-install-hub-alias-arm64' is in the arm64 chain"
+
+block_needs() {
+    python3 - "$1" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+old = "\n  verify-install:\n    needs: release\n"
+assert s.count(old) == 1
+s = s.replace(old, "\n  verify-install:\n    needs:\n      - release\n")
+open(p, "w").write(s)
+PY
+}
+run "a block-form needs: is a refusal" \
+    2 none block_needs "block form"
+
+no_arm_jobs() {
+    python3 - "$1" <<'PY'
+import re, sys
+p = sys.argv[1]; s = open(p).read()
+s = re.sub(r"\n  [a-z0-9-]*-arm64:\n.*?(?=\n  [a-z0-9_-]+:\n)", "\n", s, flags=re.S)
+s = s.replace("ubuntu-24.04-arm", "ubuntu-24.04")
+open(p, "w").write(s)
+PY
+}
+run "a workflow with no arm64 job is a refusal" \
+    2 none no_arm_jobs "no arm64 job"
+
+rename_release_job() { sed -i 's/^  release:$/  release-amd64:/' "$1"; }
+run "a workflow with no job named release fails" \
+    1 none rename_release_job "no job named 'release'"
+
+# The other half: a proof that stops waiting on the build it installs.
+arm_proof_skips_its_build() {
+    python3 - "$1" <<'PY'
+import re, sys
+p = sys.argv[1]; s = open(p).read()
+s, n = re.subn(r"(\n  verify-install-arm64:\n    needs: )\[[^\]]*\]", r"\1[resolve]", s)
+assert n == 1
+open(p, "w").write(s)
+PY
+}
+run "an arm64 proof that does not wait on release-arm64 fails" \
+    1 none arm_proof_skips_its_build "can run before the arm64 tag exists"
+
+rename_arm_build() { sed -i 's/^  release-arm64:$/  build-arm64:/' "$1"; }
+run "a workflow with no job named release-arm64 fails" \
+    1 none rename_arm_build "no job named 'release-arm64'"
+
+# Two spellings the line reader once skipped (#799 review): a quoted
+# entry, and a scalar with a trailing comment one hop away.
+quoted_release_in_arm_needs() {
+    python3 - "$1" <<'PY'
+import re, sys
+p = sys.argv[1]; s = open(p).read()
+s, n = re.subn(r"(\n  verify-install-arm64:\n    needs: )\[[^\]]*\]",
+               r"\1['release', release-arm64]", s)
+assert n == 1
+open(p, "w").write(s)
+PY
+}
+run "an arm64 proof naming release in quotes fails" \
+    1 none quoted_release_in_arm_needs "'verify-install-arm64' is in the arm64 chain and reaches 'release'"
+
+commented_scalar_on_the_path() {
+    python3 - "$1" <<'PY'
+import re, sys
+p = sys.argv[1]; s = open(p).read()
+s, n = re.subn(r"(\n  verify-install-hub-arm64:\n    needs: )\[[^\]]*\]",
+               r"\1[resolve, verify-install, release-arm64]", s)
+assert n == 1
+old = "\n  verify-install:\n    needs: release\n"
+assert s.count(old) == 1
+s = s.replace(old, "\n  verify-install:\n    needs: release  # amd64 proof\n")
+open(p, "w").write(s)
+PY
+}
+run "an arm64 proof reaching release through a commented needs: fails" \
+    1 none commented_scalar_on_the_path "'verify-install-hub-arm64' is in the arm64 chain and reaches 'release'"
+
+anchor_needs() {
+    sed -i 's/^    needs: release$/    needs: *amd64/' "$1"
+}
+run "a needs: that is an anchor is a refusal" \
+    2 none anchor_needs "cannot read"
+
+multiline_flow_needs() {
+    sed -i 's/^    needs: \[resolve, release-arm64\]$/    needs: [resolve,\n            release-arm64]/' "$1"
+}
+run "a needs: list over several lines is a refusal" \
+    2 none multiline_flow_needs "cannot read"
+
+# The chain threshold: two real steps make a chain, so its ghost is seen.
+ghost_after_two_steps() {
+    sed -i '1a\\nOn a retry, read in turn: Install crane → Log in to GHCR → Wave a flag.' "$1"
+}
+run "a chain of two real steps and a ghost fails" \
+    1 ghost_after_two_steps none "'Wave a flag'"
+
+# The rc watch list says every job; github-release was left out of it.
+watch_list_drops_a_job() {
+    python3 - "$1" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+old = ", and\n**github-release**, which publishes an rc as a draft (#469)."
+assert s.count(old) == 1
+s = s.replace(old, ".")
+open(p, "w").write(s)
+PY
+}
+run "an rc watch list leaving out a job fails" \
+    1 watch_list_drops_a_job none "leaves out 'github-release'"
+
+no_watch_list() { sed -i 's/every job must be green:/watch these:/' "$1"; }
+run "a page with no rc watch list fails" \
+    1 no_watch_list none "has 0 paragraphs saying 'every job must be green'"
+
+two_watch_lists() { sed -i '1a\\nOn a re-run, every job must be green as well.' "$1"; }
+run "a page with two rc watch lists fails" \
+    1 two_watch_lists none "has 2 paragraphs saying 'every job must be green'"
+
+# In the watch list too a job counts only emphasised: plain `release`
+# is also a word, and inside `release-arm64`.
+watch_list_plain_release() {
+    sed -i 's/^\*\*production-shape\*\* (both builds wait on it), \*\*release\*\* and$/**production-shape** (both builds wait on it), release and/' "$1"
+}
+run "an rc watch list naming a job only as a plain word fails" \
+    1 watch_list_plain_release none "leaves out 'release'"
+
+# Preservation: the claim is found across a line wrap.
+watch_list_wrapped() { sed -i 's/every job must be green:/every job must\nbe green:/' "$1"; }
+run "an rc watch list wrapped mid-claim is still read" \
+    0 watch_list_wrapped none
+
 echo
 echo "passed: $pass  failed: $fail"
 [ "$fail" -eq 0 ]

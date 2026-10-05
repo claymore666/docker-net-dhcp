@@ -24,12 +24,12 @@
 #
 # WHAT IT CHECKS
 #
-#   1. THE WALKTHROUGH DECLARES WHICH JOBS IT WALKS, in an HTML comment
-#      in the page itself. Rules 2 and 3 range over that declaration, so
-#      it is refused when it is missing, empty, or names a job the
-#      workflow does not have. A gate that guessed which jobs the page
-#      had "taken on" would drop a job silently the day someone stopped
-#      describing it, which is precisely the direction being closed.
+#   1. THE WORKFLOW DECLARES WHICH JOBS THE PAGE WALKS, with a
+#      `# runbook-walkthrough:` comment inside each walked job. Rule 2
+#      ranges over that declaration, so it is refused when no job
+#      carries one. A gate that guessed which jobs the page had "taken
+#      on" would drop a job silently the day someone stopped describing
+#      it, which is precisely the direction being closed.
 #
 #   2. EVERY STEP OF A DECLARED JOB IS NAMED IN THE PAGE. Whitespace is
 #      collapsed and markdown emphasis stripped on both sides first: the
@@ -37,10 +37,13 @@
 #      gate that could not read its own documentation's formatting would
 #      be answered by unwrapping the prose.
 #
-#   3. THE INSTALL PROOFS MATCH, BOTH WAYS. Every `verify-install*` job
-#      in the workflow is named on the page, and every `verify-install*`
-#      name on the page is a job in the workflow. The second direction
-#      is the one that catches a removed job still being watched for.
+#   3. EVERY JOB IS NAMED, in the page and in its rc watch list (the one
+#      paragraph saying "every job must be green"), and every
+#      `verify-install*` name on the page is a job in the workflow. A job
+#      counts as named only emphasised (`**job**`, `*job*` or a code
+#      span): `release` and `resolve` are also plain words. `resolve` and
+#      then `production-shape` went unnamed while this rule covered
+#      install proofs only (#799).
 #
 #   4. THE COUNTS ARE THE DERIVED COUNTS. The page tells a releaser how
 #      many jobs `promote-latest` and `github-release` wait on. Those
@@ -48,11 +51,24 @@
 #      of each job's own `needs:` list. "All six of the above are green"
 #      survived two added proofs, and a releaser has no way to notice.
 #
+#   5. THE PAGE'S STEP CHAINS ARE THE JOB'S STEPS. Each `A → B → C`
+#      chain the page gives for a walked job names only steps that job
+#      runs, in the order it runs them; an unnamed `uses:` step is named
+#      by its action (`checkout`). Rule 2 reads one way only, so a ghost
+#      step and a step from another job passed it (#799).
+#
+#   6. THE ARM64 CHAIN WAITS ON `release-arm64`, NEVER ON `release`.
+#      Every job that ends in `-arm64` or runs on an arm host reaches
+#      `release-arm64` through `needs:` and none reaches `release`, so
+#      an amd64 failure cannot leave an arm64 tag published with its
+#      install proofs skipped (#799).
+#
 # Usage: bash scripts/check-runbook-release-steps.sh [runbook] [workflow]
 # Exit:  0 the walkthrough matches the workflow
 #        1 a step, a job or a count disagrees
-#        2 CANNOT JUDGE -- a file is unreadable, or the declaration is
-#          missing or empty, which would make every rule vacuous
+#        2 CANNOT JUDGE -- a file is unreadable, no job is declared
+#          walked, no arm64 job exists, or a `needs:` is not a plain
+#          list of job names, each of which would make a rule vacuous
 set -uo pipefail
 # shellcheck source=scripts/gatelib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
@@ -78,7 +94,9 @@ wf_lines = open(workflow_path, encoding="utf-8").read().split("\n")
 
 JOB   = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
 STEP  = re.compile(r"^      - name:\s*(.+?)\s*$")
-NEEDS = re.compile(r"^    needs:\s*\[(.*)\]\s*$")
+USES  = re.compile(r"^      - uses:\s*([^@\s]+)")
+NEEDK = re.compile(r"^    needs:(.*)$")
+RUNS  = re.compile(r"^    runs-on:\s*(.+?)\s*$")
 MARK  = re.compile(r"^\s*#\s*runbook-walkthrough:")
 STALE = re.compile(r"<!--\s*release-walkthrough:")
 
@@ -93,13 +111,21 @@ STALE = re.compile(r"<!--\s*release-walkthrough:")
 # stayed covered; the step lists did not. A page that stops describing
 # a job stopped being judged on it, which is the direction the gate
 # exists to close.
-jobs, steps, needs, walked, cur = [], {}, {}, [], None
+# `on:` puts its triggers at the same indent as jobs, so only keys
+# under `jobs:` are jobs.
+jobs, steps, chain, needs, runs, walked, cur = [], {}, {}, {}, {}, [], None
+in_jobs, unread = False, []
 for line in wf_lines:
+    if line[:1] not in ("", " ", "#"):
+        in_jobs, cur = line.rstrip() == "jobs:", None
+        continue
+    if not in_jobs:
+        continue
     m = JOB.match(line)
     if m:
         cur = m.group(1)
         jobs.append(cur)
-        steps[cur] = []
+        steps[cur], chain[cur] = [], []
         continue
     if cur is None:
         continue
@@ -110,10 +136,29 @@ for line in wf_lines:
     m = STEP.match(line)
     if m:
         steps[cur].append(m.group(1))
+        chain[cur].append(m.group(1))
         continue
-    m = NEEDS.match(line)
+    m = USES.match(line)
     if m:
-        needs[cur] = [n.strip() for n in m.group(1).split(",") if n.strip()]
+        chain[cur].append(m.group(1).rsplit("/", 1)[-1])
+        continue
+    # A quoted entry or a trailing comment once left `needs:` unread, and
+    # rule 6 passed an arm64 proof waiting on release (#799). Any value
+    # that is not plain job names is refused, never skipped.
+    m = NEEDK.match(line)
+    if m:
+        v = re.sub(r"\s+#.*$", "", m.group(1)).strip()
+        fm = re.fullmatch(r"\[(.*)\]", v)
+        got = [re.sub(r"^(['\"])(.*)\1$", r"\2", x.strip())
+               for x in (fm.group(1).split(",") if fm else [v])]
+        if all(re.fullmatch(r"[A-Za-z0-9_-]+", n) for n in got):
+            needs[cur] = got
+        else:
+            unread.append(cur)
+        continue
+    m = RUNS.match(line)
+    if m:
+        runs[cur] = m.group(1)
 
 if not jobs:
     print("REFUSE\tderived no jobs from %s; every rule below ranges over jobs, "
@@ -139,6 +184,20 @@ if not walked:
           "at all." % workflow_path)
     raise SystemExit(0)
 
+if unread:
+    print("REFUSE\t%s declares `needs:` for %s in a form this gate cannot "
+          "read (block form, an anchor, a list over several lines); rule 6 "
+          "over a partial graph would pass having measured nothing."
+          % (workflow_path, ", ".join(unread)))
+    raise SystemExit(0)
+
+arm = [j for j in jobs
+       if j.endswith("-arm64") or re.search(r"(?<![a-z])arm", runs.get(j, ""))]
+if not arm:
+    print("REFUSE\tno arm64 job in %s, by name or by runner; rule 6 would "
+          "pass over nothing." % workflow_path)
+    raise SystemExit(0)
+
 findings = []
 
 # `walked` is built from the jobs of this file as they are walked, so
@@ -160,14 +219,23 @@ for job in walked:
                             "watch a run with a step in it nobody described."
                             % (job, s, runbook_path))
 
-# 3. the install proofs, both directions
-proofs = [j for j in jobs if j.startswith("verify-install")]
-for j in proofs:
-    if j not in rb_flat:
-        findings.append("%s runs the install proof '%s' and %s never names it. "
+# 3. every job named, and the install proofs the other way too
+for j in jobs:
+    if not re.search(r"(\*\*|\*|`)" + re.escape(j) + r"\1", rb):
+        findings.append("%s runs the job '%s' and %s never names it as one. "
                         "The page is what a releaser watches, so an unnamed "
-                        "proof is one nobody is waiting for."
+                        "job is one nobody is waiting for."
                         % (workflow_path, j, runbook_path))
+# The rc watch list claims every job; #799's first draft of it left one out.
+watch = [x for x in re.split(r"\n\s*\n", rb) if "every job must be green" in flat(x)]
+if len(watch) != 1:
+    findings.append("%s has %d paragraphs saying 'every job must be green'; "
+                    "rule 3 reads exactly one, the rc watch list."
+                    % (runbook_path, len(watch)))
+for j in jobs if len(watch) == 1 else []:
+    if not re.search(r"(\*\*|\*|`)" + re.escape(j) + r"\1", watch[0]):
+        findings.append("%s's rc watch list says every job must be green and "
+                        "leaves out '%s'." % (runbook_path, j))
 for j in sorted(set(re.findall(r"verify-install[a-z0-9-]*", rb_flat))):
     if j not in jobs:
         findings.append("%s tells a releaser to watch '%s', which is not a job "
@@ -209,6 +277,55 @@ for job, pattern in COUNTS:
                             "in %s has %d." % (runbook_path, job, g,
                                                workflow_path, want))
 
+# 5. each step chain on the page is the walked job's own steps, in order
+SEG = r"(?:[^→.:]|:(?=\S)|\.(?=\S))+"
+chained = set()
+for m in re.finditer(SEG + r"(?:→" + SEG + r")+", rb_flat):
+    segs = [re.sub(r"\s*\(or skip\)$", "", x.strip()) for x in m.group(0).split("→")]
+    best, hits = None, 1
+    for job in walked:
+        n = sum(1 for x in segs if x in [flat(c) for c in chain[job]])
+        if n > hits:
+            best, hits = job, n
+    if best is None:
+        continue
+    chained.add(best)
+    names, at = [flat(c) for c in chain[best]], -1
+    for x in segs:
+        if x not in names:
+            findings.append("%s lists '%s' in the step chain of job '%s', which "
+                            "runs no such step." % (runbook_path, x, best))
+        elif x not in names[at + 1:]:
+            findings.append("%s lists '%s' out of order in the step chain of "
+                            "job '%s'." % (runbook_path, x, best))
+        else:
+            at = names.index(x, at + 1)
+for job in walked:
+    if steps[job] and job not in chained:
+        findings.append("%s gives no step chain (`A → B → ...`) for the walked "
+                        "job '%s'." % (runbook_path, job))
+
+# 6. the arm64 chain waits on the arm64 build and never on the amd64 one
+for b in ("release", "release-arm64"):
+    if b not in jobs:
+        findings.append("%s has no job named '%s', which rule 6 orders the "
+                        "arm64 chain against." % (workflow_path, b))
+for j in arm:
+    seen, todo = {j}, [j]
+    while todo:
+        for n in needs.get(todo.pop(), []):
+            if n not in seen:
+                seen.add(n)
+                todo.append(n)
+    if "release" in seen:
+        findings.append("job '%s' is in the arm64 chain and reaches 'release' "
+                        "through needs:, so an amd64 failure skips it after "
+                        "the arm64 tag is published." % j)
+    if "release-arm64" not in seen:
+        findings.append("job '%s' is in the arm64 chain and does not reach "
+                        "'release-arm64' through needs:, so it can run before "
+                        "the arm64 tag exists." % j)
+
 print("WALKED\t" + " ".join(walked))
 for f in findings:
     print("FAIL\t" + f)
@@ -232,5 +349,5 @@ if [ -n "$fails" ]; then
 fi
 
 walked=$(printf '%s\n' "$report" | sed -n 's/^WALKED\t//p')
-echo "OK: $RUNBOOK walks $walked step for step, names every install proof," \
-     "and states the counts $WORKFLOW derives."
+echo "OK: $RUNBOOK walks $walked step for step and in order, names every job," \
+     "states the counts $WORKFLOW derives, and its arm64 chain waits on release-arm64, not release."

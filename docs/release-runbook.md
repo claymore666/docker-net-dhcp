@@ -250,9 +250,13 @@ a refusal, or deciding whether to dispatch anyway:
   is a tag whose registries and release page are mid-replacement.
   `integration-arm64.yml` groups the same way, on
   `integration-arm64-${{ github.ref }}`.
-- **Dispatching an older release is refused,** with a non-zero exit
-  and nothing published. This is the case that used to succeed
-  quietly and move `:latest` back with it.
+- **Dispatching an older release is refused at the promotion**, with a
+  non-zero exit from `promote-latest` before any floating tag moves.
+  The rest of the run is not refused. Both builds have already pushed
+  `:vOLD` and `:vOLD-arm64` again with new digests, and once the install
+  proofs pass, `github-release`, which does not wait for
+  `promote-latest`, uploads that release's assets again and rewrites its
+  notes. Moving `:latest` back is the case that used to succeed quietly.
 - **A genuine backport is refused too**: publishing v1.7.2 after v1.8.0
   exists. Deliberate: moving `:latest` to a backport is then an explicit
   manual `crane tag`, so it cannot happen by accident.
@@ -312,13 +316,16 @@ git checkout main && git pull --ff-only      # the release commit
 git tag -s v1.0.0-rc1 -m "v1.0.0-rc1" && git push origin v1.0.0-rc1
 ```
 
-Watch the run; every step including **verify-install**, since v1.7.0
+Watch the run; every job must be green: **resolve**, since #1014
+**production-shape** (both builds wait on it), **release** and
+**verify-install**, since v1.7.0
 **release-arm64** / **verify-install-arm64**, since #776
-**verify-install-hub** / **verify-install-hub-arm64**, and since #972
-**verify-install-hub-alias** / **verify-install-hub-alias-arm64** must
-be green, and since #736 **promote-latest**, which an rc now reaches. Its last step,
-*Assert a pre-release did not move :latest*, is the one that proves the
-dry-run stayed a dry-run.
+**verify-install-hub** / **verify-install-hub-arm64**, since #972
+**verify-install-hub-alias** / **verify-install-hub-alias-arm64**,
+since #736 **promote-latest**, which an rc now reaches, and
+**github-release**, which publishes an rc as a draft (#469). The last
+step of promote-latest, *Assert a pre-release did not move :latest*, is
+the one that proves the dry-run stayed a dry-run.
 
 **The rc tag also starts the arm64 integration lane** (#531): pushing
 it triggers `integration-arm64` on its own. Nothing to dispatch, and
@@ -951,7 +958,9 @@ be true.
     <https://github.com/claymore666/docker-net-dhcp/actions/workflows/release.yml>.
     Expected steps, under the names the run shows. Tag resolution is its
     own job: **resolve** runs first and has one step, *Resolve release
-    tag*; a releaser watching the run sees two job rows. The **release**
+    tag*. Then **production-shape** reads the engine-matrix row recorded
+    for the tag's commit (#1014); both builds wait on it, so when it is
+    red nothing was built or published. The **release**
     job then runs, in this order: checkout → setup-go → Log in to GHCR →
     Log in to Docker Hub → **Both registries, or say why not** → Push to
     GHCR → Push to Docker Hub (or skip) → Sync Docker Hub description
@@ -994,10 +1003,15 @@ be true.
     manifest, not a second build (#267). The two Hub description steps
     are separate because the action PATCHes one repository at a time.
 
-    Since v1.7.0 the run carries a parallel arm64 chain (#507):
+    Since v1.7.0 the run carries an arm64 chain (#507):
     **release-arm64** (native `ubuntu-24.04-arm` build, pushes
     `vX.Y.Z-arm64`; per-arch tags, because a Docker plugin cannot
-    install from a manifest list) and **verify-install-arm64**.
+    install from a manifest list) and its three install proofs. The
+    chain runs beside the amd64 one: the build since #796, the proofs
+    since #799. They wait on **resolve** and **release-arm64**, never on
+    **release**, so an arm64 tag published beside a failed amd64 build
+    is still install-proven. The two chains meet at **promote-latest**
+    and **github-release**, which wait for both.
 
     Then, as separate jobs:
 
@@ -1027,7 +1041,8 @@ be true.
         asserts that dependency. It does not carry a list of proof names:
         it derives them from the workflow's own install-verifying jobs, so
         a ninth proof is required the moment it exists. Steps: *Refuse to
-        promote a floating tag backwards* → Install crane → the two logins
+        promote a floating tag backwards* → Install crane → Log in to GHCR →
+        Log in to Docker Hub
         → *Record what :latest resolves to before promotion* → *Promote the
         GHCR floating tags* → *Promote the Docker Hub floating tags* →
         *Promote the Hub alias floating tags* → *Verify the floating tags
