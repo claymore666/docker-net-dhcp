@@ -165,14 +165,14 @@ func newLibClient6(iface string, params proto.Params6, opts *DHCPClientOptions) 
 	return client, nil
 }
 
-// resumeFor drops a shared record's prefixes, on a copy, when no prefix is asked for, so the client Confirms rather
-// than Rebinds (RFC 8415 section 18.2.12, #214).
+// resumeFor drops a shared record's prefixes and the server that delegated them, on a copy, when no prefix is asked
+// for, so the client Confirms rather than Rebinds (RFC 8415 section 18.2.12, #214; dhcp-golib#70).
 func resumeFor(r *lease.Lease, prefixHint int) *lease.Lease {
 	if r == nil || prefixHint != 0 || len(r.Prefixes) == 0 {
 		return r
 	}
 	c := *r
-	c.Prefixes = nil
+	c.Prefixes, c.PrefixServerDUID = nil, nil
 	return &c
 }
 

@@ -4,6 +4,7 @@
 package dhcp
 
 import (
+	"bytes"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -113,6 +114,31 @@ func TestResumeFor_ClearsThePrefixesOnlyWhenNoneIsAskedFor(t *testing.T) {
 	}
 	if got := resumeFor(nil, 0); got != nil {
 		t.Errorf("resumeFor(nil) = %v", got)
+	}
+}
+
+// dhcp-golib v1.4.3's lease names a prefix server only beside a prefix (dhcp-golib#70), so the copy drops both.
+func TestResumeFor_DropsThePrefixServerWithThePrefixes(t *testing.T) {
+	addrServer, prefixServer := []byte{0, 3, 0, 1, 2, 2, 2, 2, 2, 2}, []byte{0, 3, 0, 1, 4, 4, 4, 4, 4, 4}
+	rec := &lease.Lease{
+		Addr:             netip.MustParsePrefix("fd00:6470::1000/128"),
+		ServerDUID:       addrServer,
+		Prefixes:         []lease.Addr6{{Addr: netip.MustParsePrefix("fd00:98:0:1::/64")}},
+		PrefixServerDUID: prefixServer,
+	}
+
+	got := resumeFor(rec, 0)
+	if len(got.PrefixServerDUID) != 0 {
+		t.Errorf("resume with ipv6_pd removed still names the prefix server %x", got.PrefixServerDUID)
+	}
+	if !bytes.Equal(got.ServerDUID, addrServer) {
+		t.Errorf("the address server became %x; the Confirm still answers for the address", got.ServerDUID)
+	}
+	if !bytes.Equal(rec.PrefixServerDUID, prefixServer) {
+		t.Error("the record itself lost its prefix server; the clearing must be on a copy")
+	}
+	if got := resumeFor(rec, 64); !bytes.Equal(got.PrefixServerDUID, prefixServer) {
+		t.Error("a network that still asks for a prefix lost the server that delegated it")
 	}
 }
 
