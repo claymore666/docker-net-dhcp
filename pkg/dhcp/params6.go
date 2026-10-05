@@ -51,6 +51,9 @@ func buildParams6(opts *DHCPClientOptions, once bool) (proto.Params6, error) {
 	// RFC 8415 section 21.5: the IA_TA rides in the Solicit and the Request, never in a Renew or Rebind, so slaac sends
 	// none; the library never puts it on another message (#927).
 	p.Temporary = opts.IPv6Temporary
+	// In the params, not the per-attempt state, so the address-refusal retry keeps it: NoPrefixAvail never refuses
+	// the exchange (RFC 8415 section 18.2.10.1, #214).
+	p.PrefixHint = opts.IPv6PD
 	// RFC 7217 section 5's F() takes the interface's MAC as Net_Iface, the Docker network id as Network_ID and the
 	// secret; eui64 leaves all three empty so its address is the one #818 shipped (#1032).
 	if opts.IPv6IID == proto.IIDModeStablePrivacy {

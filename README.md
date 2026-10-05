@@ -39,7 +39,8 @@ and what each item is for is in [SECURITY.md](SECURITY.md#scope--what-this-plugi
   as one more host.
 - **IPv6 in the same shape as IPv4.** `-o ipv6_mode=` picks DHCPv6, SLAAC,
   or whatever the router advertisement says, per network, with the same
-  identity rules and the same counters.
+  identity rules and the same counters. `-o ipv6_pd=64` also asks for a
+  delegated prefix, for a container that routes one.
 - **One identity per container, kept across restarts.** In `bridge` and
   `macvlan` the plugin keeps the MAC, and with it the DHCP client id and
   the DHCPv6 DUID, across `docker restart`, a daemon restart and a plugin

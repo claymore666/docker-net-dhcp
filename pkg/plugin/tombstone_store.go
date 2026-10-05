@@ -21,7 +21,7 @@ type tombstoneStore struct {
 	quarantines stampedCounter
 }
 
-func (s *tombstoneStore) add(networkID, hostname, mac, ipv4, ipv6 string) error {
+func (s *tombstoneStore) add(networkID, hostname, mac, ipv4, ipv6 string, prefixes ...string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -39,12 +39,13 @@ func (s *tombstoneStore) add(networkID, hostname, mac, ipv4, ipv6 string) error 
 		return fmt.Errorf("refusing to rewrite tombstones after a failed read: %w", err)
 	}
 	ts = append(pruneTombstones(ts), tombstone{
-		NetworkID:   networkID,
-		Hostname:    hostname,
-		MacAddress:  mac,
-		IPAddress:   ipv4,
-		IPv6Address: ipv6,
-		DeletedAt:   time.Now(),
+		NetworkID:         networkID,
+		Hostname:          hostname,
+		MacAddress:        mac,
+		IPAddress:         ipv4,
+		IPv6Address:       ipv6,
+		DelegatedPrefixes: prefixes,
+		DeletedAt:         time.Now(),
 	})
 	return saveTombstones(ts)
 }

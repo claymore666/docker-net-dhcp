@@ -237,6 +237,7 @@ ipv6|step|fresh DHCPv6 reply in the server log for the address the container hol
 ipv6_mode|step|dhcp: fresh DHCPv6 reply for the held address; slaac: fresh router advertisement, the container holds and Docker reports an address in the ra-only prefix; both: an IPv6 default route via the router link-local address; control off: no global address; bad value refused
 ipv6_main_prefix|step|two advertised prefixes: Docker reports the address in the named prefix, both ways round; refused with ipv6_mode=dhcp
 ipv6_temporary|step|a range 2^32 + 1 wide: the container holds two addresses in the prefix, Docker reports one of them, the server logged a DHCPv6 reply for each; control without it: one address; refused with ipv6_mode=slaac and off
+ipv6_pd|step|ipv6_mode=dhcp against a server that delegates nothing: the container holds its address and no unreachable route; refused with ipv6_mode=slaac and off and above 128
 ipv6_iid|step|ipv6_mode=slaac on a container with a fixed MAC: the held address is not the modified EUI-64 of the MAC and Docker reports it; control without it: the EUI-64 address; refused with ipv6_mode=dhcp and off, and with a value that is not a mode
 ipv6_auto_strict|step|managed-flag advertisement with a silent DHCPv6 server: true fails docker run, false holds an address in the autonomous prefix
 lease_timeout|step|server-less bridge: docker run fails within the short timeout and not within the long one; a value under the probe window refused
@@ -1285,6 +1286,23 @@ opt_ipv6_temporary() {
     opt_down em-o-v6 em-c-v6
     opt_refused "ipv6_temporary" -o bridge="$V6_BRIDGE" -o ipv6_mode=slaac -o ipv6_temporary=true
     opt_refused "ipv6_temporary" -o bridge="$V6_BRIDGE" -o ipv6_mode=off -o ipv6_temporary=true
+}
+
+# dnsmasq delegates no prefixes, so the step is the option's acceptance and its refusals; the delegation itself runs
+# against Kea in the integration lane (#214).
+opt_ipv6_pd() {
+    local n
+    v6_server "--dhcp-range=${V6_PREFIX_A}10,${V6_PREFIX_A}99,$LEASE_TIME --enable-ra"
+    opt_net em-o-v6 -o bridge="$V6_BRIDGE" -o ipv6_mode=dhcp -o ipv6_pd=64
+    opt_run em-c-v6 em-o-v6
+    wait_v6 em-c-v6 "$V6_PREFIX_A"
+    sleep 3
+    n="$(d docker exec em-c-v6 ip -6 route 2>/dev/null | grep -c '^unreachable' || true)"
+    [ "$n" -eq 0 ] || fail "ipv6_pd=64 against a server that delegates nothing: the container has $n unreachable route(s)"
+    opt_down em-o-v6 em-c-v6
+    opt_refused "ipv6_pd" -o bridge="$V6_BRIDGE" -o ipv6_mode=slaac -o ipv6_pd=64
+    opt_refused "ipv6_pd" -o bridge="$V6_BRIDGE" -o ipv6_mode=off -o ipv6_pd=64
+    opt_refused "ipv6_pd" -o bridge="$V6_BRIDGE" -o ipv6_mode=dhcp -o ipv6_pd=129
 }
 
 # The managed flag with a server that ignores every DHCPv6 message stands

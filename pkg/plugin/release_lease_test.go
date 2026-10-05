@@ -10,6 +10,7 @@ import (
 	"go/parser"
 	"go/token"
 	"net"
+	"net/netip"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -463,6 +464,92 @@ func TestReleaseLease_AFailedV6WithdrawalSendsNothing(t *testing.T) {
 			}
 			if got := p.releaseFailuresV6.Load(); got != tc.wantFailures {
 				t.Errorf("release_failures_v6 = %d, want %d", got, tc.wantFailures)
+			}
+		})
+	}
+}
+
+// RFC 8415 section 18.2.7: no released lease stays in use, so every address and prefix the Release names leaves the
+// link before it, and one that cannot be taken off sends nothing (#214).
+func TestReleaseLease_EveryAddressAndPrefixTheReleaseNamesLeavesTheLinkFirst(t *testing.T) {
+	const (
+		reported  = "fd00::50/64"
+		stable    = "fd00::51/64"
+		temp1     = "fd00::7e1/128"
+		temp2     = "fd00::7e2/128"
+		delegated = "fd00:98:0:a::/64"
+	)
+	for _, tc := range []struct {
+		name      string
+		failOn    string
+		wantCalls int
+		want      releaseOutcome
+	}{
+		{"everything came off", "", 1, releaseSent},
+		{"a temporary address could not be taken off", temp2, 0, releaseWithdrawFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var order []string
+			prevDel := nlAddrDel
+			nlAddrDel = func(_ *netlink.Handle, _ netlink.Link, a *netlink.Addr) error {
+				if a.IPNet.String() == tc.failOn {
+					return errors.New("netlink: operation not permitted")
+				}
+				order = append(order, a.IPNet.String())
+				return nil
+			}
+			t.Cleanup(func() { nlAddrDel = prevDel })
+
+			p := &Plugin{}
+			sender := installSender(t, nil)
+			m := releasingManager(t, p, ReleaseOnStop, true)
+			f := &fakeRouteTable{routes: []netlink.Route{aggregate(t, delegated)}}
+			f.install(t, m)
+			nlHandleRouteDel = func(_ *netlink.Handle, r *netlink.Route) error {
+				order = append(order, r.Dst.String())
+				return nil
+			}
+			sendPrev := rtSendRelease
+			rtSendRelease = func(rec lease.Record, cfg runtime.ReleaseConfig) error {
+				order = append(order, "release")
+				return sendPrev(rec, cfg)
+			}
+			m.ctrLink = &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: "eth0"}}
+
+			ev := acquired6(stable, time.Hour)
+			for _, tmp := range []string{temp1, temp2} {
+				ev.Lease.TempAddrs = append(ev.Lease.TempAddrs, lease.Addr6{Addr: netip.MustParsePrefix(tmp)})
+			}
+			ev.Lease.Prefixes = []lease.Addr6{{Addr: netip.MustParsePrefix(delegated)}}
+			if err := p.records.Observed(m.recordID6, ev, nil); err != nil {
+				t.Fatalf("Observed: %v", err)
+			}
+
+			if got := m.releaseHeldLease(true); got != tc.want {
+				t.Errorf("releaseHeldLease(v6) = %q, want %q", got, tc.want)
+			}
+			if got := sender.callCount(); got != tc.wantCalls {
+				t.Fatalf("the wire saw %d release(s), want %d; order %v", got, tc.wantCalls, order)
+			}
+			if tc.wantCalls == 0 {
+				return
+			}
+			sent := sender.recs[0].Lease
+			if len(sent.TempAddrs) != 2 || len(sent.Prefixes) != 1 {
+				t.Fatalf("the Release names %d temporary address(es) and %d prefix(es), want 2 and 1",
+					len(sent.TempAddrs), len(sent.Prefixes))
+			}
+			before := map[string]bool{}
+			for _, o := range order {
+				if o == "release" {
+					break
+				}
+				before[o] = true
+			}
+			for _, named := range []string{reported, stable, temp1, temp2, delegated} {
+				if !before[named] {
+					t.Errorf("%s was still on the link when the Release left; order %v", named, order)
+				}
 			}
 		})
 	}

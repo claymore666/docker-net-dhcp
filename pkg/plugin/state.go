@@ -214,8 +214,10 @@ type tombstone struct {
 	// IPAddress is the previous bare IPv4 address, requested as option 50.
 	IPAddress string `json:"ip_address,omitempty"`
 	// IPv6Address is the previous bare IPv6 address, requested as the IA_NA preferred address (#152, #213).
-	IPv6Address string    `json:"ipv6_address,omitempty"`
-	DeletedAt   time.Time `json:"deleted_at"`
+	IPv6Address string `json:"ipv6_address,omitempty"`
+	// DelegatedPrefixes is the IA_PD prefixes the lease held, report-only: no client asks for one back by value (#214).
+	DelegatedPrefixes []string  `json:"delegated_prefixes,omitempty"`
+	DeletedAt         time.Time `json:"deleted_at"`
 }
 
 func tombstoneFilePath() string {

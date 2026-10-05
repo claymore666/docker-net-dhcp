@@ -84,8 +84,10 @@ below decide what is in a release; this page follows them.
 
 ### v2.5.0
 
-- [#214], DHCPv6 prefix delegation (IA_PD), designed first; only its Kea
-  DHCPv6 test fixture is in v2.4.0
+- [#214], DHCPv6 prefix delegation (IA_PD): `-o ipv6_pd=<length>` asks
+  the server for a prefix beside the address and installs it in the
+  container as one unreachable route, for software there that routes; the
+  Kea DHCPv6 test fixture shipped in v2.4.0
 - [#1203], the DHCPv6 option 17 logged as `vendor_17`, the plugin half of
   [#1034]
 - [#733], the tracking issue for the CI consolidation programme
