@@ -345,6 +345,19 @@ live "PRESERVATION: a JIT gap in one read is filled by the next (union of names)
      0 "$d" "3 carry 'dhcp-ci' over 3 read" 3 \
      "0\n$(runners 3 a=dhcp-ci b=dhcp-ci p=dhcp-ci-arm64)" "$okpage" \
      "0\n$(runners 3 b=dhcp-ci c=dhcp-ci p=dhcp-ci-arm64)"
+live "live: every read short by a different runner, none complete, still counts the union" \
+     0 "$d" "3 carry 'dhcp-ci' over 3 read" 3 \
+     "0\n$(runners 3 a=dhcp-ci b=dhcp-ci p=dhcp-ci-arm64)" \
+     "0\n$(runners 3 b=dhcp-ci c=dhcp-ci p=dhcp-ci-arm64)" \
+     "0\n$(runners 3 a=dhcp-ci c=dhcp-ci p=dhcp-ci-arm64)"
+live "ABSENCE: more runners registered than the file declares is red (the pool grew)" \
+     1 "$d" "declares x64_runners=3; o/r has 4 runner name(s)" 1 \
+     "0\n$(runners 5 a=dhcp-ci b=dhcp-ci c=dhcp-ci d=dhcp-ci p=dhcp-ci-arm64)"
+live "live: pages that disagree on total_count are a refusal, not read as the smaller" \
+     2 "$d" "Live pool read incomplete" 1 \
+     "0\n$(runners 4 a=dhcp-ci b=dhcp-ci)\n$(runners 3 c=dhcp-ci)"
+live "live: an answer that is not UTF-8 is a refusal, not a wrong file" \
+     2 "$d" "not UTF-8" 1 '0\n\xff\xfe{"total_count"'
 live "ABSENCE: a name missing from every read is red, however many reads" \
      1 "$d" "has 2 runner name(s)" 3 "0\n$(runners 3 a=dhcp-ci b=dhcp-ci p=dhcp-ci-arm64)"
 live "live: a non-numeric read count is a refusal" \
@@ -353,6 +366,11 @@ live "live: a non-numeric read count is a refusal" \
 d=$(tree livenoarm 3); prose "$d" "<!-- ${MK}: pool-runners=3 -->"
 printf '{"x64_label": "dhcp-ci", "x64_runners": 3}\n' > "$d/.github/ci-pool.json"
 git -C "$d" add -A
+d0=$(tree livezeroarm 3); prose "$d0" "<!-- ${MK}: pool-runners=3 -->"
+printf '{"x64_label": "dhcp-ci", "x64_runners": 3, "arm64_label": "dhcp-ci-arm64", "arm64_runners": 0}\n' > "$d0/.github/ci-pool.json"
+git -C "$d0" add -A
+live "live: a declared arm64 count of 0 is a refusal even when no arm64 runner is registered" \
+     2 "$d0" "Pool constant incomplete" 1 "0\n$(runners 3 a=dhcp-ci b=dhcp-ci c=dhcp-ci)"
 live "live: a file with no arm64 count is a refusal, not a skipped comparison" \
      2 "$d" "Pool constant incomplete" 1 "$okpage"
 
@@ -385,7 +403,7 @@ liveenv() {
 }
 
 d=$(tree livedef 3); prose "$d" "<!-- ${MK}: pool-runners=3 -->"
-liveenv "live: with no settings it reads four times, so a JIT dip is outvoted" \
+liveenv "live: with no settings it reads four times, so a JIT dip is covered by the union" \
         0 "$d" "over 4 read" "$okpage"
 if [ "$(cat "$STUB/count")" -eq 4 ]; then
     echo "PASS: live: the default is four calls to the runners API"

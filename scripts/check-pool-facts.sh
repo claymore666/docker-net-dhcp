@@ -337,7 +337,10 @@ def refuse(title, msg):
 
 const = json.load(open(os.environ["CI_POOL_CONST"]))
 def read(path):
-    raw = open(path).read()
+    try:
+        raw = open(path, "rb").read().decode("utf-8")
+    except UnicodeDecodeError as e:
+        refuse("Live pool unreadable", f"the runners API for {repo} answered bytes that are not UTF-8: {e}.")
     dec, pos, pages, runners = json.JSONDecoder(), 0, [], []
     while True:
         while pos < len(raw) and raw[pos].isspace():

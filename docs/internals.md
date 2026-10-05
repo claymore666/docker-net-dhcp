@@ -1043,7 +1043,10 @@ the tree equal to that file. Once a day the Pool live count workflow
 compares the file with the runners registered on the repository (#886),
 using the read-only administration token that Scorecard also uses,
 because the workflow token cannot list runners. It counts registered
-runners, online or not, and sees a resize up to a day late. It runs on
+runners, online or not, and sees a resize up to a day late. That the
+token can read the runners list is taken from GitHub's permission table
+and was not measured: no run has read it yet, so the scheduled path stays
+unproven until its first run on the default branch. It runs on
 its own from the v2.5.0 release on; until then, and at any time,
 `bash scripts/check-pool-facts.sh --live` with a token that has admin
 access to the repository runs the same comparison.

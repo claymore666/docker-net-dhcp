@@ -8,7 +8,8 @@ name: Pool live count
 # GITHUB_TOKEN has no `administration` scope, so it cannot list runners.
 # The token is the read-only single-repo PAT with Administration: read
 # that scorecard.yml holds and fork-execution-policy.yml already reuses;
-# no new credential. Schedule and dispatch only: no fork PR reaches it.
+# no new credential. That it can read the runners list is inferred from the
+# permission table; unproven until the first run on the default branch. Schedule and dispatch only: no fork PR reaches it.
 
 on:
   schedule:
