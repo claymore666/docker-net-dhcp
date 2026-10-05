@@ -37,12 +37,12 @@
 # with reality, but they can no longer disagree with EACH OTHER, and
 # reality now has exactly one place to be corrected instead of six.
 #
-# `--live` closes the rest, off the lane: with a token that CAN read the
-# runners API (a workstation's, or the local lane's) it compares the
-# constant to the live count and refuses on a mismatch. It is opt-in
-# because the lane cannot run it, and it REFUSES rather than passing
-# when it is asked for and cannot reach the API -- an unreadable pool is
-# not a matching pool.
+# `--live` compares both declared counts to the registered runners per
+# label, off the lane: pool-live-count.yml runs it daily with the repo's
+# Administration:read PAT, the one fork-execution-policy.yml reuses
+# (#886); by hand any admin token works. An unreadable, malformed or
+# incomplete answer exits 2, a disagreement exits 1. Bound: it counts
+# REGISTERED runners, online or not, and sees a resize up to a day late.
 #
 # THE DOMAIN, AND WHAT IT CANNOT SEE. A statement is in the domain when
 # it carries a marker on its own line:
@@ -304,23 +304,93 @@ rc=$?
 [ "$rc" -eq 0 ] || exit "$rc"
 
 if [ "$LIVE" -eq 1 ]; then
-    label=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["x64_label"])' "$CONST")
-    want=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["x64_runners"])' "$CONST")
     repo="${GATE_REPO:-claymore666/docker-net-dhcp}"
-    if ! live=$(gh api "repos/${repo}/actions/runners" --paginate \
-                --jq "[.runners[]|select(.labels|map(.name)|index(\"${label}\"))]|length" 2>/dev/null); then
-        echo "::error title=Live pool unreadable::--live was asked for and the runners API for" \
-             "${repo} could not be read. An unreadable pool is not a matching pool, so this" \
-             "refuses (#879)." >&2
-        exit 2
-    fi
-    # `gh --jq` over --paginate prints one number per page.
-    live=$(printf '%s\n' "$live" | awk '{s+=$1} END {print s+0}')
-    if [ "$live" -ne "$want" ]; then
-        echo "::error title=The declared pool is not the live pool (#879)::.github/ci-pool.json" \
-             "declares x64_runners=${want}; ${repo} has ${live} runner(s) carrying '${label}'." \
-             "Correct the constant and re-run the sweep." >&2
-        exit 1
-    fi
-    echo "pool-facts --live: ${live} runner(s) carry '${label}', matching the declared constant"
+    reads="${CI_POOL_LIVE_READS:-4}" gap="${CI_POOL_LIVE_GAP:-20}"
+    case "$reads" in ''|*[!0-9]*) reads=0 ;; esac
+    [ "$((10#$reads))" -ge 1 ] || gate_refuse "CI_POOL_LIVE_READS='${CI_POOL_LIVE_READS:-}' is not a positive integer"
+    case "$gap" in ''|*[!0-9]*) gate_refuse "CI_POOL_LIVE_GAP='$gap' is not a whole number of seconds" ;; esac
+    dir=$(mktemp -d) || gate_refuse "cannot create a scratch directory for the live reads"
+    trap 'rm -rf "$dir"' EXIT
+    # The x64 pool registers one JIT runner per job: names are reused, ids are
+    # not, and a point read was short in 8 of 72 reads 5 s apart on
+    # 2026-10-05 (#886). The pool is therefore the union of names over spaced
+    # reads. `gh api --jq` prints a 4xx body on stdout, so the raw pages are
+    # parsed below and gh's exit code alone decides readability.
+    for i in $(seq 1 "$reads"); do
+        [ "$i" -eq 1 ] || sleep "$gap"
+        if ! gh api "repos/${repo}/actions/runners?per_page=100" --paginate > "$dir/$i" 2> "$dir/err"; then
+            echo "::error title=Live pool unreadable::--live was asked for and the runners API for" \
+                 "${repo} could not be read. An unreadable pool is not a matching pool, so this" \
+                 "refuses (#879). gh said: $(head -c 300 "$dir/err" | tr '\n' ' ')" >&2
+            exit 2
+        fi
+    done
+    CI_POOL_READS_DIR="$dir" CI_POOL_LIVE_READS="$reads" CI_POOL_REPO="$repo" python3 - <<'PY'
+import json, os, sys
+
+repo = os.environ["CI_POOL_REPO"]
+
+def refuse(title, msg):
+    print(f"::error title={title}::{msg} An unreadable pool is not a matching pool (#886).",
+          file=sys.stderr)
+    sys.exit(2)
+
+const = json.load(open(os.environ["CI_POOL_CONST"]))
+def read(path):
+    try:
+        raw = open(path, "rb").read().decode("utf-8")
+    except UnicodeDecodeError as e:
+        refuse("Live pool unreadable", f"the runners API for {repo} answered bytes that are not UTF-8: {e}.")
+    dec, pos, pages, runners = json.JSONDecoder(), 0, [], []
+    while True:
+        while pos < len(raw) and raw[pos].isspace():
+            pos += 1
+        if pos == len(raw):
+            break
+        try:
+            page, pos = dec.raw_decode(raw, pos)
+        except ValueError as e:
+            refuse("Live pool unreadable", f"the runners API for {repo} answered something that is not JSON: {e}.")
+        if not (isinstance(page, dict) and type(page.get("total_count")) is int
+                and isinstance(page.get("runners"), list)):
+            refuse("Live pool unreadable", f"the runners API for {repo} answered {str(page)[:200]!r}, not a runners page.")
+        pages.append(page)
+        runners.extend(page["runners"])
+    if not pages:
+        refuse("Live pool unreadable", f"the runners API for {repo} answered nothing.")
+    totals = sorted({p["total_count"] for p in pages})
+    if len(totals) != 1 or len(runners) != totals[0]:
+        refuse("Live pool read incomplete",
+               f"{len(runners)} runner(s) read over {len(pages)} page(s), the API reports total_count {totals}.")
+    out = []
+    for r in runners:
+        labels = r.get("labels") if isinstance(r, dict) else None
+        if not (isinstance(r, dict) and isinstance(r.get("name"), str) and r["name"]
+                and isinstance(labels, list)
+                and all(isinstance(l, dict) and isinstance(l.get("name"), str) for l in labels)):
+            refuse("Live pool unreadable", f"a runner in {repo} has no readable name or label list: {str(r)[:200]!r}.")
+        out.append((r["name"], {l["name"] for l in labels}))
+    return out
+
+nreads = int(os.environ["CI_POOL_LIVE_READS"])
+reads = [read(os.path.join(os.environ["CI_POOL_READS_DIR"], str(i))) for i in range(1, nreads + 1)]
+
+drift, seen = [], []
+for lk, ck in (("x64_label", "x64_runners"), ("arm64_label", "arm64_runners")):
+    label, want = const.get(lk), const.get(ck)
+    if not (isinstance(label, str) and label and type(want) is int and want > 0):
+        refuse("Pool constant incomplete",
+               f".github/ci-pool.json must declare {lk} and a positive integer {ck} for --live to compare.")
+    got = len({name for rd in reads for name, labels in rd if label in labels})
+    seen.append(f"{got} carry '{label}' over {nreads} read(s)")
+    if got != want:
+        drift.append(f"declares {ck}={want}; {repo} has {got} runner name(s) registered with '{label}'.")
+for d in drift:
+    print("::error title=The declared pool is not the live pool (#886)::.github/ci-pool.json " + d +
+          " Correct the constant and re-run the sweep.", file=sys.stderr)
+if drift:
+    sys.exit(1)
+print(f"pool-facts --live: {', '.join(seen)}, matching the declared constant")
+PY
+    exit $?
 fi

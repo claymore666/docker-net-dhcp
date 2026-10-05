@@ -42,6 +42,8 @@
 #
 # Inputs (environment):
 #   WORKFLOW_DIR      directory scanned instead of .github/workflows.
+#   ACTIONS_DIR       directory whose */action.yml files are scanned
+#                     instead of .github/actions.
 #   ACTION_SCAN_ROOT  tree searched for composite actions instead of the
 #                     repository root.
 #
@@ -69,6 +71,7 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKFLOW_DIR="${WORKFLOW_DIR:-$ROOT/.github/workflows}"
+ACTIONS_DIR="${ACTIONS_DIR:-$ROOT/.github/actions}"
 
 refuse() {
 
@@ -94,11 +97,16 @@ mapfile -t FILES < <(find "$WORKFLOW_DIR" -maxdepth 1 -type f \
 
 [ "${#FILES[@]}" -gt 0 ] || refuse "no .yml or .yaml files under $WORKFLOW_DIR; there is nothing to judge and 'all of nothing is pinned' is not an answer."
 
+# The lanes' composite actions (#746) are judged like workflows: one
+# level down, so `uses: ./.github/actions/<name>` resolves to them.
+mapfile -t -O "${#FILES[@]}" FILES < <(find "$ACTIONS_DIR" -mindepth 2 -maxdepth 2 \
+    -type f \( -name 'action.yml' -o -name 'action.yaml' \) 2>/dev/null | sort)
+
 # THE COMPOSITE-ACTION BOUNDARY, ENFORCED RATHER THAN DESCRIBED. The
 # `./*` exemption below is sound about the REFERENCE and says nothing
 # about the ACTION: a local composite action's own `action.yml` can
-# `uses:` a third party at a tag, and discovery reads $WORKFLOW_DIR, not
-# `.github/actions`. That limit used to be a paragraph telling whoever
+# `uses:` a third party at a tag, and discovery reads $WORKFLOW_DIR and
+# $ACTIONS_DIR/*/ only. That limit used to be a paragraph telling whoever
 # adds the first composite action to widen discovery -- an unrun
 # checklist in a file they have no reason to open, and bare `actionlint`
 # does not catch it either. So the exemption carries a check: if an
@@ -132,7 +140,8 @@ for c in "${CANDIDATES[@]}"; do
     [ -n "$c" ] || continue
     # A file discovery already opened is judged, not a blind spot.
     [ "$(dirname "$c")" = "$WORKFLOW_DIR" ] && continue
-    refuse "$c is a composite action and discovery does not cover it -- this gate reads $WORKFLOW_DIR only. Its own 'uses:' lines can name a third party at a tag and nothing here would see them. Widen discovery to include it, then delete this refusal."
+    [[ " ${FILES[*]} " == *" $c "* ]] && continue
+    refuse "$c is a composite action and discovery does not cover it -- this gate reads $WORKFLOW_DIR and $ACTIONS_DIR/*/ only. Its own 'uses:' lines can name a third party at a tag and nothing here would see them. Widen discovery to include it, then delete this refusal."
 done
 
 violations=0
@@ -455,14 +464,10 @@ for f in "${FILES[@]}"; do
             #
             # THE BOUNDARY, because the sentence above is true of the
             # REFERENCE and not of the ACTION. A local composite action's
-            # own `action.yml` can itself `uses:` a third party at a tag,
-            # and discovery never opens it -- this gate reads
-            # $WORKFLOW_DIR, not `.github/actions`. The exemption is
-            # vacuous today, no `action.yml` existing anywhere in the
-            # tree, and it would become a hole the day one did. That is
-            # why the composite scan above refuses instead of leaving the
-            # limit as a note: the check goes red, rather than a
-            # paragraph waiting to be read.
+            # own `action.yml` can itself `uses:` a third party at a tag.
+            # Discovery opens $ACTIONS_DIR/*/action.yml (#746), and the
+            # composite scan above refuses one anywhere else, so the
+            # exemption leaves no action unread.
             ./*|.\\*) continue ;;
             docker://*)
                 # A DIGEST, NOT A DIGEST-SHAPED STRING. Testing for the

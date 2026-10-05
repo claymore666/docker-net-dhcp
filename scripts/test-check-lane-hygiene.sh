@@ -245,6 +245,119 @@ guarded_tmpdir d
     || no "a comment tripped the gate"
 rm -rf "$d"
 
+# --- A through a local composite action (#746) --------------------------
+# The lanes install and tear down through ./.github/actions/*, so the
+# create and the rm sit in an action.yml, not in the workflow. Each case
+# below that expects 1 or 2 passed as 0 before the gate followed them:
+# the workflow text no longer named `docker plugin create` at all.
+
+mk_composite_lane() {
+    # $1 root, $2 teardown step: "always" | "plain" | "none" | "quoted"
+    local d="$1"
+    mkdir -p "$d/.github/workflows" "$d/.github/actions/install" "$d/.github/actions/teardown"
+    printf 'name: i\nruns:\n  using: composite\n  steps:\n    - shell: bash\n      run: |\n        docker plugin rm -f "$REF" || true\n        docker plugin create "$REF" plugin\n' \
+        > "$d/.github/actions/install/action.yml"
+    printf 'name: t\nruns:\n  using: composite\n  steps:\n    - shell: bash\n      run: |\n        docker plugin disable "$REF" || true\n        docker plugin rm -f "$REF" || true\n' \
+        > "$d/.github/actions/teardown/action.yml"
+    {
+        printf 'name: lane\non:\n  workflow_dispatch:\njobs:\n  suite:\n'
+        printf '    runs-on: ubuntu-latest\n    steps:\n'
+        printf '      - uses: actions/checkout@0000000000000000000000000000000000000000\n'
+        printf '      - name: Enable\n        uses: ./.github/actions/install\n'
+        case "$2" in
+            always) printf '      - name: Tear down\n        if: always()\n        uses: ./.github/actions/teardown\n' ;;
+            plain)  printf '      - name: Tear down\n        uses: ./.github/actions/teardown\n' ;;
+            quoted) printf '      - name: Tear down\n        if: always()\n        uses: "./.github/actions/teardown/"\n' ;;
+        esac
+    } > "$d/.github/workflows/lane.yml"
+}
+
+guarded_tmpdir d; mk_composite_lane "$d" none
+[ "$(verdict "$d/.github/workflows")" = 1 ] \
+    && ok "a plugin installed through a composite with no teardown is reported" \
+    || no "a composite install with no teardown should exit 1"
+rm -rf "$d"
+
+guarded_tmpdir d; mk_composite_lane "$d" always
+[ "$(verdict "$d/.github/workflows")" = 0 ] \
+    && ok "a composite install with an if: always() composite teardown is clean" \
+    || no "a composite install and if: always() composite teardown should be clean"
+rm -rf "$d"
+
+guarded_tmpdir d; mk_composite_lane "$d" quoted
+[ "$(verdict "$d/.github/workflows")" = 0 ] \
+    && ok "a quoted ./path/ with a trailing slash resolves to the same action" \
+    || no "a quoted, slash-terminated local action should resolve"
+rm -rf "$d"
+
+guarded_tmpdir d; mk_composite_lane "$d" plain
+[ "$(verdict "$d/.github/workflows")" = 1 ] \
+    && ok "a composite teardown without if: always() is not a teardown" \
+    || no "a composite teardown without if: always() should exit 1"
+rm -rf "$d"
+
+guarded_tmpdir d; mk_composite_lane "$d" always
+mv "$d/.github/actions/teardown/action.yml" "$d/.github/actions/teardown/action.yaml"
+[ "$(verdict "$d/.github/workflows")" = 0 ] \
+    && ok "a composite spelled action.yaml is read like action.yml" \
+    || no "an action.yaml teardown should count as the teardown"
+rm -rf "$d"
+
+guarded_tmpdir d; mk_composite_lane "$d" always
+rm -rf "$d/.github/actions/teardown"
+[ "$(verdict "$d/.github/workflows")" = 2 ] \
+    && ok "a local action with no action.yml is rc2, not a step with no commands" \
+    || no "a missing local action should exit 2"
+rm -rf "$d"
+
+# A composite that calls another local action hides its commands from this
+# gate, so it is refused in either spelling of the step (#746).
+for spelling in 'on a dash line:    - uses: ./.github/actions/install' 'on its own line:    - name: nested\n      uses: ./.github/actions/install' 'quoted:    - uses: "./.github/actions/install/"'; do
+    guarded_tmpdir d; mk_composite_lane "$d" none
+    mkdir "$d/.github/actions/lane-install"
+    printf 'name: n\nruns:\n  using: composite\n  steps:\n%b\n' "${spelling#*:}" \
+        > "$d/.github/actions/lane-install/action.yml"
+    sed -i 's|uses: ./.github/actions/install$|uses: ./.github/actions/lane-install|' "$d/.github/workflows/lane.yml"
+    [ "$(verdict "$d/.github/workflows")" = 2 ] \
+        && ok "a composite calling a local action is rc2, not a step with no commands: ${spelling%%:*}" \
+        || no "a nested local action call should exit 2"
+    rm -rf "$d"
+done
+
+guarded_tmpdir d; mk_composite_lane "$d" always
+mkdir "$d/.github/actions/lane-note"
+printf 'name: n\nruns:\n  using: composite\n  steps:\n    # uses: ./.github/actions/install\n    - shell: bash\n      run: echo hi\n' \
+    > "$d/.github/actions/lane-note/action.yml"
+sed -i 's|^      - name: Enable$|      - uses: ./.github/actions/lane-note\n      - name: Enable|' "$d/.github/workflows/lane.yml"
+[ "$(verdict "$d/.github/workflows")" = 0 ] \
+    && ok "a comment naming a local action in a composite is not a call" \
+    || no "a commented uses: in a composite should not be refused"
+rm -rf "$d"
+
+guarded_tmpdir d; mk_composite_lane "$d" always
+mkdir "$d/.github/actions/lane-remote"
+printf 'name: n\nruns:\n  using: composite\n  steps:\n    - uses: actions/checkout@0000000000000000000000000000000000000000\n' \
+    > "$d/.github/actions/lane-remote/action.yml"
+sed -i 's|^      - name: Enable$|      - uses: ./.github/actions/lane-remote\n      - name: Enable|' "$d/.github/workflows/lane.yml"
+[ "$(verdict "$d/.github/workflows")" = 0 ] \
+    && ok "a composite using a remote action is not refused" \
+    || no "a remote action inside a composite should not be refused"
+rm -rf "$d"
+
+# The real lanes, with one teardown removed: the arm64 runner is the
+# standing one, so its teardown is the one that matters (#742).
+guarded_tmpdir d
+mkdir -p "$d/.github"
+cp -r "$(dirname "$GATE")/../.github/workflows" "$(dirname "$GATE")/../.github/actions" "$d/.github/"
+awk '/^      - name: Tear down integration plugin$/ { skip = 1; next }
+     skip && /^[[:space:]]*$/ { skip = 0 }
+     !skip' "$(dirname "$GATE")/../.github/workflows/integration-arm64.yml" \
+    > "$d/.github/workflows/integration-arm64.yml"
+[ "$(verdict "$d/.github/workflows")" = 1 ] \
+    && ok "integration-arm64.yml with its teardown removed is reported" \
+    || no "the real arm64 lane without its teardown should exit 1"
+rm -rf "$d"
+
 # --- inspecting nothing is not a pass -----------------------------------
 guarded_tmpdir d
 [ "$(verdict "$d")" = 2 ] \

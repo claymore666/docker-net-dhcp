@@ -213,25 +213,18 @@ jobs:
       # rebuild every run rather than caching the image: cover builds
       # are PR-specific (the instrumented binary changes whenever any
       # tracked .go file does), so a cache here would be a footgun.
-      - name: Build + install cover plugin
-        run: |
-          make plugin-cover
-          docker plugin rm -f "${COVER_PLUGIN_REF}" 2>/dev/null || true
-          # Every bind source must pre-exist or `docker plugin enable`
-          # fails the mount (#440). Derive them from the manifest we are
-          # about to install rather than naming one: config-cover.json
-          # carries sources config.json does not (dh-cover, dh-capture),
-          # and a hardcoded list here silently rots when one is added
-          # (#660, #666). /var/lib only — /var/run/docker.sock is a
-          # socket, and mkdir -p would replace it with a directory.
-          jq -r '.mounts[]? | select(.type=="bind") | .source
-                 | select(startswith("/var/lib/"))' \
-              plugin-cover/config.json | xargs -r mkdir -p
-          docker plugin create "${COVER_PLUGIN_REF}" plugin-cover
-          # Same test-only cadence as integration.yml (#278) — this job
-          # runs the failure suite too, so it pays the same waits.
-          docker plugin set "${COVER_PLUGIN_REF}" LOG_LEVEL=trace
-          docker plugin enable "${COVER_PLUGIN_REF}"
+      - name: Build cover plugin
+        run: make plugin-cover
+
+      # The shared install (#746). The bind sources come from
+      # plugin-cover/config.json, which carries dh-cover and dh-capture on
+      # top of config.json's (#660, #666); trace logging sets the same
+      # test-only cadence as integration.yml (#278).
+      - name: Enable cover plugin
+        uses: ./.github/actions/install-plugin
+        with:
+          ref: ${{ env.COVER_PLUGIN_REF }}
+          dir: plugin-cover
 
       # The harness routes everything through INTEGRATION_PLUGIN_REF
       # (default :golang). Pointing it at :golang-cover makes the
@@ -469,7 +462,10 @@ jobs:
       # reference. The production :golang plugin is untouched.
       - name: Tear down cover plugin
         if: always()
-        run: |
-          docker plugin disable "${COVER_PLUGIN_REF}" 2>/dev/null || true
-          docker plugin rm -f "${COVER_PLUGIN_REF}" 2>/dev/null || true
-          rm -f "${COVER_DIR}"/cov*
+        uses: ./.github/actions/teardown-plugin
+        with:
+          ref: ${{ env.COVER_PLUGIN_REF }}
+
+      - name: Remove coverage counters
+        if: always()
+        run: rm -f "${COVER_DIR}"/cov*

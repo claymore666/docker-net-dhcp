@@ -43,9 +43,9 @@ name: Reproducible build
 # and ${COMMIT} expand to nothing (MEASURED, review r3, finding 4).
 #
 # The observer that does answer it is the integration lane. Its
-# "Build + install integration plugin" step derives the revision once,
+# "Build the plugin the suite jobs will install" step derives the revision once,
 # builds the plugin image through this same Dockerfile with that value
-# as COMMIT, and exports it as NET_DHCP_EXPECT_COMMIT;
+# as COMMIT, and the suite job exports it as NET_DHCP_EXPECT_COMMIT;
 # test/integration/health_document_test.go then reads /Plugin.Health off
 # the RUNNING plugin and requires the commit it reports to be that
 # value. An argument that stopped reaching the binary shows up there as

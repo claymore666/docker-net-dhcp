@@ -642,9 +642,9 @@ fi
 #
 # WHAT THIS SCAN CANNOT SEE, stated rather than claimed away. Its domain is
 # `.github/workflows/` only, so a caller outside it -- a Makefile target, a
-# composite action, a local script -- is invisible to it; today there is no
-# `.github/actions/` and `missing-runs.yml` is the only workflow invoking
-# either gate. It is a text scan, so a value assembled at runtime
+# composite action, a local script -- is invisible to it; today the
+# composites under `.github/actions/` (#746) invoke neither gate, and
+# `missing-runs.yml` is the only workflow invoking either. It is a text scan, so a value assembled at runtime
 # (`GATE_BRANCH""ES=dev`, or a name built from `${{ }}` fragments) passes it.
 # And it judges the checked-out tree, so a scope restated in repository or
 # environment VARIABLES in the GitHub settings is out of reach entirely.

@@ -93,6 +93,23 @@ BODY_GATES='check-test-weakening\.sh|check-no-ai-attribution\.sh|check-issue-ref
 # shellcheck source=scripts/workflow-shell-lines.sh
 . "$(cd "$(dirname "$0")" && pwd)/workflow-shell-lines.sh"
 
+# A step's `uses: ./x` runs x/action.yml's commands inside that step, and
+# GitHub resolves ./x against the checkout, two levels above the
+# workflow directory. The lanes install and tear down through two such
+# composites (#746), so their commands count as the step's own; one that
+# cannot be read is a refusal, never a step with nothing in it. That
+# includes one that calls another local action: its commands would count
+# as none, so a nested call is refused rather than followed.
+LOCAL_USES='^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*["'"'"']?\./'
+ROOT="$(cd "$WF_DIR/../.." && pwd)"
+action_file() {
+    local a
+    for a in "$ROOT/$1/action.yml" "$ROOT/$1/action.yaml"; do
+        [ -f "$a" ] && { printf '%s\n' "$a"; return 0; }
+    done
+    return 1
+}
+
 # Comments stripped. Everything below reads this, never the raw file.
 strip() { grep -vE '^[[:space:]]*#' "$1"; }
 
@@ -127,7 +144,8 @@ steps_of() {
     '
 }
 
-# One row per step: <n> <if: always() key> <create> <rm> <failure suite>.
+# One row per step: <n> <if: always() key> <create> <rm> <failure suite>
+# <local action path, or ->.
 # The if: counts only as the step's own key, and each command only as a
 # command of its run: shell; in an echo, a name: or a run: string they
 # guard and run nothing (#883).
@@ -135,7 +153,7 @@ step_facts() {
     local n ifa cand raw c cr td fs
     steps_of "$1" | awk -v RS='\x01' '
         {
-            k = split($0, L, "\n"); dash = -1; ifa = 0; raw = ""
+            k = split($0, L, "\n"); dash = -1; ifa = 0; raw = ""; u = "-"
             for (i = 1; i <= k; i++) {
                 if (dash < 0 && L[i] ~ /^[[:space:]]*-[[:space:]]/) {
                     dash = index(L[i], "-") - 1
@@ -143,25 +161,35 @@ step_facts() {
                 }
                 if (dash < 0) continue
                 if (L[i] ~ ("^" pre "(-|[ ]) if:[[:space:]]*always\\(\\)")) ifa = 1
+                if (L[i] ~ ("^" pre "(-|[ ]) uses:[[:space:]]*[\"\047]?\\./")) {
+                    u = L[i]; sub(/^[^:]*:[[:space:]]*[\"\047]?\.\//, "", u)
+                    sub(/[\"\047]?[[:space:]]*$/, "", u)
+                }
                 l = L[i]; gsub(/\t/, " ", l); raw = raw (raw == "" ? "" : "\037") l
             }
             n++
             if (dash < 0) next
             cand = (index($0, "docker plugin") || index($0, "integration-test-failure")) ? 1 : 0
-            printf "%d\t%d\t%d\t%s\n", n, ifa, cand, (cand ? raw : "-")
+            printf "%d\t%d\t%d\t%s\t%s\n", n, ifa, cand, (cand ? raw : "-"), u
         }' |
-    while IFS=$'\t' read -r n ifa cand raw; do
+    while IFS=$'\t' read -r n ifa cand raw use; do
         cr=0; td=0; fs=0
-        if [ "$cand" = 1 ]; then
+        if [ "$cand" = 1 ] || [ "$use" != - ]; then
             while IFS= read -r c; do
                 case "$c" in
                     "docker plugin create"|"docker plugin create "*) cr=1 ;;
                     "docker plugin rm"|"docker plugin rm "*) td=1 ;;
                     "make "*) [[ " $c " == *" integration-test-failure "* ]] && fs=1 ;;
                 esac
-            done < <(printf '%s\n' "${raw//$'\037'/$'\n'}" | workflow_shell_lines --raw - | shell_simple_commands)
+            done < <(
+                if [ "$cand" = 1 ]; then
+                    printf '%s\n' "${raw//$'\037'/$'\n'}" | workflow_shell_lines --raw - | shell_simple_commands
+                fi
+                if [ "$use" != - ]; then
+                    workflow_shell_lines --raw "$(action_file "$use")" | shell_simple_commands
+                fi)
         fi
-        printf '%s\t%s\t%s\t%s\t%s\n' "$n" "$ifa" "$cr" "$td" "$fs"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$n" "$ifa" "$cr" "$td" "$fs" "$use"
     done
 }
 
@@ -179,8 +207,22 @@ for f in "${WF_FILES[@]}"; do
         fi
     fi
 
+    while IFS= read -r use; do
+        af=$(action_file "$use") || {
+            echo "::error title=Nothing to inspect::$rel uses ./$use, and $ROOT/$use" \
+                 "holds no action.yml. Its commands would count as none." >&2
+            exit 2
+        }
+        if grep -E "$LOCAL_USES" "$af" >/dev/null; then
+            echo "::error title=Nothing to inspect::$rel uses ./$use, which itself" \
+                 "calls a local action. Its commands would count as none." >&2
+            exit 2
+        fi
+    done < <(step_facts "$f" | cut -f6 | grep -v '^-$')
+
     # --- A. teardown for a lane that installs a plugin -----------------
-    if printf '%s\n' "$body" | grep -F 'docker plugin create' >/dev/null; then
+    if printf '%s\n' "$body" | grep -F 'docker plugin create' >/dev/null ||
+       step_facts "$f" | awk -F '\t' '$3 == 1 { c = 1 } END { exit !c }'; then
         # A TEARDOWN COMES AFTER THE INSTALL, and the ordering is what
         # makes this checkable at all. Every lane here opens its build
         # step with a `docker plugin rm -f` — a PRE-install cleanup of

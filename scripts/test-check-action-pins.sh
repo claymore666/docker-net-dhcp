@@ -40,7 +40,7 @@ run() {
     # SCAN themselves, and the real-tree case at the bottom runs the
     # check bare, which is what exercises the default.
     WORKFLOW_DIR="$TMP/wf" ACTION_SCAN_ROOT="${SCAN:-$TMP/scan}" \
-        bash "$CHECK" > "$TMP/out" 2>&1
+        ACTIONS_DIR="${ACTS:-$TMP/acts}" bash "$CHECK" > "$TMP/out" 2>&1
     local got=$?
     if [ "$got" -ne "$want" ]; then
         echo "FAIL: $name -- want exit $want, got $got"
@@ -1362,6 +1362,33 @@ git -C "$TMP/scan" init -q 2>/dev/null
 printf 'not a composite action\n' > "$TMP/scan/my-action.yml"
 SCAN="$TMP/scan" run "a near miss inside a checkout is not a composite action" 0 "all 1 'uses:'"
 
+# --- the composite actions discovery opens (#746) ---------------------
+# One level under ACTIONS_DIR is judged like a workflow, so the
+# refusal above no longer fires for it and its own pins count. Each case
+# exits 2 on the gate before #746, which refused every composite.
+fresh
+printf 'jobs:\n  x:\n    steps:\n      - uses: ./.github/actions/setup\n' > "$TMP/wf/a.yml"
+mkdir -p "$TMP/scan/.github/actions/setup"
+printf 'runs:\n  using: composite\n  steps:\n    - uses: actions/checkout@v7\n' \
+    > "$TMP/scan/.github/actions/setup/action.yml"
+ACTS="$TMP/scan/.github/actions" SCAN="$TMP/scan" \
+    run "a tag inside a discovered composite action is a violation" 1 "action.yml:4" "actions/checkout@v7"
+fresh
+printf 'jobs:\n  x:\n    steps:\n      - uses: ./.github/actions/setup\n' > "$TMP/wf/a.yml"
+mkdir -p "$TMP/scan/.github/actions/setup"
+printf 'runs:\n  using: composite\n  steps:\n    - uses: actions/checkout@%s\n' "$SHA" \
+    > "$TMP/scan/.github/actions/setup/action.yaml"
+ACTS="$TMP/scan/.github/actions" SCAN="$TMP/scan" \
+    run "a pinned .yaml composite action is judged and passes" 0 "all 2 'uses:'"
+# Two levels down is not where `uses: ./.github/actions/<name>` points,
+# so it stays outside discovery and still refuses.
+fresh
+printf 'jobs:\n  x:\n    steps:\n      - uses: actions/checkout@%s\n' "$SHA" > "$TMP/wf/a.yml"
+mkdir -p "$TMP/scan/.github/actions/group/setup"
+printf 'runs:\n  using: composite\n' > "$TMP/scan/.github/actions/group/setup/action.yml"
+ACTS="$TMP/scan/.github/actions" SCAN="$TMP/scan" \
+    run "a composite action below discovery's depth still refuses" 2 "discovery does not cover it"
+
 # --- the real tree, judged by the same code ---------------------------
 n=$((n + 1))
 if bash "$CHECK" > "$TMP/out" 2>&1; then
@@ -1383,7 +1410,7 @@ fi
 # exits 0, which is a green tick over nothing. The floor is the count
 # this file is known to run; raise it when cases are added, and a
 # deletion has to be deliberate rather than silent.
-FLOOR=82
+FLOOR=85
 if [ "$n" -lt "$FLOOR" ]; then
     echo "REFUSING: ran $n case(s), fewer than the $FLOOR this suite is known to hold."
     echo "  Either cases were lost, or the floor is stale and should be raised with them."
