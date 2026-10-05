@@ -63,7 +63,7 @@ reconcile() {
     printf '| removed |%s\n|---|' "$(printf ' %s |' "${COLUMNS[@]}")"
     printf -- '---|%.0s' "${COLUMNS[@]}"; echo
     for cell in "${all_cells[@]}"; do
-        measured="$(cat "$dir"/*.row 2>/dev/null | grep -E "^CAP_MATRIX_ROW removed=$cell( |$)" || true)"
+        measured="$(find "$dir" -name '*.row' -exec cat {} + 2>/dev/null | grep -E "^CAP_MATRIX_ROW removed=$cell( |$)" || true)"
         n="$(printf '%s' "$measured" | grep -c . || true)"
         if [ "$n" -ne 1 ]; then
             echo "::error title=capability matrix::cell $cell produced $n rows, want 1"
