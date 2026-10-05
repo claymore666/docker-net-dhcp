@@ -172,3 +172,14 @@
     in that release PR; this gate fails on it once the workflow is on the
     default branch.
   Triggers: schedule workflow_dispatch
+
+.github/workflows/pool-live-count.yml
+  Reason: The pool live count (#886) is new on this branch, so neither
+    its daily cron nor a dispatch can start it until it reaches `main`.
+    Until then `bash scripts/check-pool-facts.sh --live`, run by hand
+    with an admin token, is the only comparison of the pool file with
+    the registered runners.
+  Clears: The v2.5.0 release merges `dev` into `main`. Remove this entry
+    in that release PR; this gate fails on it once the workflow is on the
+    default branch.
+  Triggers: schedule workflow_dispatch
