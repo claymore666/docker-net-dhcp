@@ -36,6 +36,9 @@ type EndpointHealth struct {
 	IPv6TemporaryAddress string `json:"ipv6_temporary_address,omitempty"`
 	// NAT64Prefixes are the RFC 8781 PREF64 prefixes of the last IPv6 lease or router event, absent if none (#1028).
 	NAT64Prefixes []string `json:"nat64_prefixes,omitempty"`
+	// The lease's still-valid IA_PD prefixes, and whether one overlapped another endpoint's when granted (#214).
+	DelegatedPrefixes []DelegatedPrefixHealth `json:"delegated_prefixes,omitempty"`
+	PrefixOverlap     bool                    `json:"prefix_overlap,omitempty"`
 	// Server is the DHCP server that granted the lease (option 54).
 	Server string `json:"server,omitempty"`
 	// LastEvent is the v4 client's most recent lifecycle event, such as `bound`, `renew` or `nak`, with its time.
@@ -64,6 +67,7 @@ func (m *dhcpManager) healthView() EndpointHealth {
 	// Its own DHCPv6 record, read before the v4 early returns: the IPv4 lease neither holds nor withdraws it (#927).
 	e.IPv6TemporaryAddress = m.tempV6Address(time.Now())
 	e.NAT64Prefixes = m.nat64Prefixes()
+	e.DelegatedPrefixes, e.PrefixOverlap = m.prefixHealth(time.Now())
 
 	rec, c := m.healthSnapshot()
 	e.LastEvent = rec.event

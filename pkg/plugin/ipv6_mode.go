@@ -100,6 +100,10 @@ func validateIPv6Options(opts DHCPNetworkOptions, set map[string]bool) error {
 			"or ipv6_mode=auto, or drop ipv6_temporary. See issue #927", util.ErrIPAM, mode)
 	}
 
+	if err := validateIPv6PD(opts, set, mode); err != nil {
+		return err
+	}
+
 	// ipv6_iid=stable-privacy shapes the identifier of an address formed from a router advertisement, which off and
 	// dhcp never form, so there it could only do nothing (#1032).
 	iid, err := opts.ipv6IID()
@@ -113,6 +117,30 @@ func validateIPv6Options(opts DHCPNetworkOptions, set map[string]bool) error {
 			"Use ipv6_mode=slaac or ipv6_mode=auto, or drop ipv6_iid. See issue #1032", util.ErrIPAM, mode)
 	}
 
+	return nil
+}
+
+// validateIPv6PD refuses ipv6_pd where no Solicit carries it, and on ipvlan, which shares the parent's link (#214).
+// An empty value never reaches set, so ipv6_pd=0 is the only way to be in set at zero.
+func validateIPv6PD(opts DHCPNetworkOptions, set map[string]bool, mode proto.Mode6) error {
+	if opts.IPv6PD == 0 && !set["IPv6PD"] {
+		return nil
+	}
+	if opts.IPv6PD < 1 || opts.IPv6PD > 128 {
+		return fmt.Errorf("%w: ipv6_pd=%d is not a prefix length; want 1 to 128, such as 64. See issue #214",
+			util.ErrIPAM, opts.IPv6PD)
+	}
+	if mode != proto.Mode6DHCP && mode != proto.Mode6Auto {
+		return fmt.Errorf("%w: ipv6_pd needs an ipv6_mode that sends a DHCPv6 Solicit, and this network is "+
+			"ipv6_mode=%s: the prefix is requested with an IA_PD in the Solicit and the Request (RFC 8415 "+
+			"section 21.21), and this mode sends neither. Use ipv6_mode=dhcp or ipv6_mode=auto, or drop "+
+			"ipv6_pd. See issue #214", util.ErrIPAM, mode)
+	}
+	if opts.effectiveMode() == ModeIPvlan {
+		return fmt.Errorf("%w: ipv6_pd is not supported in mode=ipvlan: the router that delegates the "+
+			"prefix routes it to the endpoint's link-local address, and an ipvlan slave shares the "+
+			"parent's MAC and link. Use mode=bridge or mode=macvlan. See issue #214", util.ErrModeMismatch)
+	}
 	return nil
 }
 
@@ -173,6 +201,8 @@ func (p *Plugin) v6Wiring(base *dhcp.DHCPClientOptions, opts DHCPNetworkOptions,
 		return err
 	}
 	base.MainPrefix6 = main
+	// Every v6 client, the one-shot and the persistent one, passes here, so both ask for the same prefix (#214).
+	base.IPv6PD = opts.IPv6PD
 	// Every DHCPv6 client starts here, and only stable-privacy reads the secret, so an eui64 network never touches the
 	// file (#1032).
 	iid, err := opts.ipv6IID()

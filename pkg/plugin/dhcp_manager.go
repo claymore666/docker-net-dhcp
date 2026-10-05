@@ -91,6 +91,13 @@ type dhcpManager struct {
 	tempV6 v6TempRecord
 	// nat64 is the PREF64 list of the last v6 event with router state (#1028).
 	nat64 []string
+	// delegated is the last v6 lease event's IA_PD prefixes, prefixOverlap whether they overlapped another endpoint's (#214).
+	delegated     []v6PrefixRecord
+	prefixOverlap bool
+	// prefixRoutes is the aggregates this endpoint installed, seeded from its own lease record, which outlives a restart (#214).
+	prefixRoutes map[string]*net.IPNet
+	// prefixNoneLogged says the absence of the asked-for prefix was logged, so a lease without one says so once (#214).
+	prefixNoneLogged bool
 
 	// recordID is the durable lease record (#899); empty in unit tests and adopted endpoints, where record calls no-op.
 	recordID string
@@ -514,6 +521,10 @@ func (m *dhcpManager) renew(v6 bool, info dhcp.Info) error {
 		if err := m.reconcileAdvertisedRoutes(info); err != nil {
 			log.WithError(err).WithFields(m.logFields(v6)).
 				Warn("Failed to reconcile the routes the Router Advertisement asked for")
+		}
+		if err := m.applyPrefixes(info.DelegatedPrefixes); err != nil {
+			log.WithError(err).WithFields(m.logFields(v6)).
+				Warn("Failed to reconcile the delegated prefix routes with the lease")
 		}
 	}
 	if wasLinkLocal && !isLinkLocalAddr(ip) {
@@ -1609,12 +1620,14 @@ func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
 			WithField("ip", event.Data.IP).
 			Warn("This endpoint's IPv6 addresses were formed from a router advertisement and the client no longer holds them")
 	case "leasefail":
+		m.dropPrefixRoutes(v6, "leasefail")
 		// dhcp_timeouts from the library's Failed{ReasonNoServer}, through countOutageTick to keep the policy subset.
 		if m.plugin != nil {
 			m.countOutageTick(v6, m.policyRestricted)
 		}
 		log.WithFields(m.logFields(v6)).Warn("dhcp failed to get a lease")
 	case "nak":
+		m.dropPrefixRoutes(v6, "nak")
 		if m.plugin != nil {
 			bumpFamily(&m.plugin.naksReceivedV4, &m.plugin.naksReceivedV6, v6)
 		}
@@ -1681,6 +1694,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		// The v6 record gives both the preferred address and the DUID; RFC 9915 section 18.2.12's Confirm needs the
 		// DUID the binding was made with (#911).
 		m.recordID6, resumption, identity6 = m.resumeFromRecord6()
+		m.seedPrefixRoutes(resumption.Lease)
 		recordID = m.recordID6
 		preferredV6 = resumption.Prefer
 		if resumption.Lease == nil && preferredV6 == "" {
@@ -2256,6 +2270,10 @@ func (m *dhcpManager) stop(leaving bool) error {
 	neverBoundV6 := false
 	if m.opts.ipv6Enabled() {
 		neverBoundV6 = m.settleFamily(true, lastIPv6, errV6, leaving)
+		// After the drain, so no late event puts one back; a Close keeps them, as the container keeps running (#214).
+		if leaving {
+			m.dropPrefixRoutes(true, "leave")
+		}
 	}
 	if neverBoundV4 || neverBoundV6 {
 		// A one-shot lease is still outstanding for a family and expires on the server's clock (#800); nothing is

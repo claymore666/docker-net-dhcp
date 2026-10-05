@@ -6,12 +6,14 @@ package plugin
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"syscall"
 
 	"github.com/claymore666/dhcp-golib/lease"
 	"github.com/claymore666/dhcp-golib/runtime"
 	log "github.com/sirupsen/logrus"
+	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
@@ -59,23 +61,47 @@ func (m *dhcpManager) releasedAny() bool {
 	return m.releasedV4.Load() || m.releasedV6.Load()
 }
 
-// withdrawV6Address removes the address before a Release, as RFC 9915 section 18.2.7 requires; a missing one is
-// absent already.
-func (m *dhcpManager) withdrawV6Address() error {
-	_, last := m.lastIPs()
-	if last == nil || last.IPNet == nil || last.IP == nil {
-		return nil
-	}
+// withdrawV6Addresses takes the stable address and every address the record's Release names off the link, as RFC 8415
+// section 18.2.7 forbids using a released lease (#214); a missing one is absent already.
+func (m *dhcpManager) withdrawV6Addresses(rec lease.Record) error {
 	if m.netHandle == nil || m.ctrLink == nil {
 		return nil
 	}
-	if err := nlAddrDel(m.netHandle, m.ctrLink, last); err != nil {
-		if errors.Is(err, syscall.EADDRNOTAVAIL) || errors.Is(err, syscall.ENODEV) {
-			return nil
+	for _, addr := range releasedV6LinkAddrs(m, rec) {
+		if err := nlAddrDel(m.netHandle, m.ctrLink, addr); err != nil {
+			if errors.Is(err, syscall.EADDRNOTAVAIL) || errors.Is(err, syscall.ENODEV) {
+				continue
+			}
+			return fmt.Errorf("failed to remove the DHCPv6 address %v before releasing it: %w", addr, err)
 		}
-		return fmt.Errorf("failed to remove the DHCPv6 address %v before releasing it: %w", last, err)
 	}
 	return nil
+}
+
+// releasedV6LinkAddrs lists the address reported to Docker, then the record's IA_NA and IA_TA addresses at the prefix
+// length the plugin installed them with, which is the library's own (#818, #927).
+func releasedV6LinkAddrs(m *dhcpManager, rec lease.Record) []*netlink.Addr {
+	var out []*netlink.Addr
+	seen := make(map[netip.Addr]bool)
+	if _, last := m.lastIPs(); last != nil && last.IPNet != nil {
+		if ip, ok := netip.AddrFromSlice(last.IP); ok {
+			seen[ip.Unmap()] = true
+			out = append(out, last)
+		}
+	}
+	named := []netip.Prefix{rec.Lease.Addr}
+	for _, t := range rec.Lease.TempAddrs {
+		named = append(named, t.Addr)
+	}
+	for _, pfx := range named {
+		ip := pfx.Addr()
+		if !pfx.IsValid() || !ip.Is6() || ip.Is4In6() || ip.IsUnspecified() || seen[ip] {
+			continue
+		}
+		seen[ip] = true
+		out = append(out, &netlink.Addr{IPNet: &net.IPNet{IP: ip.AsSlice(), Mask: net.CIDRMask(pfx.Bits(), 128)}})
+	}
+	return out
 }
 
 // releaseOutcome names why a family's release did or did not leave the host; the counters do not split on it (#962).
@@ -99,8 +125,8 @@ const (
 
 // releaseHeldLease builds the release from the durable record, which holds the used address, identity, chaddr and
 // server even when no client attached (#962). Measured against dnsmasq 2.91: it matches v4 on the client-identifier,
-// else chaddr, and v6 on DUID and IAID, never the source address, so Identity is replayed as sent. The v6 address
-// comes off the link first (RFC 9915 section 18.2.7); a DHCPRELEASE is unicast (RFC 2131 section 4.4.4) and names
+// else chaddr, and v6 on DUID and IAID, never the source address, so Identity is replayed as sent. Every v6 address
+// and prefix route the Release names comes off first (RFC 9915 section 18.2.7); a DHCPRELEASE is unicast (RFC 2131 section 4.4.4) and names
 // the lease by ciaddr (section 3.1), so the v4 address stays.
 func (m *dhcpManager) releaseHeldLease(v6 bool) releaseOutcome {
 	if !v6 && m.onLinkLocal() {
@@ -112,11 +138,18 @@ func (m *dhcpManager) releaseHeldLease(v6 bool) releaseOutcome {
 	}
 
 	if v6 {
-		if err := m.withdrawV6Address(); err != nil {
+		if err := m.withdrawV6Addresses(rec); err != nil {
 			log.WithError(err).WithFields(m.logFields(true)).
 				Warn("Not releasing the DHCPv6 lease: the address could not be taken off the link first, " +
 					"and RFC 9915 section 18.2.7 requires that before the exchange begins")
 			return releaseWithdrawFailed
+		}
+		// An unreachable aggregate forwards nothing; holding the Release for it would strand the lease (RFC 8415 section 18.2.7, #214).
+		m.seedPrefixRoutes(&rec.Lease)
+		if err := m.withdrawPrefixRoutes(); err != nil {
+			log.WithError(err).WithFields(m.logFields(true)).
+				Warn("The delegated prefix route could not be taken out of the container; releasing the lease " +
+					"anyway, since the route only refuses traffic and the prefix is no longer in use")
 		}
 	}
 

@@ -42,6 +42,10 @@ func renderLease(l lease.Lease, r proto.RouterObservation, now time.Time, main n
 	// leaves Lease.Preferred at the zero Time that also means infinite, and the kernel would never mark it deprecated
 	// (RFC 4862 section 5.5.4, #819).
 	fillV6Addrs(&info, l, now, main)
+	_, info.DelegatedPrefixes = v6AddrsAt(l.Prefixes, now)
+	if len(info.DelegatedPrefixes) == 0 {
+		info.DelegatedPrefixes = nil
+	}
 	if l.Gateway.IsValid() && !l.Gateway.IsUnspecified() {
 		info.Gateway = l.Gateway.String()
 	}

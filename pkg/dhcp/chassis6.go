@@ -127,8 +127,9 @@ func newLibClient6(iface string, params proto.Params6, opts *DHCPClientOptions) 
 	cfg := dhcpruntime.ClientConfig6{
 		Interface: iface,
 		Params6:   params,
-		// A resumed binding makes the first message a Confirm (RFC 9915 section 18.2.12, #820).
-		Resume:      opts.Resume,
+		// A resumed binding makes the first message a Confirm, or a Rebind when it holds prefixes (RFC 9915 section
+		// 18.2.12, #820, #214).
+		Resume:      resumeFor(opts.Resume, params.PrefixHint),
 		EventBuffer: eventBuffer,
 	}
 
@@ -162,6 +163,17 @@ func newLibClient6(iface string, params proto.Params6, opts *DHCPClientOptions) 
 		return nil, fmt.Errorf("dhcp: open a DHCPv6 client on %v: %w", opened, cerr)
 	}
 	return client, nil
+}
+
+// resumeFor drops a shared record's prefixes and the server that delegated them, on a copy, when no prefix is asked
+// for, so the client Confirms rather than Rebinds (RFC 8415 section 18.2.12, #214; dhcp-golib#70).
+func resumeFor(r *lease.Lease, prefixHint int) *lease.Lease {
+	if r == nil || prefixHint != 0 || len(r.Prefixes) == 0 {
+		return r
+	}
+	c := *r
+	c.Prefixes, c.PrefixServerDUID = nil, nil
+	return &c
 }
 
 // Router() is zero until the first advertisement, and RFC 9915 section 7.6 gives Solicit no MRC or MRD with SOL_MAX_RT
