@@ -2045,18 +2045,30 @@ be true.</p>
    full debugging session on v1.3.5 (#365). The fix is thirty seconds
    once you know the shape of it.
 7. <strong>Assemble the verification evidence, don't hand-write it.</strong>
-   <div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>scripts/run-evidence.sh<span class="w"> </span><span class="s2">&quot;</span><span class="k">$(</span>git<span class="w"> </span>rev-parse<span class="w"> </span><span class="s1">&#39;HEAD^{tree}&#39;</span><span class="k">)</span><span class="s2">&quot;</span>
+   <div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="nv">sha</span><span class="o">=</span><span class="k">$(</span>git<span class="w"> </span>rev-parse<span class="w"> </span>HEAD<span class="k">)</span><span class="w">   </span><span class="c1"># or the commit a skipped run&#39;s gate names</span>
+<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="k">for</span><span class="w"> </span>id<span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="k">$(</span>gh<span class="w"> </span>run<span class="w"> </span>list<span class="w"> </span>--workflow<span class="w"> </span>integration.yml<span class="w"> </span>--commit<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$sha</span><span class="s2">&quot;</span><span class="w"> </span>--json<span class="w"> </span>databaseId<span class="w"> </span>-q<span class="w"> </span><span class="s1">&#39;.[].databaseId&#39;</span><span class="k">)</span><span class="p">;</span><span class="w"> </span><span class="k">do</span>
+<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="w">  </span>gh<span class="w"> </span>run<span class="w"> </span>view<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$id</span><span class="s2">&quot;</span><span class="w"> </span>--json<span class="w"> </span>databaseId,event,attempt,conclusion,url,jobs<span class="w"> </span>-q<span class="w"> </span><span class="s1">&#39;&quot;\(.databaseId) \(.event) attempt \(.attempt) \(.conclusion) \(.url)\n  suites: \([.jobs[] | select(.name | endswith(&quot;-suite&quot;)) | .conclusion] | group_by(.) | map(&quot;\(length) \(.[0])&quot;) | join(&quot;, &quot;))&quot;&#39;</span>
+<a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="w">  </span><span class="nv">gate</span><span class="o">=</span><span class="k">$(</span>gh<span class="w"> </span>run<span class="w"> </span>view<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$id</span><span class="s2">&quot;</span><span class="w"> </span>--json<span class="w"> </span><span class="nb">jobs</span><span class="w"> </span>-q<span class="w"> </span><span class="s1">&#39;.jobs[] | select(.name == &quot;gate&quot;) | .databaseId&#39;</span><span class="k">)</span>
+<a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a><span class="w">  </span>gh<span class="w"> </span>run<span class="w"> </span>view<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$id</span><span class="s2">&quot;</span><span class="w"> </span>--log<span class="w"> </span>--job<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$gate</span><span class="s2">&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-o<span class="w"> </span>-E<span class="w"> </span><span class="s1">&#39;gate decision: (run|skip)|docs-only diff|already passed integration at [0-9a-f]{40}&#39;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>sed<span class="w"> </span><span class="s1">&#39;s/^/  gate: /&#39;</span>
+<a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a><span class="k">done</span>
 </code></pre></div>
-   Prints every integration run that tested exactly this tree, with its
-   window and what else was on the privileged pool at the time. Paste it
-   into the release PR. Do not reconstruct it from memory.</p>
-<p>Read the overlap line literally. An overlap of <code>none</code>, printed with
-   <code>ran alone</code> after it, and an overlap of <code>unknown</code> are different
-   claims: the second means the concurrent-run list did
-   not reach back far enough to judge, which happens once the repo has
-   been busy since. Do not upgrade an <code>unknown</code> to "ran alone". The
-   v1.4.0 write-up asserted a concurrency caveat that the data did not
-   support, in both directions, which is what #432 was filed about.</p>
+   Lists every integration run on the release PR's head commit with its
+   attempt, its suite jobs by conclusion, and the gate's decision. Paste
+   the output into the release PR. Do not reconstruct it from memory. An
+   empty list is not evidence: wait for the run, or find out why none
+   started.</p>
+<p>A run whose suites read <code>skipped</code> executed nothing, even when the run
+   itself reads <code>success</code>: the gate skipped it (#311, #312). Its gate line
+   says where the code was tested. <code>already passed integration at &lt;commit&gt;</code>
+   means run the command again with <code>sha=&lt;commit&gt;</code>; <code>docs-only diff</code> means
+   run it with the PR's base, <code>gh pr view &lt;N&gt; --json baseRefOid -q
+   .baseRefOid</code>. Repeat until a run shows its suites <code>success</code>, and paste
+   every hop, so the reader can follow the chain from this head to the run
+   that tested the code.</p>
+<p>The x86 pool runs each job in its own ephemeral container with its own
+   Docker daemon, so another run on the pool at the same time does not
+   share a daemon with this one. Do not add a concurrency caveat the data
+   does not show; #432 was filed about a write-up that did.</p>
 <ol>
 <li><strong>Merge the release PR.</strong> Squash or merge commit, both fine;
    match what's in <code>git log</code>.</li>
