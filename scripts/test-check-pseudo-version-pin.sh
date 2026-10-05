@@ -257,6 +257,9 @@ if [ -z "$rstep" ]; then
     failures=$((failures + 1))
 else
     if command grep -qF -- '--ref refs/pin-under-judgement' <<< "$rstep" \
+        && command grep -qF -- 'bash .resolver/scripts/check-pseudo-version-pin.sh' <<< "$rstep" \
+        && command grep -qF -- '--target "$TAG"' <<< "$rstep" \
+        && command grep -qF -- '--event "$GITHUB_EVENT_NAME"' <<< "$rstep" \
         && ! command grep -qE '^\s+(if|continue-on-error):' <<< "$rstep"; then
         echo "PASS: release.yml judges the tag's go.mod from the object database, unconditionally"
     else
@@ -264,7 +267,7 @@ else
     fi
 fi
 rjob=$(awk '/^  resolve:/{f=1;next} /^  [a-z-]+:$/{f=0} f' "$REL")
-if command grep -qF 'scripts/check-pseudo-version-pin.sh' <<< "$rjob" && command grep -qF 'scripts/gatelib.sh' <<< "$rjob" \
+if command grep -qE '^\s+scripts/check-pseudo-version-pin\.sh$' <<< "$rjob" && command grep -qE '^\s+scripts/gatelib\.sh$' <<< "$rjob" \
    && command grep -qF 'Refuse a tag that pins a library commit' <<< "$rjob"; then
     echo "PASS: the pin step lives in resolve, with its two scripts in the sparse checkout"
 else
