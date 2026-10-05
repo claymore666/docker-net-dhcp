@@ -25,19 +25,22 @@
 #   ledger kinds   the literal first argument of audit( and auditFrom( in Go sources
 #
 # PREVIOUS TAG. The highest vX.Y.Z tag with no suffix, so -rcN is never picked,
-# in version order, that is an ancestor of HEAD when the history is complete
-# and whose `## <tag>` heading is in the notes. The CI push event is a depth-1
-# clone (`git fetch --tags --depth=1`): it cannot say what is an ancestor and
-# `git describe` finds nothing there, so the ancestor test is skipped while
-# the repository is shallow; a pull request unshallows it first (the comment
-# budget step), so the test runs there. Names are read with `git show`. A tag
-# with no heading in this tree's notes is a release cut on main and not yet
-# merged back (a hotfix): it is skipped, and the line says so (#856).
+# in version order, that is an ancestor of HEAD and has a `## <tag>` heading in
+# the notes. The CI push event is a depth-1 clone (`git fetch --tags --depth=1`):
+# it cannot say what is an ancestor and `git describe` finds nothing there, so
+# the ancestor test is skipped while the repository is shallow; a pull request
+# unshallows it first (the comment budget step), so the test runs there. Names
+# are read with `git show`. A tag that is not an ancestor is a release cut on
+# another branch (a hotfix) and is skipped with a printed line. An ancestor
+# with no heading is exit 2: skipping it would hide every name it added. Only
+# a shallow clone skips a tag for a missing heading, since it cannot tell the
+# two apart (#856).
 #
 # NOTES REGION. From the first `## v` heading down to the previous tag's
 # heading: every section not yet released. A heading that is not `## v` above
 # the first one is not part of it. A name is mentioned when its whole
-# identifier is inside a backtick span or a fenced block there. A backtick with
+# identifier is inside a backtick span or a fenced block there; a fence closes
+# only on its own character, at least as long. A backtick with
 # no partner in its paragraph makes spans unreadable, so it fails the gate.
 #   changed set empty                        pass, with or without a section
 #   changed set non-empty, no section        fail: a section must be added
@@ -48,8 +51,10 @@
 # sentence says removed or renamed. A name counts on any surface, and a generic
 # word (bound, renew, config, stopped) inside any backtick span of the region
 # satisfies the kind of that name. Labels, options, flags and log lines are
-# not read. A name that a skipped, unmerged tag added and removed is not seen.
-# Refused (exit 2): no stable tag has a heading in the notes, a source
+# not read. A name that a skipped tag added and removed is not seen; a shallow
+# push run skips a tag with no heading, which only the pull request run refuses.
+# Refused (exit 2): no stable tag has a heading in the notes, an ancestor tag
+# without one, a source
 # unreadable or parsing to zero names at either tree, an audit( call whose kind
 # is not a literal, a HealthResponse field with no json tag.
 #
@@ -104,19 +109,19 @@ def previous_tag(lines):
         refuse("no vX.Y.Z release tag resolves here; a shallow clone needs `git fetch --tags --depth=1 origin`, and passing would have compared nothing")
     rc, out, _ = git("rev-parse", "--is-shallow-repository")
     shallow = rc == 0 and out.strip() == "true"
-    top, skipped = None, []
+    skipped = []
     for _, t in tags:
-        if not (shallow or git("merge-base", "--is-ancestor", f"refs/tags/{t}", "HEAD")[0] == 0):
+        merged = git("merge-base", "--is-ancestor", f"refs/tags/{t}", "HEAD")[0] == 0
+        if not (shallow or merged):
+            print(f"check-breaking-names: skipping {t}: not an ancestor of HEAD, a release cut on another branch")
             continue
-        top = top or t
         if heading_at(lines, t) is not None:
-            for s in skipped:
-                print(f"check-breaking-names: skipping {s}: no `## {s}` heading in {NOTES}, a release not merged back into this tree")
             return t
+        if merged:
+            refuse(f"{t} is an ancestor of HEAD but {NOTES} has no `## {t}` heading; a restyled or deleted heading would hide every name it added, so restore it")
+        print(f"check-breaking-names: skipping {t}: no `## {t}` heading in {NOTES}, and a shallow clone cannot say whether it is merged")
         skipped.append(t)
-    if top is None:
-        refuse("no release tag is an ancestor of HEAD")
-    refuse(f"{NOTES} has no `## {top}` heading; without it the unreleased region cannot be told from the released ones")
+    refuse(f"no release tag with a `## <tag>` heading in {NOTES} is usable here" + (f" (skipped {', '.join(skipped)})" if skipped else ""))
 
 
 def heading_at(lines, tag):
@@ -211,13 +216,13 @@ SURFACES = (
 )
 
 
-FENCE = re.compile(r"^\s*(```|~~~)")
+FENCE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
 TICKS = re.compile(r"`+")
 
 
 def mentioned(region, offset):
     """Tokens inside spans and fences, and the unpartnered backticks (line, text)."""
-    tokens, loose, fence, para, start = set(), [], False, [], 0
+    tokens, loose, fence, para, start = set(), [], None, [], 0
 
     def close_paragraph():
         if not para:
@@ -237,11 +242,15 @@ def mentioned(region, offset):
         para.clear()
 
     for n, line in enumerate(region):
-        if FENCE.match(line):
+        f = FENCE.match(line)
+        if fence:
+            if f and f.group(1)[0] == fence[0] and len(f.group(1)) >= fence[1] and not f.group(2).strip():
+                fence = None
+            else:
+                tokens.update(re.findall(r"[A-Za-z0-9_]+", line))
+        elif f and not (f.group(1)[0] == "`" and "`" in f.group(2)):
             close_paragraph()
-            fence = not fence
-        elif fence:
-            tokens.update(re.findall(r"[A-Za-z0-9_]+", line))
+            fence = (f.group(1)[0], len(f.group(1)))
         elif not line.strip():
             close_paragraph()
         else:
