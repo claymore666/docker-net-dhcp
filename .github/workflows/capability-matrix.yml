@@ -26,6 +26,7 @@ on:
       - '.github/actions/install-plugin/action.yml'
       - '.github/actions/teardown-plugin/action.yml'
       - 'scripts/capability-cell.sh'
+      - 'scripts/capability-checks.sh'
       - 'scripts/capability-matrix.sh'
   push:
     branches: [dev, main]
@@ -42,6 +43,7 @@ on:
       - '.github/actions/install-plugin/action.yml'
       - '.github/actions/teardown-plugin/action.yml'
       - 'scripts/capability-cell.sh'
+      - 'scripts/capability-checks.sh'
       - 'scripts/capability-matrix.sh'
   workflow_dispatch:
 

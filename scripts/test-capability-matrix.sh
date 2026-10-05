@@ -210,6 +210,59 @@ else
     bad "a refused strictness printed a mode"
 fi
 
+# The cell's renewal and restart checks over a scripted server log: docker
+# and sleep are stubs, and each stub appends the lines the server would
+# have logged by then (#690 D7, D8).
+ACK1="dnsmasq-dhcp[1]: 555 DHCPACK(cm-mvp) 10.98.1.50 $M1"
+ACK2="dnsmasq-dhcp[1]: 555 DHCPACK(cm-mvp) 10.98.1.51 $M2"
+REQ1="dnsmasq-dhcp[1]: 555 DHCPREQUEST(cm-mvp) 10.98.1.50 $M1"
+DIS1="dnsmasq-dhcp[1]: 555 DHCPDISCOVER(cm-mvp) $M1"
+# drive <label> <exit> <output-fragment> <check> [args]; PRE, ON_STOP,
+# ON_SLEEP1 (the first sleep) and ON_START hold the scripted lines; STOP_RC
+# is the stub stop's exit.
+drive() {
+    local label="$1" want="$2" frag="$3"; shift 3
+    out="$(
+        DLOG="$tmp/drive.log" tick=0
+        : > "$DLOG"
+        put() { [ $# -eq 0 ] || printf '%s\n' "$@" >> "$DLOG"; }
+        put "${PRE[@]}"
+        say() { printf '%s\n' "$*"; }
+        mac_of() { echo "$M1"; }
+        attached() { say "attached $*"; }
+        docker() { case "$1" in stop) put "${ON_STOP[@]}"; return "$STOP_RC" ;; start) put "${ON_START[@]}" ;; esac; }
+        sleep() { tick=$((tick + 1)); [ "$tick" -ne 1 ] || put "${ON_SLEEP1[@]}"; }
+        # shellcheck source=scripts/capability-checks.sh
+        . "$HERE/capability-checks.sh"
+        "$@" 2>&1
+    )"
+    got=$?
+    expect "$label" "$want" "$frag"
+}
+PRE=() ON_STOP=("$ACK1") ON_SLEEP1=() ON_START=("$REQ1" "$ACK1") STOP_RC=0
+drive "restart passes on a quiet stop and an ACK after the start" 0 "attached cm-c-mv" restarted
+STOP_RC=1
+drive "restart refuses a refused stop" 1 "stop refused" restarted
+STOP_RC=0
+ON_SLEEP1=("$ACK1")
+drive "restart refuses an ACK for the MAC while stopped" 1 "acknowledged while stopped" restarted
+ON_SLEEP1=("$ACK2")
+drive "restart ignores another MAC's ACK while stopped" 0 "attached cm-c-mv" restarted
+ON_SLEEP1=() ON_START=()
+drive "restart refuses a start with no ACK after it" 1 "no ACK after the start" restarted
+ON_START=("$REQ1")
+drive "restart refuses a REQUEST with no ACK after the start" 1 "no ACK after the start" restarted
+PRE=("$ACK1") ON_STOP=() ON_SLEEP1=("$REQ1" "$ACK1") ON_START=()
+drive "renewal passes on an ACK after the mark with no DISCOVER" 0 "renewal ACK seen" renewed cm-c-mv "$M1"
+ON_SLEEP1=("$DIS1" "$ACK1")
+drive "renewal refuses a new DISCOVER before the ACK" 1 "a new DHCPDISCOVER" renewed cm-c-mv "$M1"
+ON_SLEEP1=()
+drive "renewal refuses an ACK logged before the check started" 1 "no renewal ACK within 30 s" renewed cm-c-mv "$M1"
+ON_SLEEP1=("$REQ1")
+drive "renewal refuses a REQUEST with no ACK" 1 "no renewal ACK within 30 s" renewed cm-c-mv "$M1"
+ON_SLEEP1=("$ACK2")
+drive "renewal refuses another MAC's ACK" 1 "no renewal ACK within 30 s" renewed cm-c-mv "$M1"
+
 # The cell prints the keys this script declares, so neither can drift alone.
 keys="$(sed -n 's/.*for k in "\${\(COLUMNS\)\[@\]}".*/\1/p' "$CELL")"
 src="$(grep -c 'capability-matrix.sh" --columns' "$CELL")"
