@@ -5,14 +5,26 @@ name: Capability matrix
 # turn, one hosted cell each, eight scenarios per cell judged on outside
 # evidence by scripts/capability-cell.sh. A cell records; only the
 # reconcile job judges, against the table in docs/reference.md.
-# `push` on the measurement's own files because a dispatch-only workflow is
-# unreachable until it is on the default branch (.github/dispatch-pending.txt).
+# `push` because a dispatch-only workflow is unreachable until it is on the
+# default branch (.github/dispatch-pending.txt). The paths are what runs in
+# the plugin and the table judged against, so a change that starts needing
+# another capability fails here (#690). Branches only: a tag push ignores
+# path filters and would re-measure an unchanged tree.
 on:
   push:
+    branches: ['**']
     paths:
       - 'config.json'
+      - 'cmd/**'
+      - 'pkg/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Dockerfile'
+      - 'Makefile'
+      - 'docs/reference.md'
       - '.github/workflows/capability-matrix.yml'
       - '.github/actions/install-plugin/action.yml'
+      - '.github/actions/teardown-plugin/action.yml'
       - 'scripts/capability-cell.sh'
       - 'scripts/capability-matrix.sh'
   workflow_dispatch:

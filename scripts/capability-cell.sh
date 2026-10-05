@@ -20,11 +20,12 @@ LEASES="$LOGDIR/leases" DLOG="$LOGDIR/dnsmasq.log"
 DNS_MARK=10.98.1.53
 IMAGE=alpine:3.22
 declare -A R=()
+mapfile -t COLUMNS < <(bash "$(dirname "$0")/capability-matrix.sh" --columns)
 
 say() { printf '%s\n' "$*"; }
 row() {
     local out="CAP_MATRIX_ROW removed=$REMOVED result=$1" k
-    for k in enables capeff mount bridge macvlan dns user dns_user renew renew_user restart; do
+    for k in "${COLUMNS[@]}"; do
         out+=" $k=${R[$k]:-fail}"
     done
     say "$out"

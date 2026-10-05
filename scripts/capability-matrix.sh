@@ -5,6 +5,7 @@
 # table in docs/reference.md (#690).
 #
 # Usage: capability-matrix.sh --cells-json
+#        capability-matrix.sh --columns
 #        capability-matrix.sh --strip <capability> <config.json>
 #        capability-matrix.sh --reconcile [--strict] <rows-dir>
 # Exit:  0 agrees, 1 disagrees, 2 cannot check.
@@ -119,10 +120,11 @@ reconcile() {
 
 case "${1:-}" in
     --cells-json) cells | jq -R . | jq -cs . ;;
+    --columns) printf '%s\n' "${COLUMNS[@]}" ;;
     --strip)
         [ $# -eq 3 ] || die "--strip <capability> <config.json>"
         capabilities | grep -qxF "$2" || die "$2 is not requested by $CONFIG"
         jq --arg c "$2" '.linux.capabilities -= [$c]' "$3" ;;
     --reconcile) shift; reconcile "$@" ;;
-    *) die "usage: --cells-json | --strip <capability> <config.json> | --reconcile [--strict] <rows-dir>" ;;
+    *) die "usage: --cells-json | --columns | --strip <capability> <config.json> | --reconcile [--strict] <rows-dir>" ;;
 esac
