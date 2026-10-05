@@ -4402,13 +4402,13 @@ already parse it were not told to expect a new type.</p>
 <td><code>engine_version</code></td>
 <td>n/a</td>
 <td>n/a</td>
-<td><em>(v2.1.0+)</em> The Docker Engine version the daemon reported when this plugin process started. It is the value the minimum supported engine is compared against, and the plugin refuses to start below that minimum. Reads <code>unknown</code> when the daemon did not answer at startup, which happens when Docker starts the plugin during its own start-up; the plugin takes the reading again when the daemon answers, and <code>unknown</code> that persists means it never did.</td>
+<td><em>(v2.1.0+)</em> The Docker Engine version the daemon reported when this plugin process started. It is the value the minimum supported engine is compared against, and the plugin refuses to start below that minimum. Reads <code>unknown</code> when the daemon did not answer at startup, which happens when Docker starts the plugin during its own start-up; the plugin takes the reading again when the daemon answers, and <code>unknown</code> that persists means it never did. It also reads <code>unknown</code> beside an <code>api_version</code> below 1.40: the plugin's Docker client cannot ask such an engine for its version, and refuses it on that number.</td>
 </tr>
 <tr>
 <td><code>api_version</code></td>
 <td>n/a</td>
 <td>n/a</td>
-<td><em>(v2.1.0+)</em> The Docker API version this plugin negotiated with that daemon. It is the lower of the two maximums, so it can be below what either side supports, and a socket proxy that pins an old API shows up here. Nothing is refused on it. Reads <code>unknown</code> on the same terms as <code>engine_version</code>.</td>
+<td><em>(v2.1.0+)</em> The Docker API version this plugin negotiated with that daemon. It is the lower of the two maximums, so it can be below what either side supports, and a socket proxy that pins an old API shows up here. Nothing is refused on it except a number below 1.40, the oldest API the plugin's Docker client speaks. Reads <code>unknown</code> on the same terms as <code>engine_version</code>.</td>
 </tr>
 <tr>
 <td><code>uptime_seconds</code></td>
