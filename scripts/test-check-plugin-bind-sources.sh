@@ -22,6 +22,7 @@ mkws() {
     local ws
     guarded_tmpdir ws
     mkdir -p "$ws/scripts" "$ws/.github/workflows"
+    cp -r "$REPO/.github/actions" "$ws/.github/"
     cp "$REPO/$GATE" "$REPO/scripts/workflow-shell-lines.sh" "$REPO/scripts/gatelib.sh" "$ws/scripts/"
     cp "$REPO/Makefile" "$REPO/config.json" "$REPO/config-cover.json" "$ws/"
     # BOTH extensions, or this suite reproduces the very narrowing it is
@@ -55,25 +56,32 @@ check() { # name expected_rc ws [expected_substring]
 # 1. The repo as it stands is clean. If this fails, everything below is noise.
 check "clean repo passes" 0 "$(mkws)" "bind source"
 
+# The shared install every lane calls (#746), and the line in it that
+# derives the bind sources on a root runner.
+ACT=.github/actions/install-plugin/action.yml
+DERIVE='bind_sources \| xargs -r mkdir -p$'
+mutate_act() { # WS SED-SCRIPT: the edit has to have applied
+    cp "$1/$ACT" "$1/before"
+    sed -i -E "$2" "$1/$ACT"
+    if cmp -s "$1/before" "$1/$ACT"; then
+        echo "FAIL: '$2' left $ACT unchanged; re-anchor it"
+        fail=$((fail + 1))
+    fi
+    rm -f "$1/before"
+}
+
 # 2. The exact defect that broke the coverage lane: the manifest-derived line
-#    replaced by the hardcoded one it used to be.
-ws=$(mkws)
-python3 - "$ws" <<'PY'
-import sys, re
-p = sys.argv[1] + "/.github/workflows/coverage.yml"
-s = open(p).read()
-s = re.sub(r"          jq -r '\.mounts.*?xargs -r mkdir -p\n",
-           "          mkdir -p /var/lib/net-dhcp\n", s, flags=re.S)
-open(p, "w").write(s)
-PY
-check "hardcoded mkdir in coverage.yml is caught" 1 "$ws" "/var/lib/dh-capture"
+#    replaced by the hardcoded one it used to be, now judged at the
+#    coverage lane's call of the shared install.
+ws=$(mkws); mutate_act "$ws" "s#^( +)$DERIVE#\1mkdir -p /var/lib/net-dhcp#"
+check "hardcoded mkdir in the shared install is caught for coverage" 1 "$ws" "/var/lib/dh-capture"
 
 # 3. The drift itself: a source added to a manifest that a workflow names its
 #    sources by hand. This is the shape that shipped broken (#662 -> #666).
-ws=$(mkws)
+ws=$(mkws); mutate_act "$ws" "s#^( +)$DERIVE#\1mkdir -p /var/lib/net-dhcp /var/lib/dh-cover /var/lib/dh-capture#"
 jq '.mounts += [{"name":"newstate","description":"x","destination":"/var/lib/newstate","source":"/var/lib/newstate","type":"bind","options":["rbind","rw"]}]' \
     "$ws/config.json" > "$ws/config.json.t" && mv "$ws/config.json.t" "$ws/config.json"
-check "new bind source not created by a literal-mkdir workflow is caught" 1 "$ws" "/var/lib/newstate"
+check "new bind source not created by a literal mkdir is caught" 1 "$ws" "/var/lib/newstate"
 
 # 4. The counterpart, and the reason the fix is a jq line and not a longer
 #    list: the derived form absorbs a new source with no workflow edit.
@@ -131,8 +139,7 @@ jq '.mounts += [{"name":"dotted","description":"x","destination":"/var/lib/net-d
 # The decoy: a literal mkdir of a DIFFERENT directory that the old regex
 # matched because '.' is a metacharacter. In every workflow, or another
 # install's plain mkdir produces the red and a regex passes (#883).
-sed -i -E 's#^( *)(sudo )?mkdir -p /var/lib/net-dhcp$#\1\2mkdir -p /var/lib/net-dhcpXd /var/lib/net-dhcp#' \
-    "$ws"/.github/workflows/*.y*ml
+mutate_act "$ws" "s#^( +)$DERIVE#\1mkdir -p /var/lib/net-dhcpXd /var/lib/net-dhcp#"
 
 # Prove the old check accepted it, so the case below is not a tautology.
 if printf '%s\n' "          mkdir -p /var/lib/net-dhcpXd /var/lib/net-dhcp" \
@@ -196,50 +203,101 @@ mutate_wf() { # WS FILE SED-SCRIPT: the edit has to have applied
     fi
     rm -f "$1/before"
 }
-ws=$(mkws); mutate_wf "$ws" integration.yml 's|^( +)mkdir -p /var/lib/net-dhcp$|\1echo mkdir -p /var/lib/net-dhcp|'
+ALL3='/var/lib/net-dhcp /var/lib/dh-cover /var/lib/dh-capture'
+ws=$(mkws); mutate_act "$ws" "s#^( +)$DERIVE#\1echo mkdir -p $ALL3#"
 check "an echoed mkdir creates nothing" 1 "$ws" "/var/lib/net-dhcp"
-ws=$(mkws); mutate_wf "$ws" integration.yml '\|^ +mkdir -p /var/lib/net-dhcp$|d'
+ws=$(mkws); mutate_act "$ws" "/$DERIVE/d"
 check "control: the mkdir deleted" 1 "$ws" "/var/lib/net-dhcp"
-ws=$(mkws); mutate_wf "$ws" integration.yml 's|^( +)mkdir -p /var/lib/net-dhcp$|\1# jq reads config.json, see #440|'
+ws=$(mkws); mutate_act "$ws" 's|^( +)bind_sources\(\) \{ jq .*$|\1# jq reads config.json, see #440|'
 check "a jq named in a comment derives nothing" 1 "$ws" "/var/lib/net-dhcp"
-ws=$(mkws); mutate_wf "$ws" integration.yml 's|^( +)mkdir -p /var/lib/net-dhcp$|\1echo jq config.json|'
+ws=$(mkws); mutate_act "$ws" 's|^( +)bind_sources\(\) \{ jq .*$|\1bind_sources() { echo jq "${PLUGIN_DIR}/config.json"; }|'
 check "an echoed jq derives nothing" 1 "$ws" "/var/lib/net-dhcp"
-ws=$(mkws); mutate_wf "$ws" coverage.yml 's/xargs -r mkdir -p$/xargs -r echo mkdir -p/'
+ws=$(mkws); mutate_act "$ws" 's/xargs -r mkdir -p$/xargs -r echo mkdir -p/'
 check "a jq whose list reaches no mkdir creates nothing" 1 "$ws" "/var/lib/dh-capture"
-ws=$(mkws); mutate_wf "$ws" coverage.yml 's/\| xargs -r mkdir -p$//'
+ws=$(mkws); mutate_act "$ws" 's/\| xargs -r mkdir -p$//'
 check "control: the xargs mkdir deleted" 1 "$ws" "/var/lib/dh-capture"
 ws=$(mkws)
-for f in "$ws"/.github/workflows/*.y*ml; do
+for f in "$ws"/.github/workflows/*.y*ml "$ws"/.github/actions/*/action.y*ml; do
     sed -i -E 's/^( +)docker plugin create /\1echo docker plugin create /' "$f"
 done
 check "an echoed create is not an install" 1 "$ws" "never inspected"
 ws=$(mkws)
-for f in "$ws"/.github/workflows/*.y*ml; do sed -i -E '/^ +docker plugin create /d' "$f"; done
+for f in "$ws"/.github/workflows/*.y*ml "$ws"/.github/actions/*/action.y*ml; do
+    sed -i -E '/^ +docker plugin create /d' "$f"
+done
 check "control: the creates deleted" 1 "$ws" "never inspected"
-ws=$(mkws); mutate_wf "$ws" integration.yml 's|^( +)mkdir -p /var/lib/net-dhcp$|\1sudo -E mkdir -p /var/lib/net-dhcp|'
+ws=$(mkws); mutate_act "$ws" "s#^( +)$DERIVE#\1sudo -E mkdir -p $ALL3#"
 check "a mkdir behind sudo and its flags still creates" 0 "$ws" "4 plugin install(s)"
-ws=$(mkws); mutate_wf "$ws" coverage.yml 's|^( +)(docker plugin create .*)$|\1\2\n\1echo docker plugin create x plugin|'
+ws=$(mkws); mutate_act "$ws" 's|^( +)(docker plugin create .*)$|\1\2\n\1echo docker plugin create x plugin|'
 check "an echoed create beside a real one is not a second install" 0 "$ws" "4 plugin install(s)"
-ws=$(mkws); mutate_wf "$ws" coverage.yml 's|plugin-cover/config\.json \| xargs|plugin-cover/other.json \| xargs|'
+ws=$(mkws); mutate_act "$ws" 's|\$\{PLUGIN_DIR\}/config\.json|${PLUGIN_DIR}/other.json|'
 check "a jq over another file derives nothing" 1 "$ws" "/var/lib/dh-capture"
 
 
 # 12. A real create in any runnable form is still an install (#883): with
 #     the mkdir deleted each form is red, and an unknown wrapper is red.
-PC='s|^( +)docker plugin create ("\$\{INTEGRATION_PLUGIN_REF\}" plugin)$|'
+PC='s|^( +)docker plugin create ("\$\{PLUGIN_REF\}" "\$\{PLUGIN_DIR\}")$|'
 for form in '\1docker plugin create \2 \|\| exit 1' '\1docker plugin create \2 2>\&1' \
         '\1if ! docker plugin create \2; then exit 1; fi' \
         '\1timeout 120 docker plugin create \2' '\1env FOO=1 docker plugin create \2'; do
-    ws=$(mkws); mutate_wf "$ws" integration.yml "$PC$form|"
+    ws=$(mkws); mutate_act "$ws" "$PC$form|"
     check "form '$form' with its mkdir kept is an install" 0 "$ws" "4 plugin install(s)"
-    ws=$(mkws); mutate_wf "$ws" integration.yml "$PC$form|"
-    mutate_wf "$ws" integration.yml '\|^ +mkdir -p /var/lib/net-dhcp$|d'
+    ws=$(mkws); mutate_act "$ws" "$PC$form|"
+    mutate_act "$ws" "/$DERIVE/d"
     check "form '$form' with its mkdir deleted is red" 1 "$ws" "/var/lib/net-dhcp"
 done
-ws=$(mkws); mutate_wf "$ws" integration.yml "$PC"'\1retry docker plugin create \2|'
+ws=$(mkws); mutate_act "$ws" "$PC"'\1retry docker plugin create \2|'
 check "a create behind an unknown wrapper is red, not skipped" 1 "$ws" "cannot"
-ws=$(mkws); mutate_wf "$ws" integration.yml "$PC"'\1timeout docker plugin create \2|'
+ws=$(mkws); mutate_act "$ws" "$PC"'\1timeout docker plugin create \2|'
 check "a wrapper that swallows the create's own words is red" 1 "$ws" "cannot"
+
+# 13. The shared install is judged at each call, with the caller's dir
+#     (#746). Every case below exits 1 on the gate before this change too,
+#     but only because that gate finds no install at all in this tree;
+#     the needle is what separates a reading from a refusal.
+ws=$(mkws); mutate_wf "$ws" coverage.yml 's|^( +)dir: plugin-cover$|\1dir: plugin-nowhere|'
+check "a call with a dir the Makefile never populates is red" 1 "$ws" "plugin-nowhere"
+ws=$(mkws); mutate_wf "$ws" integration-hosted.yml 's|^( +)dir: plugin$|\1dir: ${{ matrix.dir }}|'
+check "a call whose dir is an expression is red, not skipped" 1 "$ws" "cannot read"
+ws=$(mkws); mutate_wf "$ws" integration-arm64.yml '/^ +dir: plugin$/d'
+check "a call with no dir is red, not skipped" 1 "$ws" "cannot read"
+ws=$(mkws); mutate_act "$ws" 's|^( +)PLUGIN_DIR: .*$|\1PLUGIN_DIR: plugin|'
+check "a template whose dir comes from no input is red" 1 "$ws" "cannot trace"
+ws=$(mkws); mutate_wf "$ws" coverage.yml 's|^( +)uses: \./\.github/actions/install-plugin$|\1uses: "./.github/actions/install-plugin/"|'
+check "a quoted, slash-terminated call is still judged" 0 "$ws" "4 plugin install(s)"
+ws=$(mkws); mutate_wf "$ws" coverage.yml 's|^( +)uses: \./\.github/actions/install-plugin$|\1uses: "./.github/actions/install-plugin/"|'
+mutate_act "$ws" "s#^( +)$DERIVE#\1mkdir -p /var/lib/net-dhcp#"
+check "and its dir is the one judged" 1 "$ws" "/var/lib/dh-capture"
+ws=$(mkws); mutate_wf "$ws" integration-hosted.yml 's|^( +)dir: plugin$|\1dir: "plugin"|'
+check "a quoted dir is read as the dir" 0 "$ws" "4 plugin install(s)"
+ws=$(mkws); mutate_act "$ws" 's#\$\{PLUGIN_DIR\}#$PLUGIN_DIR#g'
+check "an unbraced \$VAR dir is a template too" 0 "$ws" "4 plugin install(s)"
+ws=$(mkws)
+cat >> "$ws/.github/workflows/integration-hosted.yml" <<'YML'
+      - name: a later step's dir belongs to that step
+        uses: ./.github/actions/teardown-plugin
+        with:
+          dir: plugin-nowhere
+YML
+check "a later step's dir is not read into the call" 0 "$ws" "4 plugin install(s)"
+# Beside four judged installs, so the refusal is the only red left.
+ws=$(mkws); cp -r "$ws/$(dirname "$ACT")" "$ws/.github/actions/install-copy"
+sed -i -E 's|^( +)PLUGIN_DIR: .*$|\1PLUGIN_DIR: plugin|' "$ws/.github/actions/install-copy/action.yml"
+check "an untraced template is red even when every call is clean" 1 "$ws" "cannot trace"
+# A variable dir is a template only inside an action: in a workflow
+# nothing supplies it, so it stays an unknown dir.
+ws=$(mkws)
+cat > "$ws/.github/workflows/vardir.yml" <<'YML'
+name: vardir
+on: workflow_dispatch
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - name: install from a dir named by a variable
+        run: docker plugin create "$REF" "${DIR}"
+YML
+check "a variable dir in a workflow is not a template" 1 "$ws" "plugin dir '\${DIR}'"
 echo
 echo "passed: $pass  failed: $fail"
 [ "$fail" -eq 0 ]

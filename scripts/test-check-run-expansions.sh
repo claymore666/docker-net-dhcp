@@ -207,6 +207,35 @@ check "no run: step at all exits 2" 2 "$TMP/norun" \
 # the count explicitly keeps the two conditions apart.
 check "a clean tree reports what it read" 0 "$TMP/safe" "run body/bodies across"
 
+# --- a composite action beside the workflows (#746) -------------------
+# Both cases exit 0 on the gate before #746, which never opened them.
+mkdir -p "$TMP/act/.github/workflows" "$TMP/act/.github/actions/x"
+cp "$TMP/safe/"*.yml "$TMP/act/.github/workflows/"
+cat > "$TMP/act/.github/actions/x/action.yml" <<'YAML'
+inputs:
+  ref:
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: docker plugin create "${{ inputs.ref }}" plugin
+YAML
+check "an input expanded into a composite action's run: is caught" 1 \
+      "$TMP/act/.github/workflows" "actions/x/action.yml"
+cat > "$TMP/act/.github/actions/x/action.yml" <<'YAML'
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: echo "${{ secrets.TOKEN }}"
+YAML
+check "a secret expanded into a composite action's run: is caught" 1 \
+      "$TMP/act/.github/workflows" "actions/x/action.yml"
+mv "$TMP/act/.github/actions/x/action.yml" "$TMP/act/.github/actions/x/action.yaml"
+check "a composite spelled action.yaml is read too" 1 \
+      "$TMP/act/.github/workflows" "actions/x/action.yaml"
+
 # --- the real workflows -----------------------------------------------
 check "the real .github/workflows" 0 "$ROOT/.github/workflows" \
       "none carrying an untrusted value or a secret"

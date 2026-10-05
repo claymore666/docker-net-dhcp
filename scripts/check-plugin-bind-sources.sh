@@ -3,7 +3,9 @@
 # SPDX-License-Identifier: GPL-3.0-only
 
 # Every workflow step that runs `docker plugin create` must first create
-# every /var/lib bind source declared by the manifest it is installing.
+# every /var/lib bind source declared by the manifest it is installing. An
+# install inside a composite action is judged at each step calling it,
+# with that caller's dir (#746).
 #
 # Expires-when: the engine creates a missing plugin bind source instead of
 #   failing docker plugin enable, or no manifest declares one (#440).
@@ -30,6 +32,7 @@ cd "$(dirname "$0")/.."
 
 MAKEFILE=${MAKEFILE:-Makefile}
 WORKFLOW_DIR=${WORKFLOW_DIR:-.github/workflows}
+ACTIONS_DIR=${ACTIONS_DIR:-.github/actions}
 
 command -v jq >/dev/null || { echo "this check needs jq"; exit 2; }
 # shellcheck source=scripts/workflow-shell-lines.sh
@@ -106,6 +109,66 @@ fi
 rc=0
 checked=0
 
+# judge WHERE DIR CMDS: the commands of one install of build dir DIR
+# create every /var/lib bind source DIR's manifest declares.
+judge() {
+    local where=$1 dir=$2 cmds=$3 manifest reads feeds made a src
+    local -a w missing
+    manifest=${MANIFEST[$dir]:-}
+    if [ -z "$manifest" ]; then
+        echo "FAIL: $where installs plugin dir '$dir', which $MAKEFILE"
+        echo "      never populates with a manifest. Either the dir is wrong"
+        echo "      or the Makefile rule that builds it was renamed."
+        rc=1
+        return
+    fi
+    [ -f "$manifest" ] || { echo "FAIL: $where -> missing $manifest"; rc=1; return; }
+
+    # A `jq` reading this step's manifest, fed to `xargs mkdir`, covers
+    # the whole set and keeps covering it when a source is added. Both
+    # must run: a jq named in an echo or a comment creates nothing.
+    reads=0; feeds=0; made=""
+    while read -r -a w; do
+        case "${w[0]:-}" in
+            jq)
+                for a in "${w[@]:1}"; do
+                    if [ "$a" = "$manifest" ] || [ "$a" = "$dir/config.json" ]; then
+                        reads=1
+                    fi
+                done ;;
+            xargs)
+                for a in "${w[@]:1}"; do
+                    [[ "$a" == -* ]] && continue
+                    if [ "$a" = mkdir ]; then feeds=1; fi
+                    break
+                done ;;
+            mkdir) made+=$(printf '%s\n' "${w[@]:1}")$'\n' ;;
+        esac
+    done <<< "$cmds"
+    checked=$((checked + 1))
+    if [ "$reads" -eq 1 ] && [ "$feeds" -eq 1 ]; then
+        return
+    fi
+    missing=()
+    while IFS= read -r src; do
+        [ -n "$src" ] || continue
+        # LITERAL comparison of whole mkdir arguments, not a regex: as
+        # an ERE /var/lib/net-dhcp.d matched /var/lib/net-dhcpXd (#710).
+        # A missing source SIGSEGVs dockerd while the runner reports online.
+        printf '%s\n' "$made" | grep -Fx -- "$src" >/dev/null \
+            || missing+=("$src")
+    done < <(jq -r '.mounts[]? | select(.type=="bind") | .source | select(startswith("/var/lib/"))' "$manifest")
+
+    if [ ${#missing[@]} -gt 0 ]; then
+        echo "FAIL: $where installs $dir (from $manifest) but the step"
+        echo "      never creates: ${missing[*]}"
+        echo "      docker plugin enable will die on 'failed to fulfil mount"
+        echo "      request'. Derive the list from the manifest instead of"
+        echo "      naming sources by hand."
+        rc=1
+    fi
+}
+
 # BOTH EXTENSIONS, because GitHub Actions honours both and this directory
 # already contains one of each. A `*.yml`-only scan does not fail — it
 # reports a clean pass over a corpus it silently made smaller, which is
@@ -115,9 +178,15 @@ checked=0
 # narrowing this glob again goes red instead of quiet.
 shopt -s nullglob
 WF_FILES=("$WORKFLOW_DIR"/*.yml "$WORKFLOW_DIR"/*.yaml)
+ACTION_FILES=("$ACTIONS_DIR"/*/action.yml "$ACTIONS_DIR"/*/action.yaml)
 shopt -u nullglob
 
-for wf in "${WF_FILES[@]}"; do
+# An install in a composite action takes its dir from an input, so it is
+# judged once per call site with the caller's dir in place of the
+# variable (#746). Keyed "file:line"; the value is the create's variable.
+declare -A TEMPLATE_VAR=() TEMPLATE_CMDS=()
+
+for wf in "${WF_FILES[@]}" "${ACTION_FILES[@]}"; do
     # Walk the file, remembering where the current step began, so the window
     # we search for mkdir lines is exactly the step doing the create.
     step_start=1
@@ -149,61 +218,51 @@ for wf in "${WF_FILES[@]}"; do
             esac
         done < <(printf '%s\n' "$cmds" | tail -n "+$((before + 1))")
         [ -n "$dir" ] || continue
-        manifest=${MANIFEST[$dir]:-}
-        if [ -z "$manifest" ]; then
-            echo "FAIL: $wf:$lineno installs plugin dir '$dir', which $MAKEFILE"
-            echo "      never populates with a manifest. Either the dir is wrong"
-            echo "      or the Makefile rule that builds it was renamed."
-            rc=1
+        if [[ "$wf" == "$ACTIONS_DIR"/* && "$dir" =~ ^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$ ]]; then
+            TEMPLATE_VAR["$wf:$lineno"]=${BASH_REMATCH[1]}
+            TEMPLATE_CMDS["$wf:$lineno"]=$cmds
             continue
         fi
-        [ -f "$manifest" ] || { echo "FAIL: $wf:$lineno -> missing $manifest"; rc=1; continue; }
-
-        # A `jq` reading this step's manifest, fed to `xargs mkdir`, covers
-        # the whole set and keeps covering it when a source is added. Both
-        # must run: a jq named in an echo or a comment creates nothing.
-        reads=0; feeds=0; made=""
-        while read -r -a w; do
-            case "${w[0]:-}" in
-                jq)
-                    for a in "${w[@]:1}"; do
-                        if [ "$a" = "$manifest" ] || [ "$a" = "$dir/config.json" ]; then
-                            reads=1
-                        fi
-                    done ;;
-                xargs)
-                    for a in "${w[@]:1}"; do
-                        [[ "$a" == -* ]] && continue
-                        if [ "$a" = mkdir ]; then feeds=1; fi
-                        break
-                    done ;;
-                mkdir) made+=$(printf '%s\n' "${w[@]:1}")$'\n' ;;
-            esac
-        done <<< "$cmds"
-        if [ "$reads" -eq 1 ] && [ "$feeds" -eq 1 ]; then
-            checked=$((checked + 1))
-            continue
-        fi
-        missing=()
-        while IFS= read -r src; do
-            [ -n "$src" ] || continue
-            # LITERAL comparison of whole mkdir arguments, not a regex: as
-            # an ERE /var/lib/net-dhcp.d matched /var/lib/net-dhcpXd (#710).
-            # A missing source SIGSEGVs dockerd while the runner reports online.
-            printf '%s\n' "$made" | grep -Fx -- "$src" >/dev/null \
-                || missing+=("$src")
-        done < <(jq -r '.mounts[]? | select(.type=="bind") | .source | select(startswith("/var/lib/"))' "$manifest")
-
-        if [ ${#missing[@]} -gt 0 ]; then
-            echo "FAIL: $wf:$lineno installs $dir (from $manifest) but the step"
-            echo "      never creates: ${missing[*]}"
-            echo "      docker plugin enable will die on 'failed to fulfil mount"
-            echo "      request'. Derive the list from the manifest instead of"
-            echo "      naming sources by hand."
-            rc=1
-        fi
-        checked=$((checked + 1))
+        judge "$wf:$lineno" "$dir" "$cmds"
     done < "$wf"
+done
+
+# Each template, at each step that calls its action: the variable's input
+# traced through the action's env, and the caller's value for it.
+for key in "${!TEMPLATE_VAR[@]}"; do
+    af=${key%:*}; var=${TEMPLATE_VAR[$key]}
+    input=$(sed -nE "s/^[[:space:]]+$var:[[:space:]]*\\\$\{\{[[:space:]]*inputs\.([A-Za-z0-9_-]+)[[:space:]]*\}\}[[:space:]]*\$/\1/p" "$af" | head -n 1)
+    if [ -z "$input" ]; then
+        echo "FAIL: $key creates from \$$var, which this gate cannot trace to"
+        echo "      one of the action's inputs, so no caller's dir can be judged."
+        rc=1
+        continue
+    fi
+    for wf in "${WF_FILES[@]}"; do
+        while IFS=$'\t' read -r at val; do
+            if ! [[ "$val" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+                echo "FAIL: $wf:$at calls ${af%/action.y*ml} with $input '$val'," \
+                     "which this gate cannot read as a build dir."
+                rc=1
+                continue
+            fi
+            body=${TEMPLATE_CMDS[$key]//"\${$var}"/$val}
+            body=$(printf '%s\n' "$body" | sed -E "s#\\\$$var([^A-Za-z0-9_]|\$)#$val\\1#g")
+            judge "$wf:$at (via $key)" "$val" "$body"
+        done < <(awk -v act="${af%/action.y*ml}" -v inp="$input" '
+            function flush() { if (hit) print at "\t" val; hit = 0; val = "" }
+            /^[[:space:]]*-[[:space:]]/ { flush() }
+            /^[[:space:]]*(-[[:space:]]+)?uses:/ {
+                u = $0; sub(/^[^:]*:[[:space:]]*/, "", u); gsub(/["\047]/, "", u)
+                sub(/[[:space:]]+$/, "", u); sub(/\/$/, "", u); sub(/^\.\//, "", u)
+                if (u == act) { hit = 1; at = NR }
+            }
+            $0 ~ ("^[[:space:]]+" inp ":") {
+                v = $0; sub(/^[^:]*:[[:space:]]*/, "", v); gsub(/["\047]/, "", v)
+                sub(/[[:space:]]+$/, "", v); val = v
+            }
+            END { flush() }' "$wf")
+    done
 done
 
 if [ "$checked" -eq 0 ]; then
