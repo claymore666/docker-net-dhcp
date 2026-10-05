@@ -695,8 +695,10 @@ func TestIPAMListedMACs_OneUnreadableEntryPoisonsTheAnswer(t *testing.T) {
 		containers map[string]dNetwork.EndpointResource
 		// engineJSON is decoded by the real client instead; its refusal is the whole set's refusal (#178).
 		engineJSON string
-		want       int
-		ok         bool
+		// decodeFails names the one row whose refusal is the client's; every other engine row must decode (#178).
+		decodeFails bool
+		want        int
+		ok          bool
 	}{
 		{name: "an empty network", containers: map[string]dNetwork.EndpointResource{}, want: 0, ok: true},
 		{
@@ -722,9 +724,10 @@ func TestIPAMListedMACs_OneUnreadableEntryPoisonsTheAnswer(t *testing.T) {
 			ok:         false,
 		},
 		{
-			name:       "one entry carries a hardware address that cannot be read",
-			engineJSON: `{"Id":"net","Containers":{"a":{"MacAddress":"02:00:00:00:00:01"},"b":{"MacAddress":"zz"}}}`,
-			ok:         false,
+			name:        "one entry carries a hardware address that cannot be read",
+			engineJSON:  `{"Id":"net","Containers":{"a":{"MacAddress":"02:00:00:00:00:01"},"b":{"MacAddress":"zz"}}}`,
+			decodeFails: true,
+			ok:          false,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -732,7 +735,9 @@ func TestIPAMListedMACs_OneUnreadableEntryPoisonsTheAnswer(t *testing.T) {
 			var ok bool
 			if tc.engineJSON == "" {
 				got, ok = ipamListedMACs(tc.containers)
-			} else if res, err := inspectThroughClient(t, tc.engineJSON); err == nil {
+			} else if res, err := inspectThroughClient(t, tc.engineJSON); (err != nil) != tc.decodeFails {
+				t.Fatalf("the client's decode error = %v, want a decode failure: %v", err, tc.decodeFails)
+			} else if err == nil {
 				got, ok = ipamListedMACs(res.Network.Containers)
 			}
 			if ok != tc.ok {
