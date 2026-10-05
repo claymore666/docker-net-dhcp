@@ -224,6 +224,45 @@ want_in "no target is cannot-judge" 2 "--target is required" --event push
 want_in "an unknown flag is cannot-judge" 2 "unknown argument" --event push --target main --bogus
 want_in "a flag without a value is cannot-judge" 2 "wants a value" --event
 
+# yaml_judge FILE JOB STEP-NAME EXPECTED-YAML: the parsed step equals the
+# expected one key for key (a text comparison stops at a blank line, a
+# parse does not), the job carries no key that skips or ignores its steps,
+# and no checkout or setup-go step of the job is conditional or advisory
+# (#1228). Prints PASS/FAIL lines; fails when it cannot parse.
+yaml_judge() {
+    local out
+    out=$(PIN_EXPECTED="$4"$'\n' python3 - "$1" "$2" "$3" <<'PY'
+import os, sys, yaml
+path, job, name = sys.argv[1:4]
+want = yaml.safe_load(os.environ["PIN_EXPECTED"])[0]
+doc = yaml.safe_load(open(path))
+j = (doc.get("jobs") or {}).get(job)
+if j is None:
+    print(f"FAIL: {path} has no job {job}"); sys.exit(0)
+bad = sorted(k for k in ("if", "continue-on-error", "strategy", "defaults") if k in j)
+print(f"FAIL: job {job} carries {bad}, which skips or ignores its steps" if bad
+      else f"PASS: job {job} carries no skipping or advisory key")
+steps = j["steps"]
+hit = [s for s in steps if s.get("name") == name]
+if len(hit) != 1:
+    print(f"FAIL: {len(hit)} steps named {name!r} in job {job}")
+elif hit[0] == want:
+    print(f"PASS: {job}: step {name!r} parses to exactly the judged keys")
+else:
+    extra = sorted(set(hit[0]) - set(want)); gone = sorted(set(want) - set(hit[0]))
+    diff = sorted(k for k in want if k in hit[0] and hit[0][k] != want[k])
+    print(f"FAIL: {job}: step {name!r} differs after parsing (extra keys {extra}, missing {gone}, changed {diff})")
+for s in steps:
+    if str(s.get("uses", "")).startswith(("actions/checkout@", "actions/setup-go@")):
+        k = sorted(x for x in ("if", "continue-on-error") if x in s)
+        print(f"FAIL: {job}: {s['uses'].split('@')[0]} step carries {k}" if k
+              else f"PASS: {job}: {s['uses'].split('@')[0]} step runs unconditionally")
+PY
+    ) || { echo "FAIL: yaml_judge could not parse $1"; failures=$((failures + 1)); return; }
+    printf '%s\n' "$out"
+    failures=$((failures + $(command grep -c '^FAIL' <<< "$out" || true)))
+}
+
 # --- wiring: the workflow must hand the gate what it judges on ---------
 WF="$HERE/../.github/workflows/test.yaml"
 if command grep -qE '^    types: \[.*ready_for_review.*\]' "$WF"; then
@@ -237,8 +276,9 @@ fi
 # API answer; nothing may follow the read that rewrites it; no trap or
 # option may turn a refusal into a pass. Any edit to a line, including one
 # that lints and passes every case above, is red. A deliberate change to
-# the step is made here in the same commit. The step ends at its first
-# blank line.
+# the step is made here in the same commit. The text stops at the first
+# blank line, so yaml_judge compares the parsed step as well: a key added
+# after a blank line still lands on the step.
 step=$(awk '/- name: Refuse a pseudo-version pin/{f=1} f&&/^$/{exit} f{print}' "$WF")
 expected=$(cat <<'PIN_STEP'
       - name: Refuse a pseudo-version pin outside a draft pull request
@@ -261,6 +301,7 @@ expected=$(cat <<'PIN_STEP'
             --event "$EVENT" --target "$TARGET" --draft "$draft"
 PIN_STEP
 )
+yaml_judge "$WF" policy-gates 'Refuse a pseudo-version pin outside a draft pull request' "$expected"
 if [ -z "$step" ]; then
     echo "FAIL: test.yaml no longer has the pin step"; failures=$((failures + 1))
 elif [ "$step" = "$expected" ]; then
@@ -272,21 +313,21 @@ else
 fi
 
 REL="$HERE/../.github/workflows/release.yml"
-rstep=$(awk '/- name: Refuse a tag that pins a library commit/{f=1} f{print} f&&/--tree .resolver/{exit}' "$REL")
-if [ -z "$rstep" ]; then
-    echo "FAIL: release.yml no longer runs the pin gate on the tag; an rc cut from dev could ship a pin"
-    failures=$((failures + 1))
-else
-    if command grep -qF -- '--ref refs/pin-under-judgement' <<< "$rstep" \
-        && command grep -qF -- 'bash .resolver/scripts/check-pseudo-version-pin.sh' <<< "$rstep" \
-        && command grep -qF -- '--target "$TAG"' <<< "$rstep" \
-        && command grep -qF -- '--event "$GITHUB_EVENT_NAME"' <<< "$rstep" \
-        && ! command grep -qE '^\s+(if|continue-on-error):' <<< "$rstep"; then
-        echo "PASS: release.yml judges the tag's go.mod from the object database, unconditionally"
-    else
-        echo "FAIL: the release pin step is conditional, or reads something other than the fetched tag"; failures=$((failures + 1))
-    fi
-fi
+rexpected=$(cat <<'RELEASE_PIN_STEP'
+      - name: Refuse a tag that pins a library commit
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          REF: ${{ steps.tag.outputs.ref }}
+        run: |
+          set -euo pipefail
+          git -C .resolver fetch --depth=1 --no-tags origin \
+            "+${REF}:refs/pin-under-judgement"
+          bash .resolver/scripts/check-pseudo-version-pin.sh \
+            --event "$GITHUB_EVENT_NAME" --target "$TAG" \
+            --tree .resolver --ref refs/pin-under-judgement
+RELEASE_PIN_STEP
+)
+yaml_judge "$REL" resolve 'Refuse a tag that pins a library commit' "$rexpected"
 rjob=$(awk '/^  resolve:/{f=1;next} /^  [a-z-]+:$/{f=0} f' "$REL")
 if command grep -qE '^\s+scripts/check-pseudo-version-pin\.sh$' <<< "$rjob" && command grep -qE '^\s+scripts/gatelib\.sh$' <<< "$rjob" \
    && command grep -qF 'Refuse a tag that pins a library commit' <<< "$rjob"; then
