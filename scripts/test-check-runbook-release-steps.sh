@@ -282,6 +282,21 @@ swap_chain_order() {
 run "a chain out of workflow order fails" \
     1 swap_chain_order none "out of order"
 
+# Preservation: prose with an arrow and one step name in it is not a chain
+# of that job, so it is not judged as one.
+prose_arrow_with_one_step() {
+    sed -i '1a\\nIf it hangs, read in turn: Install cosign → the runner logs.' "$1"
+}
+run "a prose arrow sharing one step name is not judged as a chain" \
+    0 prose_arrow_with_one_step none
+
+# Triggers sit at a job's indent under `on:`; they are not jobs.
+add_unnamed_trigger() {
+    sed -i 's/^  workflow_dispatch:$/  repository_dispatch:\n    types: [rebuild]\n  workflow_dispatch:/' "$1"
+}
+run "a trigger the page never names is not demanded as a job" \
+    0 none add_unnamed_trigger
+
 drop_promote_chain() {
     python3 - "$1" <<'PY'
 import sys
@@ -321,7 +336,7 @@ open(p, "w").write(s)
 PY
 }
 run "an arm64 job reaching release through needs fails" \
-    1 none arm_proof_reaches_release "verify-install-arm64"
+    1 none arm_proof_reaches_release "'verify-install-arm64' is in the arm64 chain and reaches 'release'"
 
 arm_job_without_suffix() {
     python3 - "$1" <<'PY'
@@ -336,7 +351,21 @@ open(p, "w").write(s)
 PY
 }
 run "an arm64 job without the suffix that waits on release fails" \
-    1 none arm_job_without_suffix "'smoke' runs on arm64"
+    1 none arm_job_without_suffix "'smoke' is in the arm64 chain"
+
+# The other key: an arm64-tag job on an amd64 runner is still in the chain.
+arm_suffix_on_amd64_runner() {
+    python3 - "$1" <<'PY'
+import re, sys
+p = sys.argv[1]; s = open(p).read()
+s, n = re.subn(r"(\n  verify-install-hub-alias-arm64:\n)    needs: \[[^\]]*\]\n    runs-on: [^\n]*\n",
+               r"\1    needs: [release, release-arm64]\n    runs-on: ubuntu-latest\n", s)
+assert n == 1
+open(p, "w").write(s)
+PY
+}
+run "an -arm64 job on an amd64 runner that waits on release fails" \
+    1 none arm_suffix_on_amd64_runner "'verify-install-hub-alias-arm64' is in the arm64 chain"
 
 block_needs() {
     python3 - "$1" <<'PY'
@@ -366,6 +395,23 @@ run "a workflow with no arm64 job is a refusal" \
 rename_release_job() { sed -i 's/^  release:$/  release-amd64:/' "$1"; }
 run "a workflow with no job named release fails" \
     1 none rename_release_job "no job named 'release'"
+
+# The other half: a proof that stops waiting on the build it installs.
+arm_proof_skips_its_build() {
+    python3 - "$1" <<'PY'
+import re, sys
+p = sys.argv[1]; s = open(p).read()
+s, n = re.subn(r"(\n  verify-install-arm64:\n    needs: )\[[^\]]*\]", r"\1[resolve]", s)
+assert n == 1
+open(p, "w").write(s)
+PY
+}
+run "an arm64 proof that does not wait on release-arm64 fails" \
+    1 none arm_proof_skips_its_build "can run before the arm64 tag exists"
+
+rename_arm_build() { sed -i 's/^  release-arm64:$/  build-arm64:/' "$1"; }
+run "a workflow with no job named release-arm64 fails" \
+    1 none rename_arm_build "no job named 'release-arm64'"
 
 echo
 echo "passed: $pass  failed: $fail"

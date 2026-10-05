@@ -55,10 +55,11 @@
 #      by its action (`checkout`). Rule 2 reads one way only, so a ghost
 #      step and a step from another job passed it (#799).
 #
-#   6. THE ARM64 CHAIN DOES NOT WAIT ON `release`. No job that ends in
-#      `-arm64` or runs on an arm host reaches `release` through
-#      `needs:`, so an amd64 failure cannot leave an arm64 tag published
-#      with its install proofs skipped (#799).
+#   6. THE ARM64 CHAIN WAITS ON `release-arm64`, NEVER ON `release`.
+#      Every job that ends in `-arm64` or runs on an arm host reaches
+#      `release-arm64` through `needs:` and none reaches `release`, so
+#      an amd64 failure cannot leave an arm64 tag published with its
+#      install proofs skipped (#799).
 #
 # Usage: bash scripts/check-runbook-release-steps.sh [runbook] [workflow]
 # Exit:  0 the walkthrough matches the workflow
@@ -286,22 +287,26 @@ for job in walked:
         findings.append("%s gives no step chain (`A → B → ...`) for the walked "
                         "job '%s'." % (runbook_path, job))
 
-# 6. the arm64 chain never waits on the amd64 build
-if "release" not in jobs:
-    findings.append("%s has no job named 'release', so rule 6 cannot say "
-                    "which job the arm64 chain must not wait on." % workflow_path)
-else:
-    for j in arm:
-        seen, todo = {j}, [j]
-        while todo:
-            for n in needs.get(todo.pop(), []):
-                if n not in seen:
-                    seen.add(n)
-                    todo.append(n)
-        if "release" in seen:
-            findings.append("job '%s' runs on arm64 and reaches 'release' "
-                            "through needs:, so an amd64 failure skips it after "
-                            "the arm64 tag is published." % j)
+# 6. the arm64 chain waits on the arm64 build and never on the amd64 one
+for b in ("release", "release-arm64"):
+    if b not in jobs:
+        findings.append("%s has no job named '%s', which rule 6 orders the "
+                        "arm64 chain against." % (workflow_path, b))
+for j in arm:
+    seen, todo = {j}, [j]
+    while todo:
+        for n in needs.get(todo.pop(), []):
+            if n not in seen:
+                seen.add(n)
+                todo.append(n)
+    if "release" in seen:
+        findings.append("job '%s' is in the arm64 chain and reaches 'release' "
+                        "through needs:, so an amd64 failure skips it after "
+                        "the arm64 tag is published." % j)
+    if "release-arm64" not in seen:
+        findings.append("job '%s' is in the arm64 chain and does not reach "
+                        "'release-arm64' through needs:, so it can run before "
+                        "the arm64 tag exists." % j)
 
 print("WALKED\t" + " ".join(walked))
 for f in findings:
@@ -327,4 +332,4 @@ fi
 
 walked=$(printf '%s\n' "$report" | sed -n 's/^WALKED\t//p')
 echo "OK: $RUNBOOK walks $walked step for step and in order, names every job," \
-     "states the counts $WORKFLOW derives, and its arm64 chain does not wait on release."
+     "states the counts $WORKFLOW derives, and its arm64 chain waits on release-arm64, not release."
