@@ -413,6 +413,91 @@ rename_arm_build() { sed -i 's/^  release-arm64:$/  build-arm64:/' "$1"; }
 run "a workflow with no job named release-arm64 fails" \
     1 none rename_arm_build "no job named 'release-arm64'"
 
+# Two spellings the line reader once skipped (#799 review): a quoted
+# entry, and a scalar with a trailing comment one hop away.
+quoted_release_in_arm_needs() {
+    python3 - "$1" <<'PY'
+import re, sys
+p = sys.argv[1]; s = open(p).read()
+s, n = re.subn(r"(\n  verify-install-arm64:\n    needs: )\[[^\]]*\]",
+               r"\1['release', release-arm64]", s)
+assert n == 1
+open(p, "w").write(s)
+PY
+}
+run "an arm64 proof naming release in quotes fails" \
+    1 none quoted_release_in_arm_needs "'verify-install-arm64' is in the arm64 chain and reaches 'release'"
+
+commented_scalar_on_the_path() {
+    python3 - "$1" <<'PY'
+import re, sys
+p = sys.argv[1]; s = open(p).read()
+s, n = re.subn(r"(\n  verify-install-hub-arm64:\n    needs: )\[[^\]]*\]",
+               r"\1[resolve, verify-install, release-arm64]", s)
+assert n == 1
+old = "\n  verify-install:\n    needs: release\n"
+assert s.count(old) == 1
+s = s.replace(old, "\n  verify-install:\n    needs: release  # amd64 proof\n")
+open(p, "w").write(s)
+PY
+}
+run "an arm64 proof reaching release through a commented needs: fails" \
+    1 none commented_scalar_on_the_path "'verify-install-hub-arm64' is in the arm64 chain and reaches 'release'"
+
+anchor_needs() {
+    sed -i 's/^    needs: release$/    needs: *amd64/' "$1"
+}
+run "a needs: that is an anchor is a refusal" \
+    2 none anchor_needs "cannot read"
+
+multiline_flow_needs() {
+    sed -i 's/^    needs: \[resolve, release-arm64\]$/    needs: [resolve,\n            release-arm64]/' "$1"
+}
+run "a needs: list over several lines is a refusal" \
+    2 none multiline_flow_needs "cannot read"
+
+# The chain threshold: two real steps make a chain, so its ghost is seen.
+ghost_after_two_steps() {
+    sed -i '1a\\nOn a retry, read in turn: Install crane → Log in to GHCR → Wave a flag.' "$1"
+}
+run "a chain of two real steps and a ghost fails" \
+    1 ghost_after_two_steps none "'Wave a flag'"
+
+# The rc watch list says every job; github-release was left out of it.
+watch_list_drops_a_job() {
+    python3 - "$1" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+old = ", and\n**github-release**, which publishes an rc as a draft (#469)."
+assert s.count(old) == 1
+s = s.replace(old, ".")
+open(p, "w").write(s)
+PY
+}
+run "an rc watch list leaving out a job fails" \
+    1 watch_list_drops_a_job none "leaves out 'github-release'"
+
+no_watch_list() { sed -i 's/every job must be green:/watch these:/' "$1"; }
+run "a page with no rc watch list fails" \
+    1 no_watch_list none "has 0 paragraphs saying 'every job must be green'"
+
+two_watch_lists() { sed -i '1a\\nOn a re-run, every job must be green as well.' "$1"; }
+run "a page with two rc watch lists fails" \
+    1 two_watch_lists none "has 2 paragraphs saying 'every job must be green'"
+
+# In the watch list too a job counts only emphasised: plain `release`
+# is also a word, and inside `release-arm64`.
+watch_list_plain_release() {
+    sed -i 's/^\*\*production-shape\*\* (both builds wait on it), \*\*release\*\* and$/**production-shape** (both builds wait on it), release and/' "$1"
+}
+run "an rc watch list naming a job only as a plain word fails" \
+    1 watch_list_plain_release none "leaves out 'release'"
+
+# Preservation: the claim is found across a line wrap.
+watch_list_wrapped() { sed -i 's/every job must be green:/every job must\nbe green:/' "$1"; }
+run "an rc watch list wrapped mid-claim is still read" \
+    0 watch_list_wrapped none
+
 echo
 echo "passed: $pass  failed: $fail"
 [ "$fail" -eq 0 ]

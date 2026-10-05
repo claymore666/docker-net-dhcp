@@ -320,11 +320,12 @@ Watch the run; every job must be green: **resolve**, since #1014
 **production-shape** (both builds wait on it), **release** and
 **verify-install**, since v1.7.0
 **release-arm64** / **verify-install-arm64**, since #776
-**verify-install-hub** / **verify-install-hub-arm64**, and since #972
+**verify-install-hub** / **verify-install-hub-arm64**, since #972
 **verify-install-hub-alias** / **verify-install-hub-alias-arm64**,
-and since #736 **promote-latest**, which an rc now reaches. Its last step,
-*Assert a pre-release did not move :latest*, is the one that proves the
-dry-run stayed a dry-run.
+since #736 **promote-latest**, which an rc now reaches, and
+**github-release**, which publishes an rc as a draft (#469). The last
+step of promote-latest, *Assert a pre-release did not move :latest*, is
+the one that proves the dry-run stayed a dry-run.
 
 **The rc tag also starts the arm64 integration lane** (#531): pushing
 it triggers `integration-arm64` on its own. Nothing to dispatch, and

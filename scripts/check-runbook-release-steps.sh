@@ -37,11 +37,13 @@
 #      gate that could not read its own documentation's formatting would
 #      be answered by unwrapping the prose.
 #
-#   3. EVERY JOB IS NAMED, and every `verify-install*` name on the page
-#      is a job in the workflow. A job counts as named only emphasised
-#      (`**job**`, `*job*` or a code span): `release` and `resolve` are
-#      also plain words. `resolve` and then `production-shape` went
-#      unnamed while this rule covered install proofs only (#799).
+#   3. EVERY JOB IS NAMED, in the page and in its rc watch list (the one
+#      paragraph saying "every job must be green"), and every
+#      `verify-install*` name on the page is a job in the workflow. A job
+#      counts as named only emphasised (`**job**`, `*job*` or a code
+#      span): `release` and `resolve` are also plain words. `resolve` and
+#      then `production-shape` went unnamed while this rule covered
+#      install proofs only (#799).
 #
 #   4. THE COUNTS ARE THE DERIVED COUNTS. The page tells a releaser how
 #      many jobs `promote-latest` and `github-release` wait on. Those
@@ -65,8 +67,8 @@
 # Exit:  0 the walkthrough matches the workflow
 #        1 a step, a job or a count disagrees
 #        2 CANNOT JUDGE -- a file is unreadable, no job is declared
-#          walked, no arm64 job exists, or a `needs:` is in block form,
-#          each of which would make a rule vacuous
+#          walked, no arm64 job exists, or a `needs:` is not a plain
+#          list of job names, each of which would make a rule vacuous
 set -uo pipefail
 # shellcheck source=scripts/gatelib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
@@ -93,9 +95,7 @@ wf_lines = open(workflow_path, encoding="utf-8").read().split("\n")
 JOB   = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
 STEP  = re.compile(r"^      - name:\s*(.+?)\s*$")
 USES  = re.compile(r"^      - uses:\s*([^@\s]+)")
-NEEDS = re.compile(r"^    needs:\s*\[(.*)\]\s*$")
-NEED1 = re.compile(r"^    needs:\s*([A-Za-z0-9_-]+)\s*$")
-NEEDB = re.compile(r"^    needs:\s*$")
+NEEDK = re.compile(r"^    needs:(.*)$")
 RUNS  = re.compile(r"^    runs-on:\s*(.+?)\s*$")
 MARK  = re.compile(r"^\s*#\s*runbook-walkthrough:")
 STALE = re.compile(r"<!--\s*release-walkthrough:")
@@ -114,7 +114,7 @@ STALE = re.compile(r"<!--\s*release-walkthrough:")
 # `on:` puts its triggers at the same indent as jobs, so only keys
 # under `jobs:` are jobs.
 jobs, steps, chain, needs, runs, walked, cur = [], {}, {}, {}, {}, [], None
-in_jobs, block = False, []
+in_jobs, unread = False, []
 for line in wf_lines:
     if line[:1] not in ("", " ", "#"):
         in_jobs, cur = line.rstrip() == "jobs:", None
@@ -142,12 +142,19 @@ for line in wf_lines:
     if m:
         chain[cur].append(m.group(1).rsplit("/", 1)[-1])
         continue
-    m = NEEDS.match(line) or NEED1.match(line)
+    # A quoted entry or a trailing comment once left `needs:` unread, and
+    # rule 6 passed an arm64 proof waiting on release (#799). Any value
+    # that is not plain job names is refused, never skipped.
+    m = NEEDK.match(line)
     if m:
-        needs[cur] = [n.strip() for n in m.group(1).split(",") if n.strip()]
-        continue
-    if NEEDB.match(line):
-        block.append(cur)
+        v = re.sub(r"\s+#.*$", "", m.group(1)).strip()
+        fm = re.fullmatch(r"\[(.*)\]", v)
+        got = [re.sub(r"^(['\"])(.*)\1$", r"\2", x.strip())
+               for x in (fm.group(1).split(",") if fm else [v])]
+        if all(re.fullmatch(r"[A-Za-z0-9_-]+", n) for n in got):
+            needs[cur] = got
+        else:
+            unread.append(cur)
         continue
     m = RUNS.match(line)
     if m:
@@ -177,10 +184,11 @@ if not walked:
           "at all." % workflow_path)
     raise SystemExit(0)
 
-if block:
-    print("REFUSE\t%s declares `needs:` in block form for %s, which this "
-          "gate cannot read; rule 6 over a partial graph would pass having "
-          "measured nothing." % (workflow_path, ", ".join(block)))
+if unread:
+    print("REFUSE\t%s declares `needs:` for %s in a form this gate cannot "
+          "read (block form, an anchor, a list over several lines); rule 6 "
+          "over a partial graph would pass having measured nothing."
+          % (workflow_path, ", ".join(unread)))
     raise SystemExit(0)
 
 arm = [j for j in jobs
@@ -218,6 +226,16 @@ for j in jobs:
                         "The page is what a releaser watches, so an unnamed "
                         "job is one nobody is waiting for."
                         % (workflow_path, j, runbook_path))
+# The rc watch list claims every job; #799's first draft of it left one out.
+watch = [x for x in re.split(r"\n\s*\n", rb) if "every job must be green" in flat(x)]
+if len(watch) != 1:
+    findings.append("%s has %d paragraphs saying 'every job must be green'; "
+                    "rule 3 reads exactly one, the rc watch list."
+                    % (runbook_path, len(watch)))
+for j in jobs if len(watch) == 1 else []:
+    if not re.search(r"(\*\*|\*|`)" + re.escape(j) + r"\1", watch[0]):
+        findings.append("%s's rc watch list says every job must be green and "
+                        "leaves out '%s'." % (runbook_path, j))
 for j in sorted(set(re.findall(r"verify-install[a-z0-9-]*", rb_flat))):
     if j not in jobs:
         findings.append("%s tells a releaser to watch '%s', which is not a job "
