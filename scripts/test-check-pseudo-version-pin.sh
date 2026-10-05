@@ -232,47 +232,43 @@ else
     echo "FAIL: test.yaml pull_request types lack ready_for_review; the draft skip would never be re-judged"
     failures=$((failures + 1))
 fi
-# The step ends at its first blank line; every line of it is judged below
-# with leading blanks removed and backslash continuations joined.
+# The step is compared with the expected text byte for byte (#1228): the
+# target is the PR's base branch, not its head; the draft flag is the live
+# API answer; nothing may follow the read that rewrites it; no trap or
+# option may turn a refusal into a pass. Any edit to a line, including one
+# that lints and passes every case above, is red. A deliberate change to
+# the step is made here in the same commit. The step ends at its first
+# blank line.
 step=$(awk '/- name: Refuse a pseudo-version pin/{f=1} f&&/^$/{exit} f{print}' "$WF")
-if ! command grep -qF 'check-pseudo-version-pin.sh' <<< "$step"; then
-    echo "FAIL: test.yaml no longer invokes check-pseudo-version-pin.sh"
-    failures=$((failures + 1))
+expected=$(cat <<'PIN_STEP'
+      - name: Refuse a pseudo-version pin outside a draft pull request
+        env:
+          EVENT: ${{ github.event_name }}
+          TARGET: ${{ github.event.pull_request.base.ref || github.ref_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          draft=''
+          if [ "$EVENT" = pull_request ]; then
+            draft="$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .draft)" || {
+              echo "::error title=Draft flag unreadable::could not read the draft flag of pull request $PR_NUMBER; the pin gate will not guess." >&2
+              exit 2
+            }
+          fi
+          bash scripts/check-pseudo-version-pin.sh \
+            --event "$EVENT" --target "$TARGET" --draft "$draft"
+PIN_STEP
+)
+if [ -z "$step" ]; then
+    echo "FAIL: test.yaml no longer has the pin step"; failures=$((failures + 1))
+elif [ "$step" = "$expected" ]; then
+    echo "PASS: the pin step is exactly the judged text ($(wc -l <<< "$step") lines)"
 else
-    flat=$(sed -e 's/^[[:space:]]*//' <<< "$step" | sed -z 's/ \\\n/ /g')
-    if command grep -qE '^if:' <<< "$flat"; then
-        echo "FAIL: the pin step carries an if:; a skipped step reads as green"; failures=$((failures + 1))
-    else
-        echo "PASS: the pin step has no if:"
-    fi
-    # Each line below decides what the gate judges (#1228): the target is
-    # the PR's base branch, not its head; the draft flag is the live API
-    # answer; the PR number and event reach the read unchanged. An edit
-    # that still lints and passes the cases above is what these catch.
-    for want in \
-        'EVENT: ${{ github.event_name }}' \
-        'TARGET: ${{ github.event.pull_request.base.ref || github.ref_name }}' \
-        'PR_NUMBER: ${{ github.event.pull_request.number }}' \
-        'REPO: ${{ github.repository }}' \
-        "draft=''" \
-        'if [ "$EVENT" = pull_request ]; then' \
-        'draft="$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .draft)" || {' \
-        'exit 2' \
-        'bash scripts/check-pseudo-version-pin.sh --event "$EVENT" --target "$TARGET" --draft "$draft"'
-    do
-        if command grep -qxF -- "$want" <<< "$flat"; then
-            echo "PASS: the pin step has the line: $want"
-        else
-            echo "FAIL: the pin step lacks the exact line: $want"; failures=$((failures + 1))
-        fi
-    done
-    # A line the list above does not name (a `draft=true` slipped in
-    # between the read and the call) changes the count.
-    if [ "$(wc -l <<< "$step")" -eq 18 ]; then
-        echo "PASS: the pin step has exactly the 18 lines judged above"
-    else
-        echo "FAIL: the pin step gained or lost a line; judge it, then change this count"; failures=$((failures + 1))
-    fi
+    echo "FAIL: the pin step differs from the judged text; judge the change, then update this test:"
+    diff <(printf '%s\n' "$expected") <(printf '%s\n' "$step") | sed 's/^/    /' || true
+    failures=$((failures + 1))
 fi
 
 REL="$HERE/../.github/workflows/release.yml"
