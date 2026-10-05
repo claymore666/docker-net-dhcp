@@ -434,7 +434,7 @@ func TestLeaseTimeout_AnEmptyValueIsTheDefaultAndTheContainerLeases(t *testing.T
 				map[string]string{"lease_timeout": c.value})
 			_, ipv4, _ := harness.RunContainer(t, ctx, c.name, c.name+"-ctr")
 			harness.AssertIP(t, ipv4)
-			// The line precedes the reservation, which the daemon waits 30 s for, as TestDHCPv6's read bounds it (#868).
+			// The line precedes the reservation, which the daemon waits 30 s for, as in TestDHCPv6_ARefusalLogsItsStatusCodeByNameOnce (#868).
 			window := harness.AwaitPluginLogSince(t, ctx, mark, ipamCallDeadline,
 				func(w string) bool { return strings.Contains(w, capMarker) })
 			var got []string

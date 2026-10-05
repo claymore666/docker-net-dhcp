@@ -149,7 +149,7 @@ func printFloorEvidence(ctx context.Context) {
 	fmt.Fprint(os.Stderr, harness.FloorEvidence(data, floorEvidenceTailLines))
 }
 
-// The main suite recycles the plugin three times, so a run can carry a dozen Join-start failures and report a
+// Many tests in the main suite recycle the plugin, so a run can carry a dozen Join-start failures and report a
 // single-digit counter; sizing the Join budget needs the real number (#385, #401). One read serves both censuses.
 
 // printCensuses reports the whole run's Join-start failures and other healthy-affecting faults from the plugin log.
