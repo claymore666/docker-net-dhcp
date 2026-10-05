@@ -148,6 +148,39 @@ func TestTranslate_ABindingEndingJustAfterARenewalStillReachesThePlugin(t *testi
 	}
 }
 
+// A Changed inside the window that names a different address than the Renewed is a re-acquisition, even when it
+// holds as many bindings (#214).
+func TestTranslate_AChangedNamingADifferentBindingIsNeverTheRenewalsTwin(t *testing.T) {
+	now := time.Now()
+	valid := now.Add(time.Hour)
+	a6 := func(p string) lease.Addr6 { return lease.Addr6{Addr: netip.MustParsePrefix(p), Valid: valid} }
+	renewed := lease.Lease{Addr: netip.MustParsePrefix("192.168.99.7/24"),
+		Addrs:     []lease.Addr6{a6("fd00:98::10/128"), a6("fd00:98::11/128")},
+		TempAddrs: []lease.Addr6{a6("fd00:98::99/128")},
+		Prefixes:  []lease.Addr6{a6("fd00:98:0:1::/64")}}
+	_, _, mark := translateOne(lease.Event{Kind: lease.Renewed, Lease: renewed}, now, renewalMark{}, netip.Prefix{})
+	at := now.Add(coalesceWindow / 2)
+
+	for name, mutate := range map[string]func(*lease.Lease){
+		"another IPv4 address": func(l *lease.Lease) { l.Addr = netip.MustParsePrefix("192.168.99.8/24") },
+		"another address":      func(l *lease.Lease) { l.Addrs = []lease.Addr6{a6("fd00:98::10/128"), a6("fd00:98::12/128")} },
+		"another temporary":    func(l *lease.Lease) { l.TempAddrs = []lease.Addr6{a6("fd00:98::98/128")} },
+		"another prefix":       func(l *lease.Lease) { l.Prefixes = []lease.Addr6{a6("fd00:98:0:2::/64")} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := renewed
+			mutate(&changed)
+			if _, emit, _ := translateOne(lease.Event{Kind: lease.Changed, Lease: changed}, at, mark, netip.Prefix{}); !emit {
+				t.Errorf("a Changed with %s was coalesced into the Renewed; the container keeps what the lease replaced", name)
+			}
+		})
+	}
+
+	if _, emit, _ := translateOne(lease.Event{Kind: lease.Changed, Lease: renewed}, at, mark, netip.Prefix{}); emit {
+		t.Error("the Changed holding the Renewed's own bindings was emitted as a second renewal")
+	}
+}
+
 // RFC 2131 section 4.4.1's desync is for a fleet booting together; each manager is one container (D-1, #899).
 
 func TestBuildParams_NeitherManagerDesyncs(t *testing.T) {
