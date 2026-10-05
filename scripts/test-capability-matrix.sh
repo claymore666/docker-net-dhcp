@@ -332,6 +332,52 @@ else
     bad "capability-cell.sh row keys are not read from capability-matrix.sh --columns"
 fi
 
+# The draft state is read live, not taken from the payload (#690, run
+# 37301682056: the payload said draft after the ready click). gh is stubbed
+# to answer STUB_GH_OUT with STUB_GH_RC and to record its arguments.
+mkdir -p "$tmp/bin"
+cat > "$tmp/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+echo "$*" >> "$GH_ARGS"
+printf '%s' "${STUB_GH_OUT-}"
+exit "${STUB_GH_RC:-0}"
+STUB
+chmod +x "$tmp/bin/gh"
+# live_case <label> <event> <live-answer> <gh-rc> <want-exit> <want-output>
+live_case() {
+    : > "$tmp/gh.args"
+    out="$(PATH="$tmp/bin:$PATH" GH_ARGS="$tmp/gh.args" STUB_GH_OUT="$3" STUB_GH_RC="$4" \
+        bash "$GATE" --draft-now "$2" owner/repo 7 2>&1)"; got=$?
+    if [ "$got" -eq "$5" ] && { [ "$5" -ne 0 ] || [ "$out" = "$6" ]; }; then ok "$1"; else bad "$1: exit $got want $5, output '$out'"; fi
+}
+live_case "a pull request that is ready now is not a draft" pull_request false 0 0 false
+live_case "a pull request that is a draft now is a draft" pull_request true 0 0 true
+if grep -qx 'api repos/owner/repo/pulls/7 --jq .draft' "$tmp/gh.args"; then ok "the live read asks the pull request's own endpoint"; else bad "live read asked: $(cat "$tmp/gh.args")"; fi
+live_case "a refused read cannot be judged" pull_request true 1 2 ""
+live_case "an empty answer cannot be judged" pull_request "" 0 2 ""
+live_case "a null answer cannot be judged" pull_request null 0 2 ""
+live_case "a push is never a draft and asks nothing" push true 1 0 false
+if [ ! -s "$tmp/gh.args" ]; then ok "a push does not call gh"; else bad "a push called gh: $(cat "$tmp/gh.args")"; fi
+# The race itself: the strictness handed the live answer, not the payload's.
+live="$(PATH="$tmp/bin:$PATH" GH_ARGS="$tmp/gh.args" STUB_GH_OUT=false bash "$GATE" --draft-now pull_request owner/repo 7)"
+out="$(bash "$GATE" --strictness pull_request refs/pull/7/merge "$live" 2>&1)"; got=$?
+if [ "$got" -eq 0 ] && [ "$out" = strict ]; then ok "ready after the event fired: the run is strict"; else bad "ready race: exit $got '$out'"; fi
+live="$(PATH="$tmp/bin:$PATH" GH_ARGS="$tmp/gh.args" STUB_GH_OUT=true bash "$GATE" --draft-now pull_request owner/repo 7)"
+out="$(bash "$GATE" --strictness pull_request refs/pull/7/merge "$live" 2>&1)"; got=$?
+if [ "$got" -eq 0 ] && [ "$out" = lenient ]; then ok "converted back to a draft: the run is lenient"; else bad "draft twin: exit $got '$out'"; fi
+out="$(bash "$GATE" --draft-now pull_request owner/repo x 2>&1)"; got=$?
+expect "a pull request number that is not a number cannot be read" 2 "--draft-now"
+
+# The workflow takes the draft state from --draft-now and never from the payload.
+WF="$HERE/../.github/workflows/capability-matrix.yml"
+if grep -q 'pull_request\.draft' "$WF"; then bad "the workflow reads the draft state from the event payload"; else ok "the workflow does not read the draft state from the event payload"; fi
+wf_ok=1
+for want in '--draft-now "\$EVENT" "\$REPO" "\$PR")" || exit 2' 'pull-requests: read' 'GH_TOKEN: \${{ github.token }}' \
+    'REPO: \${{ github.repository }}' 'PR: \${{ github.event.pull_request.number'; do
+    grep -q -- "$want" "$WF" || { wf_ok=0; echo "missing in the workflow: $want"; }
+done
+if [ "$wf_ok" -eq 1 ]; then ok "the reconcile step reads the draft state live, with the token, repo, number and permission to"; else bad "the workflow does not read the draft state live"; fi
+
 # The shipped table parses and names every cell of the shipped config.json.
 d="$tmp/shipped"; mkdir -p "$d"
 mapfile -t cells < <(bash "$GATE" --cells-json | jq -r '.[]')

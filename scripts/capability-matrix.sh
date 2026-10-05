@@ -8,6 +8,7 @@
 #        capability-matrix.sh --columns
 #        capability-matrix.sh --dhcp-count <log> <after-line> <mac> <TYPE>
 #        capability-matrix.sh --strictness <event> <ref> <draft>
+#        capability-matrix.sh --draft-now <event> <repo> <pr-number>
 #        capability-matrix.sh --strip <capability> <config.json>
 #        capability-matrix.sh --reconcile [--strict] <rows-dir>
 # Exit:  0 agrees, 1 disagrees, 2 cannot check.
@@ -58,6 +59,21 @@ strictness() {
         workflow_dispatch:refs/heads/dev:* | workflow_dispatch:refs/heads/main:*) echo strict ;;
         push:*|workflow_dispatch:*) echo lenient ;;
         *) die "no strictness for event '$1' ref '$2' draft '$3'" ;;
+    esac
+}
+
+# draft_now prints whether the pull request is a draft at this moment. The
+# event payload is a snapshot from when the event fired: a push and a ready
+# click seconds apart gave the run on the final head `draft: true` and no
+# strict run of it (#690, run 37301682056). Any other event prints false.
+# An answer that is not true or false cannot be judged and is refused.
+draft_now() {
+    local live
+    [ "$1" = pull_request ] || { echo false; return 0; }
+    live="$(gh api "repos/$2/pulls/$3" --jq .draft)" || die "cannot read whether pull request $3 is a draft"
+    case "$live" in
+        true | false) echo "$live" ;;
+        *) die "pull request $3 draft state read as '$live', want true or false" ;;
     esac
 }
 
@@ -158,10 +174,13 @@ case "${1:-}" in
     --strictness)
         [ $# -eq 4 ] || die "--strictness <event> <ref> <draft>"
         strictness "$2" "$3" "$4" ;;
+    --draft-now)
+        [ $# -eq 4 ] && [[ "$4" =~ ^[0-9]+$ ]] || die "--draft-now <event> <repo> <pr-number>"
+        draft_now "$2" "$3" "$4" ;;
     --strip)
         [ $# -eq 3 ] || die "--strip <capability> <config.json>"
         capabilities | grep -xF "$2" >/dev/null || die "$2 is not requested by $CONFIG"
         jq --arg c "$2" '.linux.capabilities -= [$c]' "$3" ;;
     --reconcile) shift; reconcile "$@" ;;
-    *) die "usage: --cells-json | --columns | --dhcp-count <log> <line> <mac> <TYPE> | --strictness <event> <ref> <draft> | --strip <capability> <config.json> | --reconcile [--strict] <rows-dir>" ;;
+    *) die "usage: --cells-json | --columns | --dhcp-count <log> <line> <mac> <TYPE> | --strictness <event> <ref> <draft> | --draft-now <event> <repo> <pr-number> | --strip <capability> <config.json> | --reconcile [--strict] <rows-dir>" ;;
 esac

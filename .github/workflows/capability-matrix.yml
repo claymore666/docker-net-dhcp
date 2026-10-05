@@ -162,6 +162,9 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -171,15 +174,20 @@ jobs:
           path: downloaded
 
       # An unmeasured "?" in the table is red where a merge happens and a
-      # warning naming the value to commit elsewhere (#690).
+      # warning naming the value to commit elsewhere. Whether the pull
+      # request is a draft is read when this step runs, not taken from the
+      # event payload, which can predate the ready click (#690).
       - name: Reconcile the cells against docs/reference.md
         shell: bash
         env:
           EVENT: ${{ github.event_name }}
           REF: ${{ github.ref }}
-          DRAFT: ${{ github.event.pull_request.draft || false }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number || 0 }}
         run: |
           set -o pipefail
+          DRAFT="$(bash scripts/capability-matrix.sh --draft-now "$EVENT" "$REPO" "$PR")" || exit 2
           strict=()
           mode="$(bash scripts/capability-matrix.sh --strictness "$EVENT" "$REF" "$DRAFT")" || exit 2
           echo "unmeasured table cells are $mode here"
