@@ -556,6 +556,9 @@ func TestApplyPrefixes_ALeaseWithoutTheAskedPrefixSaysSo(t *testing.T) {
 	if !strings.Contains(out, "carries no delegated prefix") || !strings.Contains(out, "fd00:98::/64") {
 		t.Errorf("a v6 lease without the prefix ipv6_pd asked for logged:\n%s\nwant the absence and the dropped fd00:98::/64 named", out)
 	}
+	if strings.Contains(out, "DHCPv6 lease") {
+		t.Errorf("the absence line names a DHCPv6 lease, which an ipv6_mode=auto endpoint on the SLAAC fallback has none of:\n%s", out)
+	}
 	if again := captureLog(t, func() { _ = m.applyPrefixes(nil) }); strings.Contains(again, "carries no delegated prefix") {
 		t.Errorf("a second lease without the prefix repeated the line:\n%s", again)
 	}

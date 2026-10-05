@@ -182,7 +182,7 @@ func (m *dhcpManager) notePrefixAbsence(none bool) {
 	m.ipMu.Unlock()
 	if none && !was {
 		log.WithFields(m.logFields(true)).WithField("ipv6_pd", m.opts.IPv6PD).
-			Info("The DHCPv6 lease carries no delegated prefix although ipv6_pd asks for one; no aggregate route is installed")
+			Info("The endpoint carries no delegated prefix although ipv6_pd asks for one; no aggregate route is installed")
 	}
 }
 
