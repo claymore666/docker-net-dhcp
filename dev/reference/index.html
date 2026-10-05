@@ -1611,6 +1611,11 @@ network create -o key=value</code>, or <code>driver_opts:</code> in Compose:</p>
 <td><code>false</code></td>
 </tr>
 <tr>
+<td><code>ipv6_pd</code></td>
+<td>bridge, macvlan</td>
+<td>unset</td>
+</tr>
+<tr>
 <td><code>ipv6_iid</code></td>
 <td>all</td>
 <td><code>eui64</code></td>
@@ -2575,7 +2580,14 @@ value as an invalid duration.</p>
 <td>all</td>
 <td><code>false</code></td>
 <td>v2.4.0</td>
-<td>Ask the DHCPv6 server for a temporary address (an IA_TA, RFC 8415 section 21.5) in every Solicit and Request, beside the stable one. The address is installed on the container link next to the stable address with its own preferred and valid lifetimes. It is never the address Docker is told about (<code>GlobalIPv6Address</code> stays the stable one), it is never renewed, and it is removed when its valid lifetime ends or the library drops it. It is shown on <code>/Plugin.Health</code> as <code>ipv6_temporary_address</code>. A server that grants no temporary address answers the IA_NA alone and the endpoint runs as without the key. A boolean (<code>true</code>, <code>false</code>, <code>1</code>, <code>0</code>); an empty value is unset, and a word that is not a boolean is refused at <code>docker network create</code>. Refused with <code>ipv6_mode=off</code> and <code>ipv6_mode=slaac</code>, which send no Solicit; with <code>ipv6_mode=auto</code> it applies when the network leases over DHCPv6 and does nothing on the SLAAC fallback. No kernel temporary flag is set on the address, so the kernel does not regenerate it and does not rank it below the stable one: with both on the link, Linux takes the most recently added address as the source of a new connection, which is the temporary one. A plugin restart resumes the lease with a Confirm, which carries no IA_TA, so the plugin keeps the remembered temporary address until its own valid lifetime ends and asks for no other. dnsmasq grants one from its range; Kea needs a <code>temporary</code> pool. (#927)</td>
+<td>Ask the DHCPv6 server for a temporary address (an IA_TA, RFC 8415 section 21.5) in every Solicit and Request, beside the stable one. The address is installed on the container link next to the stable address with its own preferred and valid lifetimes. It is never the address Docker is told about (<code>GlobalIPv6Address</code> stays the stable one), it is never renewed, and it is removed when its valid lifetime ends or the library drops it. Since v2.5.0, on a network with <code>release_lease=on_stop</code> it is also taken off the link and named in the Release, beside the stable address (#214). It is shown on <code>/Plugin.Health</code> as <code>ipv6_temporary_address</code>. A server that grants no temporary address answers the IA_NA alone and the endpoint runs as without the key. A boolean (<code>true</code>, <code>false</code>, <code>1</code>, <code>0</code>); an empty value is unset, and a word that is not a boolean is refused at <code>docker network create</code>. Refused with <code>ipv6_mode=off</code> and <code>ipv6_mode=slaac</code>, which send no Solicit; with <code>ipv6_mode=auto</code> it applies when the network leases over DHCPv6 and does nothing on the SLAAC fallback. No kernel temporary flag is set on the address, so the kernel does not regenerate it and does not rank it below the stable one: with both on the link, Linux takes the most recently added address as the source of a new connection, which is the temporary one. A plugin restart resumes the lease with a Confirm, which carries no IA_TA, so the plugin keeps the remembered temporary address until its own valid lifetime ends and asks for no other. dnsmasq grants one from its range; Kea needs a <code>temporary</code> pool. (#927)</td>
+</tr>
+<tr>
+<td><code>ipv6_pd</code></td>
+<td>bridge, macvlan</td>
+<td>unset</td>
+<td>v2.5.0</td>
+<td>Ask the DHCPv6 server for a delegated prefix of this length (an IA_PD with a prefix-length hint, RFC 8415 section 21.21) in every Solicit and Request, beside the address. A prefix length from 1 to 128, usually <code>64</code>; an empty value is unset and anything else is refused at <code>docker network create</code>. The prefix is for software in the container that routes, such as a VPN or a nested network: the plugin puts it on no link (RFC 3633 section 12.1) and installs one route for it in the container, <code>unreachable &lt;prefix&gt; proto dhcp</code>, which the kernel places on <code>lo</code>. Routes the container adds for parts of the prefix are more specific and win; traffic for the unused rest is refused in the container instead of going back out the default route. The route follows the lease: it is replaced when a renewal brings a different prefix, removed when the prefix's valid lifetime ends while the lease is bound, removed when the lease is lost, removed at <code>docker network disconnect</code> and <code>docker stop</code>, and removed before the Release when the network sets <code>release_lease=on_stop</code>. A plugin restart leaves it in place and resumes the lease with a Rebind, which carries the prefix (RFC 8415 section 18.2.12). It is installed whether or not <code>skip_routes</code> is set, since it is the plugin's own route and not one the server advertised. A server that has no prefix to give answers NoPrefixAvail for the IA_PD alone (RFC 8415 section 18.2.10.1): the endpoint keeps its address and runs with no route. Refused with <code>ipv6_mode=off</code> and <code>ipv6_mode=slaac</code>, which send no Solicit, and in <code>mode=ipvlan</code>, unsupported because the router routes the prefix to the endpoint's link-local address and ipvlan slaves share the parent's link. The upstream router must route the delegated prefix to the container, as it does for any delegating router; the plugin does not configure the router. See <a href="#delegated-prefixes">Delegated prefixes</a>. (#214)</td>
 </tr>
 <tr>
 <td><code>ipv6_iid</code></td>
@@ -3856,6 +3868,41 @@ event on, and a prefix the router withdrew leaves them at that event too
 </tr>
 </tbody>
 </table>
+<h4 id="delegated-prefixes">Delegated prefixes<a class="headerlink" href="#delegated-prefixes" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>What the client does</th>
+<th>Where it comes from</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Puts an IA_PD with the network's <code>ipv6_pd</code> length as a hint beside the IA_NA in its Solicit and Request, renews and rebinds it with the address, and resumes a binding that holds a prefix with a Rebind instead of a Confirm</td>
+<td>The library, <code>ipv6_pd</code> (<a href="https://github.com/claymore666/docker-net-dhcp/issues/214">#214</a>)</td>
+</tr>
+<tr>
+<td>Installs <code>unreachable &lt;prefix&gt; proto dhcp</code> in the container for each delegated prefix and keeps that set equal to the lease's on every lease event; removes it when the lease is lost, at Leave, and before a Release</td>
+<td>The plugin, <code>ipv6_pd</code> (<a href="https://github.com/claymore666/docker-net-dhcp/issues/214">#214</a>)</td>
+</tr>
+<tr>
+<td>Reports the prefixes on <code>/Plugin.Health</code> as <code>delegated_prefixes</code>, flags a prefix that overlaps one another endpoint of the same network holds as <code>prefix_overlap</code> and keeps it, and counts the routes in <code>ipv6_prefix_routes_installed</code> and <code>ipv6_prefix_routes_withdrawn</code></td>
+<td>The plugin, <code>ipv6_pd</code> (<a href="https://github.com/claymore666/docker-net-dhcp/issues/214">#214</a>)</td>
+</tr>
+</tbody>
+</table>
+<p>The route is the only thing the plugin does with the prefix. To use it,
+give the container <code>NET_ADMIN</code>, turn on forwarding inside it, and add a
+route for the part of the prefix it serves, for example onto a downstream
+interface; that route is more specific than the aggregate and wins. A
+prefix whose valid lifetime ends while the lease is bound leaves
+<code>/Plugin.Health</code> and loses its route when the library reports the
+ending, one lease event for each instant at which bindings end (dhcp-golib v1.4.2). When one
+server delegates the prefix and another answers for the address, the
+prefix is renewed with, and released to, the server that delegated it
+(dhcp-golib v1.4.3). Kea delegates
+from a <code>pd-pools</code> entry of the subnet; dnsmasq cannot delegate, so on
+dnsmasq the endpoint runs as if the option were unset.</p>
 <h4 id="if-you-upgrade-onto-20-with-an-ipv6-network-already-created">If you upgrade onto 2.0 with an IPv6 network already created<a class="headerlink" href="#if-you-upgrade-onto-20-with-an-ipv6-network-already-created" title="Permanent link">&para;</a></h4>
 <p>Nothing to do. A network record written by a 1.x build carries
 <code>ipv6=true</code>, that option means the same thing here, and endpoints on it
@@ -4169,7 +4216,7 @@ already parse it were not told to expect a new type.</p>
 <td><code>endpoints</code></td>
 <td>n/a</td>
 <td>n/a</td>
-<td><em>(2.0-alpha.1+)</em> One entry per managed endpoint, and the array is exactly <code>active_endpoints</code> long, sorted by endpoint id, so two consecutive polls of an unchanged host produce the same document. Each entry: <code>endpoint</code> and <code>network</code> (short ids), <code>mode</code>, <code>address</code> (CIDR), <code>lease_state</code> (<code>bound</code>, <code>acquiring</code>, or since v2.3.0 <code>link_local</code> for an endpoint on its <a href="#link-local-fallback-link_local_fallback">link-local fallback</a>, whose <code>address</code> is then the 169.254 one), <code>renew_at</code> / <code>rebind_at</code> / <code>expires_at</code> (T1, T2 and the lease end as <strong>absolute</strong> RFC 3339 times, because a remaining-seconds figure is meaningless once the document has been cached or pasted into an issue; an absent <code>expires_at</code> on a bound endpoint is the protocol's infinite lease), <code>server</code> (option 54), <code>last_event</code> and <code>last_event_at</code> (since v2.2.3 these and the lease fields come from one record, so a <code>bound</code> entry always names the event that bound it, #1044), and the RFC 5227 pair <code>conflict_check</code> (the <a href="#plugin-settings"><code>conflict_check</code></a> mode in force) and <code>acd_phase</code> (<code>idle</code>, <code>probing</code>, <code>settling</code>, <code>announcing</code>, <code>defending</code>). Read the phase <strong>against</strong> the mode and never alone: in <code>conflict_check=off</code> the phase is <code>idle</code> because nothing runs. <code>unknown</code> for both means the endpoint has no client yet. <strong>On a dual-stack endpoint every field of the entry describes the IPv4 client</strong>, which is the one the RFC 5227 pair can describe at all, with two exceptions, both since v2.4.0: <code>ipv6_temporary_address</code> (CIDR, absent when there is none) is the temporary address of the endpoint's DHCPv6 lease on a network with <a href="#driver-options-network-level"><code>ipv6_temporary</code></a>, and <code>nat64_prefixes</code> (a list of CIDR prefixes, absent when there is none) is the NAT64 prefixes the last IPv6 lease or router event carried (<a href="#nat64-prefix-pref64">PREF64</a>). The rest of a container's DHCPv6 lease this array does not report, and <code>docker inspect</code> is where to read it. Not on <code>/metrics</code>: per-endpoint labels are the thing <a href="https://github.com/claymore666/docker-net-dhcp/blob/main/SECURITY.md"><code>SECURITY.md</code></a> promises are absent from the exposition.</td>
+<td><em>(2.0-alpha.1+)</em> One entry per managed endpoint, and the array is exactly <code>active_endpoints</code> long, sorted by endpoint id, so two consecutive polls of an unchanged host produce the same document. Each entry: <code>endpoint</code> and <code>network</code> (short ids), <code>mode</code>, <code>address</code> (CIDR), <code>lease_state</code> (<code>bound</code>, <code>acquiring</code>, or since v2.3.0 <code>link_local</code> for an endpoint on its <a href="#link-local-fallback-link_local_fallback">link-local fallback</a>, whose <code>address</code> is then the 169.254 one), <code>renew_at</code> / <code>rebind_at</code> / <code>expires_at</code> (T1, T2 and the lease end as <strong>absolute</strong> RFC 3339 times, because a remaining-seconds figure is meaningless once the document has been cached or pasted into an issue; an absent <code>expires_at</code> on a bound endpoint is the protocol's infinite lease), <code>server</code> (option 54), <code>last_event</code> and <code>last_event_at</code> (since v2.2.3 these and the lease fields come from one record, so a <code>bound</code> entry always names the event that bound it, #1044), and the RFC 5227 pair <code>conflict_check</code> (the <a href="#plugin-settings"><code>conflict_check</code></a> mode in force) and <code>acd_phase</code> (<code>idle</code>, <code>probing</code>, <code>settling</code>, <code>announcing</code>, <code>defending</code>). Read the phase <strong>against</strong> the mode and never alone: in <code>conflict_check=off</code> the phase is <code>idle</code> because nothing runs. <code>unknown</code> for both means the endpoint has no client yet. <strong>On a dual-stack endpoint every field of the entry describes the IPv4 client</strong>, which is the one the RFC 5227 pair can describe at all, with two exceptions, both since v2.4.0: <code>ipv6_temporary_address</code> (CIDR, absent when there is none) is the temporary address of the endpoint's DHCPv6 lease on a network with <a href="#driver-options-network-level"><code>ipv6_temporary</code></a>, and <code>nat64_prefixes</code> (a list of CIDR prefixes, absent when there is none) is the NAT64 prefixes the last IPv6 lease or router event carried (<a href="#nat64-prefix-pref64">PREF64</a>). Since v2.5.0 two more describe the IPv6 lease: <code>delegated_prefixes</code> (a list of objects with <code>prefix</code> in CIDR form and <code>preferred_until</code> and <code>expires_at</code> as RFC 3339 times, absent when there is none) is the prefixes the lease delegated on a network with <a href="#delegated-prefixes"><code>ipv6_pd</code></a>, each left out once its valid lifetime has passed, and <code>prefix_overlap</code> (<code>true</code>, absent otherwise) marks an endpoint one of whose prefixes overlaps a prefix another endpoint of the same network holds. The rest of a container's DHCPv6 lease this array does not report, and <code>docker inspect</code> is where to read it. Not on <code>/metrics</code>: per-endpoint labels are the thing <a href="https://github.com/claymore666/docker-net-dhcp/blob/main/SECURITY.md"><code>SECURITY.md</code></a> promises are absent from the exposition.</td>
 </tr>
 <tr>
 <td><code>healthy</code></td>
@@ -4800,6 +4847,24 @@ already parse it were not told to expect a new type.</p>
 <td>no</td>
 <td>n/a</td>
 <td>(v2.2.0+, #821) Container IPv6 default routes removed because the router that advertised itself set its Router Lifetime to 0. RFC 4861 §4.2 defines that lifetime as "the lifetime associated with the default router" and §6.3.4 reads 0 as "no longer to be used as a default router". Counts <strong>routes removed, not advertisements received</strong>, so a router sending several on its way down moves this once per container. Not <code>healthy</code>-affecting and not a fault: the containers on that segment are correctly left with no default route rather than one pointing at a router that is gone. If this moves unexpectedly, the segment's router restarted or was reconfigured; <code>ip -6 route show default</code> inside a container on it will be empty until a router advertises itself again.</td>
+</tr>
+<tr>
+<td><code>ipv6_prefix_routes_installed</code></td>
+<td>no</td>
+<td>n/a</td>
+<td>(v2.5.0+, #214) Delegated-prefix routes (<code>unreachable &lt;prefix&gt; proto dhcp</code>) installed in containers on networks with <code>ipv6_pd</code>. Counts <strong>routes added, not lease events</strong>: a renewal that brings the same prefix moves nothing, one that brings a new prefix moves this once. Not <code>healthy</code>-affecting.</td>
+</tr>
+<tr>
+<td><code>ipv6_prefix_routes_withdrawn</code></td>
+<td>no</td>
+<td>n/a</td>
+<td>(v2.5.0+, #214) Delegated-prefix routes removed from containers: the prefix was replaced at a renewal, its valid lifetime ended while the lease was bound, the lease was lost, the endpoint left its network, or the lease was released. Not <code>healthy</code>-affecting and not a fault. A failed removal is logged at <code>warning</code> with the cause and does not move this.</td>
+</tr>
+<tr>
+<td><code>ipv6_prefix_overlaps</code></td>
+<td>no</td>
+<td>n/a</td>
+<td>(v2.5.0+, #214) Endpoints whose delegated prefix overlaps a prefix another endpoint of the same network holds, counted each time an endpoint's prefixes start to overlap, at the lease event that finds it, and not again while they still do. Both endpoints keep their prefix and the plugin logs a <code>warning</code>; the endpoint whose lease event found the overlap carries <code>prefix_overlap</code> in <code>endpoints</code> at once, the other one from its own next lease event. Not <code>healthy</code>-affecting. If this moves, the server delegated the same space twice, which a correctly configured server does not do: check its pools and reservations.</td>
 </tr>
 <tr>
 <td><code>router_solicits_sent</code></td>

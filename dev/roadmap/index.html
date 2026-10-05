@@ -1324,8 +1324,10 @@ below decide what is in a release; this page follows them.</p>
 </ul>
 <h3 id="v250">v2.5.0<a class="headerlink" href="#v250" title="Permanent link">&para;</a></h3>
 <ul>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/214">#214</a>, DHCPv6 prefix delegation (IA_PD), designed first; only its Kea
-  DHCPv6 test fixture is in v2.4.0</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/214">#214</a>, DHCPv6 prefix delegation (IA_PD): <code>-o ipv6_pd=&lt;length&gt;</code> asks
+  the server for a prefix beside the address and installs it in the
+  container as one unreachable route, for software there that routes; the
+  Kea DHCPv6 test fixture shipped in v2.4.0</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1203">#1203</a>, the DHCPv6 option 17 logged as <code>vendor_17</code>, the plugin half of
   <a href="https://github.com/claymore666/docker-net-dhcp/issues/1034">#1034</a></li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/733">#733</a>, the tracking issue for the CI consolidation programme</li>
