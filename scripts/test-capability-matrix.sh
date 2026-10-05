@@ -204,6 +204,11 @@ strict_case strict workflow_dispatch refs/heads/main false
 strict_case lenient workflow_dispatch refs/heads/ci/x false
 out="$(bash "$GATE" --strictness schedule refs/heads/main false 2>&1)"; got=$?
 expect "an event the workflow does not declare has no strictness" 2 "no strictness"
+if [ -z "$(bash "$GATE" --strictness schedule refs/heads/main false 2>/dev/null)" ]; then
+    ok "a refused strictness prints no mode"
+else
+    bad "a refused strictness printed a mode"
+fi
 
 # The cell prints the keys this script declares, so neither can drift alone.
 keys="$(sed -n 's/.*for k in "\${\(COLUMNS\)\[@\]}".*/\1/p' "$CELL")"
