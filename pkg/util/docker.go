@@ -9,7 +9,8 @@ import (
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
-	"github.com/docker/docker/api/types/container"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/client"
 )
 
 const (
@@ -18,7 +19,7 @@ const (
 
 // ContainerInspector is the one Docker-client method AwaitContainerInspect needs, so a test can pass a fake.
 type ContainerInspector interface {
-	ContainerInspect(ctx context.Context, id string) (container.InspectResponse, error)
+	ContainerInspect(ctx context.Context, id string, options client.ContainerInspectOptions) (client.ContainerInspectResult, error)
 }
 
 // NotFound returns at once with its chain intact: every caller resolved the ID from the daemon moments before, so it
@@ -31,9 +32,9 @@ func AwaitContainerInspect(ctx context.Context, docker ContainerInspector, id st
 	var firstErr, lastErr error
 	attempts := 0
 	for {
-		ctr, err := docker.ContainerInspect(ctx, id)
+		res, err := docker.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
 		if err == nil {
-			return ctr, nil
+			return res.Container, nil
 		}
 		if cerrdefs.IsNotFound(err) {
 			return dummy, err

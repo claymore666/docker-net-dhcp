@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	docker "github.com/moby/moby/client"
 	"net"
 	"net/netip"
 	"os"
@@ -16,8 +17,8 @@ import (
 	"time"
 
 	"github.com/claymore666/dhcp-golib/lease"
-	dContainer "github.com/docker/docker/api/types/container"
-	dNetwork "github.com/docker/docker/api/types/network"
+	dContainer "github.com/moby/moby/api/types/container"
+	dNetwork "github.com/moby/moby/api/types/network"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
@@ -692,35 +693,48 @@ func TestIPAMListedMACs_OneUnreadableEntryPoisonsTheAnswer(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		containers map[string]dNetwork.EndpointResource
+		// engineJSON is decoded by the real client instead; its refusal is the whole set's refusal (#178).
+		engineJSON string
 		want       int
 		ok         bool
 	}{
-		{"an empty network", map[string]dNetwork.EndpointResource{}, 0, true},
+		{name: "an empty network", containers: map[string]dNetwork.EndpointResource{}, want: 0, ok: true},
 		{
 			name:       "two endpoints",
-			containers: map[string]dNetwork.EndpointResource{"a": {MacAddress: "02:00:00:00:00:01"}, "b": {MacAddress: "02:00:00:00:00:02"}},
+			containers: map[string]dNetwork.EndpointResource{"a": {MacAddress: engineMAC("02:00:00:00:00:01")}, "b": {MacAddress: engineMAC("02:00:00:00:00:02")}},
 			want:       2, ok: true,
 		},
 		{
 			name: "a placeholder with no sandbox yet is an endpoint like any other",
 			containers: map[string]dNetwork.EndpointResource{
-				"ep-0123456789ab": {MacAddress: "02:00:00:00:00:01", EndpointID: "0123456789ab"},
+				"ep-0123456789ab": {MacAddress: engineMAC("02:00:00:00:00:01"), EndpointID: "0123456789ab"},
 			},
 			want: 1, ok: true,
 		},
 		{
 			name:       "one entry carries no hardware address",
-			containers: map[string]dNetwork.EndpointResource{"a": {MacAddress: "02:00:00:00:00:01"}, "b": {}},
+			containers: map[string]dNetwork.EndpointResource{"a": {MacAddress: engineMAC("02:00:00:00:00:01")}, "b": {}},
+			ok:         false,
+		},
+		{
+			name:       "the engine writes an empty hardware address",
+			engineJSON: `{"Id":"net","Containers":{"a":{"MacAddress":"02:00:00:00:00:01"},"b":{"MacAddress":""}}}`,
 			ok:         false,
 		},
 		{
 			name:       "one entry carries a hardware address that cannot be read",
-			containers: map[string]dNetwork.EndpointResource{"a": {MacAddress: "02:00:00:00:00:01"}, "b": {MacAddress: "zz"}},
+			engineJSON: `{"Id":"net","Containers":{"a":{"MacAddress":"02:00:00:00:00:01"},"b":{"MacAddress":"zz"}}}`,
 			ok:         false,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := ipamListedMACs(tc.containers)
+			var got []net.HardwareAddr
+			var ok bool
+			if tc.engineJSON == "" {
+				got, ok = ipamListedMACs(tc.containers)
+			} else if res, err := inspectThroughClient(t, tc.engineJSON); err == nil {
+				got, ok = ipamListedMACs(res.Network.Containers)
+			}
 			if ok != tc.ok {
 				t.Fatalf("usable = %v, want %v", ok, tc.ok)
 			}
@@ -883,10 +897,9 @@ func TestRecoverEndpoints_RunsTheStrandedRuleOnIPAMNetworksOnly(t *testing.T) {
 			docker: func() *fakeDocker {
 				return &fakeDocker{
 					listResult: []dNetwork.Summary{{ID: ipamTestNetwork, Driver: testDHCPDriver}},
-					inspectResult: map[string]dNetwork.Inspect{
-						ipamTestNetwork: {ID: ipamTestNetwork, Driver: testDHCPDriver, Containers: map[string]dNetwork.EndpointResource{
-							"ctr": {MacAddress: "zz"},
-						}},
+					inspectFrom: func(string) (docker.NetworkInspectResult, error) {
+						return inspectThroughClient(t, `{"Id":"`+ipamTestNetwork+`","Driver":"`+testDHCPDriver+
+							`","Containers":{"ctr":{"MacAddress":"zz"}}}`)
 					},
 				}
 			},

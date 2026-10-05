@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/claymore666/dhcp-golib/lease"
-	dNetwork "github.com/docker/docker/api/types/network"
+	dNetwork "github.com/moby/moby/api/types/network"
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 
@@ -693,13 +693,14 @@ func retainOrphanedReservations(records *dhcp.Records, now time.Time) int {
 	return retained
 }
 
-// ipamListedMACs refuses the whole set on one unparseable entry, since the stranded-record rule acts on absence.
-// `ep-<id>` placeholders are kept: libnetwork stores an endpoint before its sandbox and still retries Join (#1047).
+// ipamListedMACs refuses the whole set on one empty entry, since the stranded-record rule acts on absence; an
+// unreadable MAC already fails the inspect's decode (#178). `ep-<id>` placeholders are kept: libnetwork stores an
+// endpoint before its sandbox and still retries Join (#1047).
 func ipamListedMACs(containers map[string]dNetwork.EndpointResource) ([]net.HardwareAddr, bool) {
 	out := make([]net.HardwareAddr, 0, len(containers))
 	for _, info := range containers {
-		mac, err := net.ParseMAC(info.MacAddress)
-		if err != nil {
+		mac := net.HardwareAddr(info.MacAddress)
+		if len(mac) == 0 {
 			log.WithFields(log.Fields{
 				"endpoint": shortID(info.EndpointID),
 				"mac":      info.MacAddress,

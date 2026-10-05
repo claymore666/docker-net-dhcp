@@ -7,12 +7,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	docker "github.com/moby/moby/client"
 	"net"
 	"sort"
 	"testing"
 	"time"
 
-	dNetwork "github.com/docker/docker/api/types/network"
+	dNetwork "github.com/moby/moby/api/types/network"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
@@ -285,9 +286,9 @@ func TestFirstLease_LeavesTheJoinGatewayToTheEngineInEitherOrder_IPv6(t *testing
 
 type blockingInspectDocker struct{ fakeDocker }
 
-func (b *blockingInspectDocker) NetworkInspect(ctx context.Context, _ string, _ dNetwork.InspectOptions) (dNetwork.Inspect, error) {
+func (b *blockingInspectDocker) NetworkInspect(ctx context.Context, _ string, _ docker.NetworkInspectOptions) (docker.NetworkInspectResult, error) {
 	<-ctx.Done()
-	return dNetwork.Inspect{}, ctx.Err()
+	return docker.NetworkInspectResult{Network: dNetwork.Inspect{}}, ctx.Err()
 }
 
 func TestJoin_MarksExactlyTheFamiliesWhoseGatewayItReturned(t *testing.T) {

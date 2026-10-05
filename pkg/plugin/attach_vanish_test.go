@@ -14,8 +14,8 @@ import (
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
-	dContainer "github.com/docker/docker/api/types/container"
-	dNetwork "github.com/docker/docker/api/types/network"
+	dContainer "github.com/moby/moby/api/types/container"
+	dNetwork "github.com/moby/moby/api/types/network"
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
@@ -36,9 +36,7 @@ func TestSettleFailedAttach_AMissingKeyIsNotProofTheContainerWentAway(t *testing
 		fmt.Errorf("Error response from daemon: No such container: deadbeef: %w", cerrdefs.ErrNotFound))
 
 	state := func(status string) map[string]dContainer.InspectResponse {
-		return map[string]dContainer.InspectResponse{vanishCtr: {ContainerJSONBase: &dContainer.ContainerJSONBase{
-			State: &dContainer.State{Status: status, Running: status == "running"},
-		}}}
+		return map[string]dContainer.InspectResponse{vanishCtr: {State: &dContainer.State{Status: dContainer.ContainerState(status), Running: status == "running"}}}
 	}
 	attached := map[string]dNetwork.Inspect{vanishNet: {Containers: map[string]dNetwork.EndpointResource{
 		vanishCtr: {EndpointID: vanishEP},

@@ -11,7 +11,8 @@ import (
 	"sync"
 	"time"
 
-	docker "github.com/docker/docker/client"
+	"github.com/docker/go-connections/sockets"
+	docker "github.com/moby/moby/client"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -128,26 +129,30 @@ func (t *readOnlyTransport) calls() []string {
 	return out
 }
 
-// newDockerClient builds the client twice, since client.WithHost needs a *http.Transport and
-// HTTPClient returns a copy; a TLS endpoint is unsupported (#725).
+// newDockerClient wraps a socket transport in the read-only one, with WithHost before WithHTTPClient as it accepts only
+// a bare *http.Transport and WithTimeout after it as it sets the client current then (#178), and no TLS (#725).
 func newDockerClient(host string, p *Plugin) (*docker.Client, error) {
-	dialled, err := docker.NewClientWithOpts(docker.WithHost(host))
+	hostURL, err := docker.ParseHostURL(host)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create docker client for %s: %w", host, err)
 	}
-	httpClient := dialled.HTTPClient()
-	_ = dialled.Close()
+	base := &http.Transport{MaxIdleConns: 6, IdleConnTimeout: 30 * time.Second}
+	if err := sockets.ConfigureTransport(base, hostURL.Scheme, hostURL.Host); err != nil {
+		return nil, fmt.Errorf("failed to create docker client for %s: %w", host, err)
+	}
 
 	var onRefusal func()
 	if p != nil {
 		onRefusal = func() { p.dockerAPINonGETRefusals.Add(1) }
 	}
-	httpClient.Transport = newReadOnlyTransport(httpClient.Transport, onRefusal)
+	httpClient := &http.Client{
+		Transport:     newReadOnlyTransport(base, onRefusal),
+		CheckRedirect: docker.CheckRedirect,
+	}
 
-	client, err := docker.NewClientWithOpts(
+	client, err := docker.New(
 		docker.WithHost(host),
 		docker.WithHTTPClient(httpClient),
-		docker.WithAPIVersionNegotiation(),
 		// dockerd may call the plugin during its startup before it answers our requests, so calls time out.
 		docker.WithTimeout(2*time.Second),
 	)

@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	dContainer "github.com/docker/docker/api/types/container"
-	dNetwork "github.com/docker/docker/api/types/network"
+	dContainer "github.com/moby/moby/api/types/container"
+	dNetwork "github.com/moby/moby/api/types/network"
 	"github.com/vishvananda/netlink"
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
@@ -27,8 +27,8 @@ func TestSetupClient_TheClientIsOpenedOnTheLinkAndNotOnlyOnItsName(t *testing.T)
 		},
 		containerResult: map[string]dContainer.InspectResponse{
 			"ctr-1": {
-				ContainerJSONBase: &dContainer.ContainerJSONBase{State: &dContainer.State{Pid: os.Getpid()}},
-				Config:            &dContainer.Config{Hostname: "ctr-1"},
+				State:  &dContainer.State{Pid: os.Getpid()},
+				Config: &dContainer.Config{Hostname: "ctr-1"},
 			},
 		},
 	}

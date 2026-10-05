@@ -12,7 +12,7 @@ import (
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
-	"github.com/docker/docker/api/types/container"
+	"github.com/moby/moby/client"
 )
 
 type awaitStub struct {
@@ -20,9 +20,9 @@ type awaitStub struct {
 	err   error
 }
 
-func (s *awaitStub) ContainerInspect(context.Context, string) (container.InspectResponse, error) {
+func (s *awaitStub) ContainerInspect(context.Context, string, client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
 	s.calls++
-	return container.InspectResponse{}, s.err
+	return client.ContainerInspectResult{}, s.err
 }
 
 func TestAwaitContainerInspect_NotFoundIsTerminal(t *testing.T) {
@@ -113,7 +113,7 @@ type countingInspector struct {
 	calls int
 }
 
-func (c *countingInspector) ContainerInspect(_ context.Context, _ string) (container.InspectResponse, error) {
+func (c *countingInspector) ContainerInspect(_ context.Context, _ string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
 	c.calls++
-	return container.InspectResponse{}, c.err
+	return client.ContainerInspectResult{}, c.err
 }

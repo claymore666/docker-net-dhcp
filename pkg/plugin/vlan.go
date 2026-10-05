@@ -13,7 +13,7 @@ import (
 	"strconv"
 	"time"
 
-	dNetwork "github.com/docker/docker/api/types/network"
+	dNetwork "github.com/moby/moby/api/types/network"
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
@@ -301,7 +301,7 @@ func (p *Plugin) retireVlanLink(ctx context.Context, self string, opts DHCPNetwo
 	}
 	// Bounded, since this runs inside the daemon's own DeleteNetwork call; a list that does not come back keeps the link (#902).
 	listCtx, cancel := context.WithTimeout(ctx, vlanListBudget)
-	nets, err := p.docker.NetworkList(listCtx, dNetwork.ListOptions{})
+	nets, err := listNetworks(listCtx, p.docker)
 	cancel()
 	if err != nil {
 		keep("cannot list Docker networks: %v", err)

@@ -6,6 +6,7 @@ package plugin
 import (
 	"context"
 	"errors"
+	docker "github.com/moby/moby/client"
 	"net"
 	"os"
 	"path/filepath"
@@ -13,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	dContainer "github.com/docker/docker/api/types/container"
-	dNetwork "github.com/docker/docker/api/types/network"
+	dContainer "github.com/moby/moby/api/types/container"
+	dNetwork "github.com/moby/moby/api/types/network"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 
@@ -123,8 +124,8 @@ func TestStart_AsksTheDaemonNothingBeforeThePersistentClientStarts(t *testing.T)
 		},
 		containerResult: map[string]dContainer.InspectResponse{
 			"ctr-1": {
-				ContainerJSONBase: &dContainer.ContainerJSONBase{State: &dContainer.State{Pid: os.Getpid()}},
-				Config:            &dContainer.Config{Hostname: "ctr-1"},
+				State:  &dContainer.State{Pid: os.Getpid()},
+				Config: &dContainer.Config{Hostname: "ctr-1"},
 			},
 		},
 	}
@@ -213,19 +214,19 @@ func (w *firstCallWatcher) note() {
 	w.calls++
 }
 
-func (w *firstCallWatcher) NetworkList(ctx context.Context, options dNetwork.ListOptions) ([]dNetwork.Summary, error) {
+func (w *firstCallWatcher) NetworkList(ctx context.Context, options docker.NetworkListOptions) (docker.NetworkListResult, error) {
 	w.note()
 	return w.dockerClient.NetworkList(ctx, options)
 }
 
-func (w *firstCallWatcher) NetworkInspect(ctx context.Context, networkID string, options dNetwork.InspectOptions) (dNetwork.Inspect, error) {
+func (w *firstCallWatcher) NetworkInspect(ctx context.Context, networkID string, options docker.NetworkInspectOptions) (docker.NetworkInspectResult, error) {
 	w.note()
 	return w.dockerClient.NetworkInspect(ctx, networkID, options)
 }
 
-func (w *firstCallWatcher) ContainerInspect(ctx context.Context, containerID string) (dContainer.InspectResponse, error) {
+func (w *firstCallWatcher) ContainerInspect(ctx context.Context, containerID string, o docker.ContainerInspectOptions) (docker.ContainerInspectResult, error) {
 	w.note()
-	return w.dockerClient.ContainerInspect(ctx, containerID)
+	return w.dockerClient.ContainerInspect(ctx, containerID, o)
 }
 
 // TestStart_TheClientOpensOnTheNameTheLinkHasAtOpenTime: the engine renames the link after moving it, so the client
@@ -239,8 +240,8 @@ func TestStart_TheClientOpensOnTheNameTheLinkHasAtOpenTime(t *testing.T) {
 		},
 		containerResult: map[string]dContainer.InspectResponse{
 			"ctr-1": {
-				ContainerJSONBase: &dContainer.ContainerJSONBase{State: &dContainer.State{Pid: os.Getpid()}},
-				Config:            &dContainer.Config{Hostname: "ctr-1"},
+				State:  &dContainer.State{Pid: os.Getpid()},
+				Config: &dContainer.Config{Hostname: "ctr-1"},
 			},
 		},
 	}
@@ -310,9 +311,9 @@ type renameOnInspect struct {
 	inspected bool
 }
 
-func (r *renameOnInspect) ContainerInspect(ctx context.Context, id string) (dContainer.InspectResponse, error) {
+func (r *renameOnInspect) ContainerInspect(ctx context.Context, id string, o docker.ContainerInspectOptions) (docker.ContainerInspectResult, error) {
 	r.inspected = true
-	return r.dockerClient.ContainerInspect(ctx, id)
+	return r.dockerClient.ContainerInspect(ctx, id, o)
 }
 
 func TestStart_LeasesWhileTheDaemonIsStillInsideContainerStart(t *testing.T) {
@@ -388,8 +389,8 @@ func TestStart_AsksTheDaemonOnceForTheWholeAttach(t *testing.T) {
 		},
 		containerResult: map[string]dContainer.InspectResponse{
 			ctrID: {
-				ContainerJSONBase: &dContainer.ContainerJSONBase{State: &dContainer.State{Pid: pid}},
-				Config:            &dContainer.Config{Hostname: "ctr-1"},
+				State:  &dContainer.State{Pid: pid},
+				Config: &dContainer.Config{Hostname: "ctr-1"},
 			},
 		},
 	}
