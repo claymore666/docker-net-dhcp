@@ -31,17 +31,16 @@
 #   2. every `target-branch` in `.github/dependabot.yml`;
 #   3. every word of `GATE_SCOPE_BRANCHES` in
 #      `.github/gate-branch-scope.env` — the branch scope
-#      `check-missing-runs.sh` reconciles and `purge-workflow-runs.sh`
-#      spares. A dead name there is silent in the direction that deletes
-#      evidence.
+#      `purge-workflow-runs.sh` spares. A dead name there is silent in the
+#      direction that deletes evidence.
 #
 # A LITERAL AND A PATTERN CARRY DIFFERENT OBLIGATIONS, and collapsing them
 # is how a gate like this passes over nothing: a literal name must EXIST, a
 # pattern must MATCH AT LEAST ONE existing branch. `2*` and `2.*` both
 # match `2.0.0` today, so "the pattern is well formed" says nothing; what
 # had to be checked is that the set it selects is not empty. The matching
-# is `scripts/branch-glob.sh`, the same matcher the two gate-scope readers
-# use, with GitHub's filter semantics (`*` stops at `/`, `**` does not).
+# is `scripts/branch-glob.sh`, the same matcher the retention purge
+# uses, with GitHub's filter semantics (`*` stops at `/`, `**` does not).
 #
 # WHERE THE BRANCH LIST COMES FROM, AND WHY NOT THE LOCAL ONE
 #

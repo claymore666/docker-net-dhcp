@@ -426,7 +426,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - env:
           GRACE: ${{ inputs.grace-minutes }}
-        run: bash scripts/check-missing-runs.sh "$GRACE"
+        run: bash scripts/reconcile.sh "$GRACE"
 YAML
 check "an input that never reaches a checkout is not a finding" 0 "$TMP/nosink" \
       "none of them reaches an actions/checkout ref"

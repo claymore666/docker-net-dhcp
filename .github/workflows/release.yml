@@ -1518,8 +1518,8 @@ jobs:
       #   the two forms, and a green from it settles nothing here.
       #
       #   MEASURED, adjacent context: a hyphenated dereference RESOLVES
-      #   on GitHub in the `inputs.` context. A workflow_dispatch of
-      #   missing-runs.yml with grace-minutes=7 ran
+      #   on GitHub in the `inputs.` context. A workflow_dispatch of a
+      #   scheduled run detector (#418, deleted in #747) with grace-minutes=7 ran
       #   `${{ inputs.grace-minutes || '20' }}` and the script echoed a
       #   7m grace, not the 20m default.
       #

@@ -140,9 +140,9 @@ esac
 #   second line, and the first one stays).
 #
 #   THE WRITE. GITHUB_OUTPUT and GITHUB_STEP_SUMMARY are file paths.
-#   Run directly with a job-shaped environment, test-ci-queue-watchdog.sh
-#   and test-purge-workflow-runs.sh hand the inherited paths straight to
-#   the tool under test, which appends to the real job's step outputs and
+#   Run directly with a job-shaped environment, test-purge-workflow-runs.sh
+#   hands the inherited paths straight to the tool under test, which
+#   appends to the real job's step outputs and
 #   job summary. No verdict moves and the job summary is not the
 #   suite's to write.
 #

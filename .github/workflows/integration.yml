@@ -211,9 +211,9 @@ on:
 # shorter at the same time. A job queued behind a full pool waits for a
 # running suite to release its runner, and that wait is now bounded by
 # the suite's own wall clock — which D41 takes from ~9m30 to under five
-# minutes. The watchdog's 600s queue budget cleared the old number and
-# clears the new one with more room, not less. It also names a shortage
-# as a shortage (#513) rather than letting it read as a suite failure.
+# minutes. A job no runner ever takes is cancelled by GitHub after 24
+# hours in the queue, and the per-ref group below means it holds only
+# its own ref meanwhile; nothing here cancels it sooner (#747).
 concurrency:
   # Branch pushes key on the COMMIT (#617): a merge burst into dev used to
   # evict the queued run, leaving a commit nothing ever tested. PR events
@@ -377,87 +377,6 @@ jobs:
           # about a missing artifact rather than about the build that
           # produced none.
           if-no-files-found: error
-
-  # Queue watchdog (#392). Runs alongside the suites on a hosted runner,
-  # so it is never queued behind the shortage it exists to report.
-  #
-  # timeout-minutes does not apply to a job no runner has picked up, so
-  # a pool shortage otherwise shows as a run that looks busy forever:
-  # the required `integration` context sits on Expected, the PR blocks,
-  # and the selfhosted-privileged concurrency group stays held. That
-  # happened on 2026-07-31 and was caught only by somebody looking.
-  #
-  # Deliberately NOT part of the `integration` aggregator's needs: this
-  # reports on a run that is failing to progress, and gating the
-  # aggregator on it would make the aggregator wait for the very thing
-  # that is stuck.
-  #
-  # That independence is also why the watchdog had no say in whether a
-  # PR could merge — it is not a required context, and the required
-  # aggregator does not read it. Since #477 it does not need one: it
-  # CANCELS the stuck run, and the cancellation reaches the aggregator
-  # through the suite rollup it already reads. The verdict travels by
-  # changing the run's state rather than by being asked for.
-  #
-  # Making `watchdog` a required context instead would not work: it is
-  # conditional on the gate's decision, so on a gate-skipped PR it never
-  # reports at all. The one always-present aggregator stays the single
-  # name branch protection knows.
-  watchdog:
-    needs: gate
-    if: needs.gate.outputs.decision == 'run'
-    runs-on: ubuntu-latest
-    # actions:write is what lets the watchdog CANCEL the run it condemns
-    # rather than only reporting it (#477). Reporting alone left the run
-    # holding the selfhosted-privileged concurrency group for hours after
-    # the check went red. Job-scoped rather than raised at the top level:
-    # this is the only job that needs to write, and the top-level block
-    # stays read-only for the other five (Scorecard #160).
-    permissions:
-      contents: read
-      actions: write
-    # Comfortably longer than the stuck budget below, so the watchdog
-    # gets to report rather than being killed mid-verdict.
-    timeout-minutes: 20
-    steps:
-      # No `ref:`, same reason as the gate (#593): this job runs
-      # scripts/ci-queue-watchdog.sh, which reports on the RUN — how
-      # long its jobs have been unassigned and why — and has no
-      # interest in the tree under test. Nothing it reads comes from
-      # the dispatched ref, so there is no reason to materialize it.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # It also classifies WHY nothing picked the job up and says so in
-      # an annotation, a step summary and the `starved` output (#513) —
-      # a capacity red and a suite failure looked identical in the
-      # checks UI, and the third concurrent run's red was routinely read
-      # as a broken dependency bump. `actions: write` above already
-      # covers the read of other in-flight runs the classifier needs.
-      - name: Fail if a suite job never gets a runner
-        id: watchdog
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GATE_REPO: ${{ github.repository }}
-        # 10 minutes, and the budget is a QUEUE budget: it bounds how
-        # long a job may sit with no runner, not how long one may run.
-        # The floor it has to clear is therefore one suite generation —
-        # a job queued behind a full pool waits for a running suite to
-        # release its runner. MEASURED 2026-09-06 in run 34064155841, the
-        # last run before D41: the longest suite job was 568s (9m28). D41
-        # takes that under 300s, so the floor this budget has to clear
-        # HALVES.
-        #
-        # Deliberately NOT tightened alongside D41's shorter suites, and
-        # the reason is the same one #877 gave. Firing this watchdog
-        # CANCELS the run, and D41 also takes the per-run privileged job
-        # ci-pool: integration-pool-jobs=11 ci-pool: pool-runners=16
-        # count from six to eleven against a pool of 16 — so where two
-        # runs used to fit, one does, and the SECOND run's jobs now
-        # genuinely queue rather than starting immediately. Tightening a
-        # destructive timeout at the moment the demand on the pool rises
-        # is how a capacity wobble becomes a cancelled run. 600s against
-        # a ~300s suite generation leaves a full generation of headroom;
-        # retune it against a measured pool, not against this change.
-        run: bash scripts/ci-queue-watchdog.sh "${{ github.run_id }}" 600 30
 
   # The suites. Identical except for the make target and log name, so a
   # matrix rather than near-duplicate job bodies — the previous single
