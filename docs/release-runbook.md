@@ -917,13 +917,27 @@ be true.
    once you know the shape of it.
 7. **Assemble the verification evidence, don't hand-write it.**
    ```sh
-   gh run list --workflow integration.yml --commit "$(git rev-parse HEAD)" \
-     --json databaseId,event,attempt,status,conclusion,startedAt,updatedAt,url
+   sha=$(git rev-parse HEAD)   # or the commit a skipped run's gate names
+   for id in $(gh run list --workflow integration.yml --commit "$sha" --json databaseId -q '.[].databaseId'); do
+     gh run view "$id" --json databaseId,event,attempt,conclusion,url,jobs -q '"\(.databaseId) \(.event) attempt \(.attempt) \(.conclusion) \(.url)\n  suites: \([.jobs[] | select(.name | endswith("-suite")) | .conclusion] | group_by(.) | map("\(length) \(.[0])") | join(", "))"'
+     gate=$(gh run view "$id" --json jobs -q '.jobs[] | select(.name == "gate") | .databaseId')
+     gh run view "$id" --log --job "$gate" | grep -o -E 'gate decision: (run|skip)|docs-only diff|already passed integration at [0-9a-f]{40}' | sed 's/^/  gate: /'
+   done
    ```
-   Lists every integration run on the release PR's head commit, with its
-   attempt and window. Paste the output into the release PR. Do not
-   reconstruct it from memory. An empty list is not evidence: wait for
-   the run, or find out why none started.
+   Lists every integration run on the release PR's head commit with its
+   attempt, its suite jobs by conclusion, and the gate's decision. Paste
+   the output into the release PR. Do not reconstruct it from memory. An
+   empty list is not evidence: wait for the run, or find out why none
+   started.
+
+   A run whose suites read `skipped` executed nothing, even when the run
+   itself reads `success`: the gate skipped it (#311, #312). Its gate line
+   says where the code was tested. `already passed integration at <commit>`
+   means run the command again with `sha=<commit>`; `docs-only diff` means
+   run it with the PR's base, `gh pr view <N> --json baseRefOid -q
+   .baseRefOid`. Repeat until a run shows its suites `success`, and paste
+   every hop, so the reader can follow the chain from this head to the run
+   that tested the code.
 
    The x86 pool runs each job in its own ephemeral container with its own
    Docker daemon, so another run on the pool at the same time does not
