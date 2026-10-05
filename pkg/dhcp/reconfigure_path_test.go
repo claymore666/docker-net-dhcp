@@ -35,7 +35,7 @@ func TestReconfigurePath_AChangedLeaseCarriesTheNewParametersToThePlugin(t *test
 	fresh := reconfV6Lease("2001:db8::5/128", "2001:db8::35", "new.example", now)
 
 	outRenew, emit, renewedAt := translateOne(
-		lease.Event{Kind: lease.Renewed, Lease: old}, now, time.Time{}, netip.Prefix{})
+		lease.Event{Kind: lease.Renewed, Lease: old}, now, renewalMark{}, netip.Prefix{})
 	if !emit {
 		t.Fatal("a Renewed emitted nothing, so a reconfigured client's Renew never reaches the plugin")
 	}
@@ -80,7 +80,7 @@ func TestReconfigurePath_AnInformationRequestAnswerIsAConfigEvent(t *testing.T) 
 			DNS:    []netip.Addr{netip.MustParseAddr("2001:db8::35")},
 			Search: []string{"new.example"},
 		},
-	}, now, time.Time{}, netip.Prefix{})
+	}, now, renewalMark{}, netip.Prefix{})
 	if !emit {
 		t.Fatal("a Configured emitted nothing, so the Information-request answer RFC 9915 " +
 			"section 18.2.11 lets a server ask for never reaches the plugin")

@@ -6,6 +6,8 @@ package plugin
 import (
 	"errors"
 	"net/netip"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -566,4 +568,82 @@ func TestApplyPrefixes_ALeaseWithoutTheAskedPrefixSaysSo(t *testing.T) {
 	if none := captureLog(t, func() { _ = plain.applyPrefixes(nil) }); strings.Contains(none, "carries no delegated prefix") {
 		t.Errorf("a network without ipv6_pd logged the absence:\n%s", none)
 	}
+
+	// dhcp-golib v1.4.2 keeps a held prefix a Rebind's Reply leaves out (dhcp-golib#64), so the resumed lease carries it.
+	held, _, _ := v6Manager(t)
+	held.opts.IPv6PD = 64
+	held.seedPrefixRoutes(&lease.Lease{Prefixes: []lease.Addr6{{Addr: netip.MustParsePrefix("fd00:98::/64")}}})
+	if kept := captureLog(t, func() { _ = held.applyPrefixes(pdInfo("fd00:98::/64").DelegatedPrefixes) }); strings.Contains(kept, "carries no delegated prefix") {
+		t.Errorf("a resumed lease that carries its held prefix logged the absence:\n%s", kept)
+	}
+}
+
+// dhcp-golib v1.4.2 reports a binding whose valid lifetime ends while bound as a Changed lease without it, which pkg/dhcp
+// delivers as "renew" (dhcp-golib#65, #214); the kernel's own tables are read back.
+func TestHandleEvent_ABindingEndingWhileBoundLeavesTheContainer(t *testing.T) {
+	if !inOwnNetns(t) {
+		return
+	}
+	full := []string{"fd00:98::10/128", "fd00:98::11/128", "fd00:98::99/128", "fd00:98:0:1::/64", "fd00:98:0:2::/64"}
+	for _, ends := range full[1:] {
+		t.Run(ends, func(t *testing.T) {
+			l := newRenumberLink(t, 0, "", "")
+			// The subtests share one namespace, and an aggregate sits on lo, which outlives the link.
+			for _, r := range unreachableV6Routes(t, l) {
+				if err := l.h.RouteDel(prefixAggregate(r.Dst)); err != nil {
+					t.Fatalf("clearing %s: %v", r.Dst, err)
+				}
+			}
+			m := &dhcpManager{netHandle: l.h, ctrLink: l.link}
+			m.opts.IPv6PD = 64
+			leaseWithout := func(without string) dhcp.Info {
+				info := dhcp.Info{IP: full[0], LeaseSeconds: 3600, PreferredSeconds: 1800}
+				for i, b := range full {
+					v := dhcp.V6Addr{IP: b, ValidSeconds: 3600, PreferredSeconds: 1800}
+					switch {
+					case b == without:
+					case i < 2:
+						info.Addrs = append(info.Addrs, v)
+					case i == 2:
+						info.TempAddrs = append(info.TempAddrs, v)
+					default:
+						info.DelegatedPrefixes = append(info.DelegatedPrefixes, v)
+					}
+				}
+				return info
+			}
+			m.handleEvent(dhcp.Event{Type: "bound", Data: leaseWithout("")}, true)
+			all := slices.Sorted(slices.Values(full))
+			if got := kernelV6Bindings(t, l); !equalStrings(got, all) {
+				t.Fatalf("after the bind the kernel holds %v, want %v", got, all)
+			}
+			m.handleEvent(dhcp.Event{Type: "renew", Data: leaseWithout(ends)}, true)
+			want := slices.DeleteFunc(slices.Clone(all), func(b string) bool { return b == ends })
+			if got := kernelV6Bindings(t, l); !equalStrings(got, want) {
+				t.Errorf("after %s ended the kernel holds %v, want %v", ends, got, want)
+			}
+		})
+	}
+}
+
+// kernelV6Bindings is the link's global v6 addresses and the namespace's unreachable v6 routes, sorted.
+func kernelV6Bindings(t *testing.T, l renumberLink) []string {
+	t.Helper()
+	out := l.addrs(t, netlink.FAMILY_V6)
+	for _, r := range unreachableV6Routes(t, l) {
+		out = append(out, r.Dst.String())
+	}
+	sort.Strings(out)
+	return out
+}
+
+// unreachableV6Routes lists the namespace's unreachable v6 routes in every table, whoever installed them.
+func unreachableV6Routes(t *testing.T, l renumberLink) []netlink.Route {
+	t.Helper()
+	routes, err := util.DumpResult(l.h.RouteListFiltered(netlink.FAMILY_V6, &netlink.Route{Table: unix.RT_TABLE_UNSPEC},
+		netlink.RT_FILTER_TABLE))
+	if err != nil {
+		t.Fatalf("RouteList: %v", err)
+	}
+	return slices.DeleteFunc(routes, func(r netlink.Route) bool { return r.Type != unix.RTN_UNREACHABLE || r.Dst == nil })
 }

@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/netip"
 	"runtime"
+	"slices"
 	"sync/atomic"
 	"time"
 
@@ -613,7 +614,7 @@ func (c *DHCPClient) translate() {
 	}
 	defer raWatch.Stop()
 
-	renewedAt := time.Time{}
+	var renewedAt renewalMark
 	for {
 		var ev lease.Event
 		select {
@@ -807,8 +808,22 @@ func sameRoutes(a, b []Route) bool {
 	return true
 }
 
+// renewalMark is the last Renewed's arrival and lease, which a Changed must match to be coalesced into it.
+type renewalMark struct {
+	at    time.Time
+	lease lease.Lease
+}
+
+// sameBindings reports whether two leases hold the same addresses, temporary addresses and prefixes.
+func sameBindings(a, b lease.Lease) bool {
+	same := func(x, y []lease.Addr6) bool {
+		return slices.EqualFunc(x, y, func(p, q lease.Addr6) bool { return p.Addr == q.Addr })
+	}
+	return a.Addr == b.Addr && same(a.Addrs, b.Addrs) && same(a.TempAddrs, b.TempAddrs) && same(a.Prefixes, b.Prefixes)
+}
+
 // translateOne translates one event with a supplied clock, returning the event, whether to emit, and the renewal mark.
-func translateOne(ev lease.Event, now, renewedAt time.Time, main netip.Prefix) (Event, bool, time.Time) {
+func translateOne(ev lease.Event, now time.Time, renewedAt renewalMark, main netip.Prefix) (Event, bool, renewalMark) {
 	info, dropped := infoFromLease(ev.Lease, ev.Router, now, main)
 
 	var out Event
@@ -822,11 +837,13 @@ func translateOne(ev lease.Event, now, renewedAt time.Time, main netip.Prefix) (
 	case lease.Acquired:
 		out = Event{Type: "bound", Data: info}
 	case lease.Renewed:
-		renewedAt = now
+		renewedAt = renewalMark{at: now, lease: ev.Lease}
 		out = Event{Type: "renew", Data: info}
 	case lease.Changed:
-		if now.Sub(renewedAt) < coalesceWindow {
-			// The Renewed for this ACK was already delivered, and "renew" re-applies a changed address (#899).
+		// The Renewed for this ACK was already delivered, and "renew" re-applies a changed address (#899). Since
+		// dhcp-golib v1.4.2 a binding whose valid lifetime ends while bound is a Changed of its own, so one that
+		// holds fewer bindings is never the Renewed's twin (dhcp-golib#65, #214).
+		if now.Sub(renewedAt.at) < coalesceWindow && sameBindings(ev.Lease, renewedAt.lease) {
 			return Event{}, false, renewedAt
 		}
 		out = Event{Type: "renew", Data: info}
