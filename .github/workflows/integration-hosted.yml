@@ -280,22 +280,19 @@ jobs:
           fi
           echo "br_netfilter loaded; bridge-nf-call-iptables=${val}"
 
-      # Build + install the plugin from THIS tree, exactly as
-      # integration.yml does, just under a hosted-specific tag.
-      - name: Build + install integration plugin
-        run: |
-          make PLUGIN_NAME=ghcr.io/claymore666/docker-net-dhcp PLUGIN_TAG=integration-hosted plugin
-          docker plugin rm -f "${INTEGRATION_PLUGIN_REF}" 2>/dev/null || true
-          # See integration.yml — the bind source must pre-exist (#440).
-          sudo mkdir -p /var/lib/net-dhcp
-          docker plugin create "${INTEGRATION_PLUGIN_REF}" plugin
-          # Same test-only outage cadence as integration.yml and
-          # coverage.yml (#278). This lane runs the failure suite too, so
-          # without it the hosted run pays the shipped 30s/25s on top of
-          # the fixture's immovable 2m lease — ~80s more than the other
-          # two lanes, against the same 35m budget.
-          docker plugin set "${INTEGRATION_PLUGIN_REF}" LOG_LEVEL=trace
-          docker plugin enable "${INTEGRATION_PLUGIN_REF}"
+      # Build the plugin from THIS tree, exactly as integration.yml does,
+      # just under a hosted-specific tag.
+      - name: Build integration plugin
+        run: make PLUGIN_NAME=ghcr.io/claymore666/docker-net-dhcp PLUGIN_TAG=integration-hosted plugin
+
+      # The shared install (#746). Trace logging also sets the test-only
+      # outage cadence (#278): without it this lane pays the shipped 30s/25s
+      # on top of the fixture's 2m lease, against the same 35m budget.
+      - name: Enable integration plugin
+        uses: ./.github/actions/install-plugin
+        with:
+          ref: ${{ env.INTEGRATION_PLUGIN_REF }}
+          dir: plugin
 
       # The Makefile targets require root (netns/veth/UDP-67). Hosted
       # runs as the `runner` user with passwordless sudo, so wrap with
@@ -380,6 +377,6 @@ jobs:
       # integration.yml so the two workflows read the same.
       - name: Tear down integration plugin
         if: always()
-        run: |
-          docker plugin disable "${INTEGRATION_PLUGIN_REF}" 2>/dev/null || true
-          docker plugin rm -f "${INTEGRATION_PLUGIN_REF}" 2>/dev/null || true
+        uses: ./.github/actions/teardown-plugin
+        with:
+          ref: ${{ env.INTEGRATION_PLUGIN_REF }}

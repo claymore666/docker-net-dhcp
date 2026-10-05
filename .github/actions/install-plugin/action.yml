@@ -1,0 +1,37 @@
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+name: Install the plugin under test
+description: Create, configure and enable a built plugin directory, making every /var/lib bind source its manifest declares first.
+inputs:
+  ref:
+    description: The plugin reference to install, for example ghcr.io/claymore666/docker-net-dhcp:integration.
+    required: true
+  dir:
+    description: The build directory `docker plugin create` reads, holding config.json and rootfs (plugin or plugin-cover).
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Install and enable the plugin
+      shell: bash
+      env:
+        PLUGIN_REF: ${{ inputs.ref }}
+        PLUGIN_DIR: ${{ inputs.dir }}
+      run: |
+        set -euo pipefail
+        docker plugin rm -f "${PLUGIN_REF}" 2>/dev/null || true
+        # The daemon does not create a missing bind source: `plugin enable`
+        # fails with "failed to fulfil mount request" (#440). The list comes
+        # from the manifest being installed, never a copy of it (#666).
+        # /var/lib only: mkdir -p over /var/run/docker.sock would replace the
+        # socket with a directory. The hosted lane runs unprivileged with sudo.
+        bind_sources() { jq -r '.mounts[]? | select(.type=="bind") | .source | select(startswith("/var/lib/"))' "${PLUGIN_DIR}/config.json"; }
+        if [ "$(id -u)" -eq 0 ]; then
+          bind_sources | xargs -r mkdir -p
+        else
+          bind_sources | xargs -r sudo mkdir -p
+        fi
+        docker plugin create "${PLUGIN_REF}" "${PLUGIN_DIR}"
+        # Trace logging is test-only; released images ship config.json's defaults.
+        docker plugin set "${PLUGIN_REF}" LOG_LEVEL=trace
+        docker plugin enable "${PLUGIN_REF}"

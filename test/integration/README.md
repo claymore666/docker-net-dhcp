@@ -499,7 +499,7 @@ Three consequences worth knowing before they cost you an afternoon:
   it picks up a job.** The runners are JIT and can sit idle after
   launch, so a slot can be serving an image older than the newest
   publish. That produced a ~25% per-job failure rate during #356 and
-  looked like a flaky suite. The `Verify fixture dependencies` step in
+  looked like a flaky suite. The `Verify the runner image` step in
   `integration.yml` exists to name that in seconds instead; if it
   fires, the runner is stale, not the code.
 
