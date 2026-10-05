@@ -1960,7 +1960,10 @@ route for the part of the prefix it serves, for example onto a downstream
 interface; that route is more specific than the aggregate and wins. A
 prefix whose valid lifetime ends while the lease is bound leaves
 `/Plugin.Health` and loses its route when the library reports the
-ending, one lease event for each instant at which bindings end (dhcp-golib v1.4.2). Kea delegates
+ending, one lease event for each instant at which bindings end (dhcp-golib v1.4.2). When one
+server delegates the prefix and another answers for the address, the
+prefix is renewed with, and released to, the server that delegated it
+(dhcp-golib v1.4.3). Kea delegates
 from a `pd-pools` entry of the subnet; dnsmasq cannot delegate, so on
 dnsmasq the endpoint runs as if the option were unset.
 
