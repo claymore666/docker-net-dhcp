@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	dContainer "github.com/docker/docker/api/types/container"
-	dNetwork "github.com/docker/docker/api/types/network"
+	dContainer "github.com/moby/moby/api/types/container"
+	dNetwork "github.com/moby/moby/api/types/network"
 	"github.com/vishvananda/netlink"
 )
 
@@ -255,8 +255,8 @@ func TestStart_ARegisterDNSNetworkTakesTheNameBeforeTheClientStarts(t *testing.T
 		},
 		containerResult: map[string]dContainer.InspectResponse{
 			"ctr-1": {
-				ContainerJSONBase: &dContainer.ContainerJSONBase{State: &dContainer.State{Pid: os.Getpid()}},
-				Config:            &dContainer.Config{Hostname: "web1"},
+				State:  &dContainer.State{Pid: os.Getpid()},
+				Config: &dContainer.Config{Hostname: "web1"},
 			},
 		},
 	}
@@ -305,8 +305,8 @@ func TestStart_TheDefaultNetworkTakesTheNameAfterTheClientStarts(t *testing.T) {
 		},
 		containerResult: map[string]dContainer.InspectResponse{
 			"ctr-1": {
-				ContainerJSONBase: &dContainer.ContainerJSONBase{State: &dContainer.State{Pid: os.Getpid()}},
-				Config:            &dContainer.Config{Hostname: "web1"},
+				State:  &dContainer.State{Pid: os.Getpid()},
+				Config: &dContainer.Config{Hostname: "web1"},
 			},
 		},
 	}
@@ -367,7 +367,7 @@ func TestReacquireEndpoint_AsksTheDaemonBeforeTheAttachBegins(t *testing.T) {
 			docker := &fakeDocker{
 				inspectResult: map[string]dNetwork.Inspect{
 					"net-1": {Containers: map[string]dNetwork.EndpointResource{
-						"ctr-1": {EndpointID: "ep-abcdef", MacAddress: "02:42:ac:11:00:02"},
+						"ctr-1": {EndpointID: "ep-abcdef", MacAddress: engineMAC("02:42:ac:11:00:02")},
 					}},
 				},
 				containerResult: map[string]dContainer.InspectResponse{

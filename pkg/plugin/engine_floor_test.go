@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	dTypes "github.com/docker/docker/api/types"
+	docker "github.com/moby/moby/client"
 )
 
 // Each spelling is one a daemon reports: upstream, Debian or Ubuntu `+dfsg1` and `+azure`, the
@@ -79,7 +79,7 @@ func TestMinEngineVersion_IsAMeasuredLine(t *testing.T) {
 }
 
 func engineFake(version, api string) *fakeDocker {
-	return &fakeDocker{versionResult: dTypes.Version{Version: version}, clientVersion: api}
+	return &fakeDocker{versionResult: docker.ServerVersionResult{Version: version}, clientVersion: api}
 }
 
 func TestProductionEngineVersion_IsABuildTheFloorAdmits(t *testing.T) {
@@ -221,7 +221,7 @@ func TestReprobeEngine_PublishesWithoutRefusing(t *testing.T) {
 	}
 
 	f.pingErr = nil
-	f.versionResult = dTypes.Version{Version: "19.03.15"}
+	f.versionResult = docker.ServerVersionResult{Version: "19.03.15"}
 	f.clientVersion = "1.40"
 
 	out := captureLog(t, func() { p.reprobeEngine(context.Background()) })

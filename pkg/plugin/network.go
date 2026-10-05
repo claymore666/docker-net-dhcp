@@ -20,9 +20,8 @@ import (
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
-	dContainer "github.com/docker/docker/api/types/container"
-	dNetwork "github.com/docker/docker/api/types/network"
 	"github.com/mitchellh/mapstructure"
+	dContainer "github.com/moby/moby/api/types/container"
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
@@ -450,7 +449,7 @@ func (p *Plugin) createBridgeNetwork(networkID string, opts DHCPNetworkOptions, 
 			}
 		}
 
-		nets, err := p.docker.NetworkList(context.Background(), dNetwork.ListOptions{})
+		nets, err := listNetworks(context.Background(), p.docker)
 		if err != nil {
 			return fmt.Errorf("failed to retrieve list of networks from Docker: %w", err)
 		}
@@ -474,9 +473,9 @@ func (p *Plugin) createBridgeNetwork(networkID string, opts DHCPNetworkOptions, 
 			}
 
 			for _, c := range n.IPAM.Config {
-				_, dockerCIDR, err := net.ParseCIDR(c.Subnet)
-				if err != nil {
-					return fmt.Errorf("failed to parse subnet %v on Docker network %v: %w", c.Subnet, n.ID, err)
+				dockerCIDR, ok := prefixIPNet(c.Subnet)
+				if !ok {
+					return fmt.Errorf("failed to parse subnet %v on Docker network %v: %w", c.Subnet, n.ID, errNoSubnet)
 				}
 				if bytes.Equal(dockerCIDR.Mask, net.CIDRMask(0, 32)) || bytes.Equal(dockerCIDR.Mask, net.CIDRMask(0, 128)) {
 					// Last check to make sure the network isn't 0.0.0.0/0 or ::/0 (which would always pass the check below)
@@ -833,7 +832,7 @@ func (p *Plugin) netOptionsRaw(ctx context.Context, id string) (DHCPNetworkOptio
 
 	dummy := DHCPNetworkOptions{}
 
-	n, err := p.docker.NetworkInspect(ctx, id, dNetwork.InspectOptions{})
+	n, err := inspectNetwork(ctx, p.docker, id)
 	if err != nil {
 		return dummy, fmt.Errorf("failed to get info from Docker: %w", err)
 	}
@@ -1855,7 +1854,7 @@ func (p *Plugin) daemonSaysContainerGone(r JoinRequest) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), vanishConfirmTimeout)
 	defer cancel()
 
-	nw, err := p.docker.NetworkInspect(ctx, r.NetworkID, dNetwork.InspectOptions{})
+	nw, err := inspectNetwork(ctx, p.docker, r.NetworkID)
 	if err != nil {
 		return false
 	}
@@ -1869,7 +1868,7 @@ func (p *Plugin) daemonSaysContainerGone(r JoinRequest) bool {
 	if ctrID == "" || strings.HasPrefix(ctrID, "ep-") {
 		return false
 	}
-	ctr, err := p.docker.ContainerInspect(ctx, ctrID)
+	ctr, err := inspectContainer(ctx, p.docker, ctrID)
 	if err != nil {
 		return cerrdefs.IsNotFound(err)
 	}

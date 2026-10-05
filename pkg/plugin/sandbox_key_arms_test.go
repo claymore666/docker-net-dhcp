@@ -13,8 +13,8 @@ import (
 
 	log "github.com/sirupsen/logrus"
 
-	dContainer "github.com/docker/docker/api/types/container"
-	dNetwork "github.com/docker/docker/api/types/network"
+	dContainer "github.com/moby/moby/api/types/container"
+	dNetwork "github.com/moby/moby/api/types/network"
 )
 
 type armCounts struct {
@@ -239,9 +239,7 @@ func TestStart_RecoveryTakesTheKeyFromTheInspect(t *testing.T) {
 		},
 		containerResult: map[string]dContainer.InspectResponse{
 			ctrID: {
-				ContainerJSONBase: &dContainer.ContainerJSONBase{
-					State: &dContainer.State{Pid: os.Getpid()},
-				},
+				State:           &dContainer.State{Pid: os.Getpid()},
 				Config:          &dContainer.Config{Hostname: "recovered"},
 				NetworkSettings: settings,
 			},

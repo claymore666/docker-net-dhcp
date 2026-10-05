@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	docker "github.com/moby/moby/client"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,7 +17,7 @@ import (
 	"time"
 
 	"github.com/claymore666/dhcp-golib/lease"
-	dNetwork "github.com/docker/docker/api/types/network"
+	dNetwork "github.com/moby/moby/api/types/network"
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 )
@@ -371,7 +372,7 @@ type inspectLog struct {
 	asked []string
 }
 
-func (l *inspectLog) NetworkInspect(ctx context.Context, id string, o dNetwork.InspectOptions) (dNetwork.Inspect, error) {
+func (l *inspectLog) NetworkInspect(ctx context.Context, id string, o docker.NetworkInspectOptions) (docker.NetworkInspectResult, error) {
 	l.asked = append(l.asked, id)
 	return l.fakeDocker.NetworkInspect(ctx, id, o)
 }

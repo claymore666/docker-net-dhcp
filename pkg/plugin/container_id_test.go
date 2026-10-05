@@ -6,12 +6,13 @@ package plugin
 import (
 	"context"
 	"errors"
+	docker "github.com/moby/moby/client"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	dNetwork "github.com/docker/docker/api/types/network"
+	dNetwork "github.com/moby/moby/api/types/network"
 )
 
 // inspectStep is one scripted NetworkInspect answer.
@@ -30,7 +31,7 @@ type scriptedInspectDocker struct {
 	delay  time.Duration
 }
 
-func (s *scriptedInspectDocker) NetworkInspect(_ context.Context, _ string, _ dNetwork.InspectOptions) (dNetwork.Inspect, error) {
+func (s *scriptedInspectDocker) NetworkInspect(_ context.Context, _ string, _ docker.NetworkInspectOptions) (docker.NetworkInspectResult, error) {
 	n := int(s.calls.Add(1))
 	if s.delay > 0 {
 		time.Sleep(s.delay)
@@ -41,7 +42,7 @@ func (s *scriptedInspectDocker) NetworkInspect(_ context.Context, _ string, _ dN
 	if i >= len(s.script) {
 		i = len(s.script) - 1
 	}
-	return s.script[i].res, s.script[i].err
+	return docker.NetworkInspectResult{Network: s.script[i].res}, s.script[i].err
 }
 
 func listing(ctrID, epID string) dNetwork.Inspect {

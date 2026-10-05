@@ -18,7 +18,7 @@ import (
 	"github.com/claymore666/dhcp-golib/lease"
 	"github.com/claymore666/dhcp-golib/proto"
 	"github.com/claymore666/dhcp-golib/wire"
-	dContainer "github.com/docker/docker/api/types/container"
+	dContainer "github.com/moby/moby/api/types/container"
 	"github.com/vishvananda/netlink"
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"

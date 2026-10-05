@@ -17,7 +17,6 @@ import (
 
 	"github.com/claymore666/dhcp-golib/lease"
 	"github.com/claymore666/dhcp-golib/proto"
-	dNetwork "github.com/docker/docker/api/types/network"
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
@@ -405,7 +404,7 @@ func (m *dhcpManager) containerID() string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	dockerNet, err := m.docker.NetworkInspect(ctx, m.joinReq.NetworkID, dNetwork.InspectOptions{})
+	dockerNet, err := inspectNetwork(ctx, m.docker, m.joinReq.NetworkID)
 	if err != nil {
 		log.WithError(err).WithFields(m.logFields(false)).Debug("ledger container lookup failed")
 		return ""
@@ -467,7 +466,7 @@ func bareIP(cidr string) string {
 // findContainerPID returns the host PID and container ID behind this endpoint; the ID travels with the PID because
 // the PID may be recycled before use, and openContainerProc checks the pair (#688).
 func (m *dhcpManager) findContainerPID(ctx context.Context) (int, string, error) {
-	dockerNet, err := m.docker.NetworkInspect(ctx, m.joinReq.NetworkID, dNetwork.InspectOptions{})
+	dockerNet, err := inspectNetwork(ctx, m.docker, m.joinReq.NetworkID)
 	if err != nil {
 		return 0, "", fmt.Errorf("NetworkInspect: %w", err)
 	}
@@ -475,7 +474,7 @@ func (m *dhcpManager) findContainerPID(ctx context.Context) (int, string, error)
 		if info.EndpointID != m.joinReq.EndpointID {
 			continue
 		}
-		ins, err := m.docker.ContainerInspect(ctx, ctrID)
+		ins, err := inspectContainer(ctx, m.docker, ctrID)
 		if err != nil {
 			return 0, "", fmt.Errorf("ContainerInspect(%s): %w", shortID(ctrID), err)
 		}
@@ -2018,7 +2017,7 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 			return nil
 		}
 		if err := util.AwaitCondition(ctx, func() (bool, error) {
-			dockerNet, err := m.docker.NetworkInspect(ctx, m.joinReq.NetworkID, dNetwork.InspectOptions{})
+			dockerNet, err := inspectNetwork(ctx, m.docker, m.joinReq.NetworkID)
 			if err != nil {
 				return false, fmt.Errorf("failed to get Docker network info: %w", err)
 			}

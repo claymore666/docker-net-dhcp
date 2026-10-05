@@ -12,8 +12,8 @@ import (
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
-	dContainer "github.com/docker/docker/api/types/container"
-	dNetwork "github.com/docker/docker/api/types/network"
+	dContainer "github.com/moby/moby/api/types/container"
+	dNetwork "github.com/moby/moby/api/types/network"
 
 	"encoding/json"
 )
@@ -24,17 +24,13 @@ func notFoundErr() error {
 
 func running() dContainer.InspectResponse {
 	return dContainer.InspectResponse{
-		ContainerJSONBase: &dContainer.ContainerJSONBase{
-			State: &dContainer.State{Running: true, Status: "running", Pid: 4242},
-		},
+		State: &dContainer.State{Running: true, Status: "running", Pid: 4242},
 	}
 }
 
 func stopped(status string) dContainer.InspectResponse {
 	return dContainer.InspectResponse{
-		ContainerJSONBase: &dContainer.ContainerJSONBase{
-			State: &dContainer.State{Running: false, Status: status},
-		},
+		State: &dContainer.State{Running: false, Status: dContainer.ContainerState(status)},
 	}
 }
 
@@ -85,7 +81,7 @@ func TestContainerGone(t *testing.T) {
 			name: "a container with no State is gone",
 			id:   "c1",
 			fake: &fakeDocker{containerResult: map[string]dContainer.InspectResponse{
-				"c1": {ContainerJSONBase: &dContainer.ContainerJSONBase{}},
+				"c1": {},
 			}},
 			want:   true,
 			reason: "a response carrying no state cannot be reporting a running container",
