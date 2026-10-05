@@ -12,6 +12,7 @@ import (
 
 	"github.com/claymore666/dhcp-golib/lease"
 	"github.com/claymore666/dhcp-golib/proto"
+	"github.com/claymore666/dhcp-golib/wire"
 )
 
 func testIdentity6(t *testing.T, mac string) Identity6 {
@@ -241,5 +242,83 @@ func TestRecords6_TheReconfigureKeySurvivesAReopen(t *testing.T) {
 	if !res.Lease.ReconfigureReplaySeen || res.Lease.ReconfigureReplay != 0 {
 		t.Errorf("replay floor came back as (%d, seen=%v), want (0, seen=true): a recorded zero is a floor, not none",
 			res.Lease.ReconfigureReplay, res.Lease.ReconfigureReplaySeen)
+	}
+}
+
+// releaseTo is one Release datagram's Server Identifier and IA_PD count.
+type releaseTo struct {
+	server []byte
+	pds    int
+}
+
+// dhcp-golib v1.4.3 keeps the server that delegated a prefix beside the address server (dhcp-golib#70); the plugin's
+// record-built Release sends one datagram per server, so the journal must keep both through a compaction (#214).
+func TestRecords6_ASplitLeaseKeepsItsPrefixServerThroughACompactionAndAReopen(t *testing.T) {
+	addrServer, prefixServer := []byte{0, 3, 0, 1, 2, 2, 2, 2, 2, 2}, []byte{0, 3, 0, 1, 4, 4, 4, 4, 4, 4}
+	for _, tc := range []struct {
+		name      string
+		pdServer  []byte
+		wantGrams []releaseTo
+	}{
+		{"split", prefixServer, []releaseTo{{addrServer, 0}, {prefixServer, 1}}},
+		{"one server, as every v1.4.2 record", nil, []releaseTo{{addrServer, 1}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, path := testRecords(t)
+			mac := []byte{0x02, 0x42, 0xac, 0x11, 0x00, 0x02}
+			id6 := testIdentity6(t, "02:42:ac:11:00:02")
+			now := time.Now()
+			held := func(at time.Time) lease.Lease {
+				return lease.Lease{
+					Addr:             netip.MustParsePrefix("2001:db8::5/128"),
+					Acquired:         at,
+					Renew:            at.Add(10 * time.Second),
+					Rebind:           at.Add(16 * time.Second),
+					Expire:           at.Add(time.Hour),
+					ServerDUID:       addrServer,
+					IAID:             id6.IAID,
+					Prefixes:         []lease.Addr6{{Addr: netip.MustParsePrefix("2001:db8:1:100::/64"), Valid: at.Add(time.Hour)}},
+					PrefixServerDUID: tc.pdServer,
+				}
+			}
+			mustRecord(t, r.Created6("ep-v6", "net-1", mac, id6.Bytes()))
+			mustRecord(t, r.Bound("ep-v6"))
+			mustRecord(t, r.Observed("ep-v6", lease.Event{Kind: lease.Acquired, Lease: held(now)}, nil))
+			mustRecord(t, r.Observed("ep-v6", lease.Event{Kind: lease.Renewed, Lease: held(now.Add(10 * time.Second))}, nil))
+			mustRecord(t, r.Observed("ep-v6", lease.Event{Kind: lease.Renewed, Lease: held(now.Add(20 * time.Second))}, nil))
+			if err := compactNow(t, r, now.Add(time.Minute)); err != nil {
+				t.Fatalf("compact: %v", err)
+			}
+			mustRecord(t, r.Close())
+
+			reopened, err := OpenRecords(path, "instance-b")
+			if err != nil {
+				t.Fatalf("reopen: %v", err)
+			}
+			t.Cleanup(func() { _ = reopened.Close() })
+			rb, err := reopened.Rebuilt()
+			if err != nil {
+				t.Fatalf("Rebuilt: %v", err)
+			}
+			rec, ok := rb.ByID("ep-v6")
+			if !ok {
+				t.Fatal("the record did not survive the compaction")
+			}
+			grams, err := lease.BuildReleases(rec, 0x00abcdef)
+			if err != nil || len(grams) != len(tc.wantGrams) {
+				t.Fatalf("the reopened record releases as %d datagram(s), %v; want %d", len(grams), err, len(tc.wantGrams))
+			}
+			for i, want := range tc.wantGrams {
+				msg, err := wire.DecodeV6(grams[i].Payload)
+				if err != nil {
+					t.Fatalf("datagram %d: %v", i, err)
+				}
+				sid, _ := msg.Options.First(wire.OptV6ServerID)
+				if pds := msg.Options.Count(wire.OptV6IAPD); !bytes.Equal(sid, want.server) || pds != want.pds {
+					t.Errorf("datagram %d goes to %x with %d IA_PD; want %x with %d (RFC 8415 section 18.2.7)",
+						i, sid, pds, want.server, want.pds)
+				}
+			}
+		})
 	}
 }
