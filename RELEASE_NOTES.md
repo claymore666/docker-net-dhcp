@@ -8,6 +8,18 @@ The notes below go back to the first release of this project.
 
 [predecessor]: https://github.com/devplayer0/docker-net-dhcp
 
+## v2.5.0 (unreleased)
+
+### Fixed
+
+- An IPv6 route a router advertises (RFC 4191 Route Information) is now
+  added again at the next advertisement when adding it failed, and removed
+  again when removing it failed; before, one failed write left the
+  container wrong until it restarted. A route Join installed, or one on
+  the container's link when the plugin restarted, is now removed when the
+  router stops advertising it. Host routes Join copied into the container
+  stay, and nothing is removed before a router has been heard (#1239).
+
 ## v2.4.0
 
 The client reads and sends more DHCP options: Rapid Commit on both address
