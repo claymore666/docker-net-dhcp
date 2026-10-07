@@ -685,6 +685,22 @@ be true.
    confirmation is the point of the script, and the reason it has no
    push mode.
 
+   **Check the starter-task claims against the live tracker** (#748). The
+   README's Contributing section and the badge's `small_tasks` answer
+   assert that the `good first issue` label has open issues, or that it
+   has none and the README says so. Both decay without a commit, so run
+   the live half of the gate once, with `gh` signed in:
+
+   ```sh
+   bash scripts/check-good-first-issues.sh --live
+   ```
+
+   Exit 0 means the claims hold. Exit 1 names the side to fix: the README
+   link, `small_tasks_status`, or the issues the justification cites. Fix
+   it on the release branch with the rest of this step. Exit 2 means the
+   API could not be read; run it again rather than treating it as a pass.
+   The offline half already runs on every pull request.
+
    The work happens here, on the release branch. The rc dry-run (step 8)
    is the **enforcement gate**: the real `vX.Y.Z` tag does not ship
    until every milestone PR is ticked off against the docs. By the real
