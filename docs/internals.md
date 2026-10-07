@@ -78,7 +78,9 @@ The parts and what passes between them are drawn in
    reason. Between the two calls nothing on the host answers to the
    `dh-` name, so those lookups go through one reader that waits for a
    rename in flight; the rename's own lookup is the exception and runs
-   inside it.
+   inside it. The link is up at that point, so a kernel before 6.2
+   refuses the rename with `EBUSY` and the link keeps its `dh-` name
+   (#1248).
 8. The client keeps running, renewing the lease when required, until the
    container shuts down.
 
