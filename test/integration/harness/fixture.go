@@ -499,6 +499,7 @@ const (
 	VlanTaggedPoolEnd     = "192.168.111.99"
 	VlanTaggedCIDR        = "192.168.111.0/24"
 	vlanUntaggedAddr      = "192.168.112.1/24"
+	VlanUntaggedCIDR      = "192.168.112.0/24"
 	vlanUntaggedPoolStart = "192.168.112.10"
 	vlanUntaggedPoolEnd   = "192.168.112.99"
 )

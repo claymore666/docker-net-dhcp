@@ -8,6 +8,18 @@ The notes below go back to the first release of this project.
 
 [predecessor]: https://github.com/devplayer0/docker-net-dhcp
 
+## v2.5.0 (unreleased)
+
+### Fixed
+
+- A container on two ipvlan networks whose links share a MAC, such as two
+  networks on one parent or one on the parent and one on its `vlan=N`
+  sub-interface, now runs each network's DHCP client on that network's
+  link. Before, the second network's client could run on the first
+  network's link, so its renewals left on the wrong segment and its
+  address, routes and MTU landed on the wrong interface. The same holds
+  for a macvlan `passthru` link, which also wears its parent's MAC (#1243).
+
 ## v2.4.0
 
 The client reads and sends more DHCP options: Rapid Commit on both address
