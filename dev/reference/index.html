@@ -2323,8 +2323,16 @@ kernel-generated MACs as macvlan children of a host NIC
 <h3 id="ipvlan">ipvlan<a class="headerlink" href="#ipvlan" title="Permanent link">&para;</a></h3>
 <p>Like macvlan, but children share the parent NIC's MAC, for switches or
 hypervisors that refuse multiple MACs per port (sticky-MAC port
-security, hostile vSwitches, some Wi-Fi APs). The DHCP server must key
-reservations on DHCP option 61 (client identifier) and never on MAC:</p>
+security, hostile vSwitches, some Wi-Fi APs). A reservation on the MAC
+matches nothing useful, since every child shows the parent's MAC. The
+client identifier (DHCP option 61) is built from the Docker endpoint ID,
+and Docker mints a new one at every <code>docker restart</code>, so a reservation on
+it holds only until the container restarts. ipvlan has no per-container
+reservation key that survives a restart unless the network sets
+<code>client_id</code>, which gives every container on it the same identity. To pin
+an address, use <a href="#requesting-a-specific-address"><code>--ip</code></a>; for
+reservations on the server, use macvlan. See
+<a href="#dhcp-identity">DHCP identity</a>.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.4.0<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">    </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">    </span>-o<span class="w"> </span><span class="nv">mode</span><span class="o">=</span>ipvlan<span class="w"> </span>-o<span class="w"> </span><span class="nv">parent</span><span class="o">=</span>eth0<span class="w"> </span><span class="se">\</span>
@@ -2737,7 +2745,7 @@ value as an invalid duration.</p>
 <td>bridge, macvlan</td>
 <td>unset</td>
 <td>v2.5.0</td>
-<td>Ask the DHCPv6 server for a delegated prefix of this length (an IA_PD with a prefix-length hint, RFC 8415 section 21.21) in every Solicit and Request, beside the address. A prefix length from 1 to 128, usually <code>64</code>; an empty value is unset and anything else is refused at <code>docker network create</code>. The prefix is for software in the container that routes, such as a VPN or a nested network: the plugin puts it on no link (RFC 3633 section 12.1) and installs one route for it in the container, <code>unreachable &lt;prefix&gt; proto dhcp</code>, which the kernel places on <code>lo</code>. Routes the container adds for parts of the prefix are more specific and win; traffic for the unused rest is refused in the container instead of going back out the default route. The route follows the lease: it is replaced when a renewal brings a different prefix, removed when the prefix's valid lifetime ends while the lease is bound, removed when the lease is lost, removed at <code>docker network disconnect</code> and <code>docker stop</code>, and removed before the Release when the network sets <code>release_lease=on_stop</code>. A plugin restart leaves it in place and resumes the lease with a Rebind, which carries the prefix (RFC 8415 section 18.2.12). It is installed whether or not <code>skip_routes</code> is set, since it is the plugin's own route and not one the server advertised. A server that has no prefix to give answers NoPrefixAvail for the IA_PD alone (RFC 8415 section 18.2.10.1): the endpoint keeps its address and runs with no route. Refused with <code>ipv6_mode=off</code> and <code>ipv6_mode=slaac</code>, which send no Solicit, and in <code>mode=ipvlan</code>, unsupported because the router routes the prefix to the endpoint's link-local address and ipvlan slaves share the parent's link. The upstream router must route the delegated prefix to the container, as it does for any delegating router; the plugin does not configure the router. See <a href="#delegated-prefixes">Delegated prefixes</a>. (#214)</td>
+<td>Ask the DHCPv6 server for a delegated prefix of this length (an IA_PD with a prefix-length hint, RFC 8415 section 21.21) in every Solicit and Request, beside the address. A prefix length from 1 to 128, usually <code>64</code>; an empty value is unset and anything else is refused at <code>docker network create</code>. The prefix is for software in the container that routes, such as a VPN or a nested network: the plugin puts it on no link (RFC 3633 section 12.1) and installs one route for it in the container, <code>unreachable &lt;prefix&gt; proto dhcp</code>, which the kernel places on <code>lo</code>. Routes the container adds for parts of the prefix are more specific and win; traffic for the unused rest is refused in the container instead of going back out the default route. The route follows the lease: it is replaced when a renewal brings a different prefix, removed when the prefix's valid lifetime ends while the lease is bound, removed when the lease is lost, removed at <code>docker network disconnect</code> and <code>docker stop</code>, and removed before the Release when the network sets <code>release_lease=on_stop</code>. A plugin restart leaves it in place and resumes the lease with a Rebind, which carries the prefix (RFC 8415 section 18.2.12). It is installed whether or not <code>skip_routes</code> is set, since it is the plugin's own route and not one the server advertised. A server that has no prefix to give answers NoPrefixAvail for the IA_PD alone (RFC 8415 section 18.2.10.1): the endpoint keeps its address and runs with no route. Refused with <code>ipv6_mode=off</code> and <code>ipv6_mode=slaac</code>, which send no Solicit; with <code>ipv6_mode=auto</code> it applies when the network leases over DHCPv6, and on the SLAAC fallback no IA_PD is sent, so the endpoint has no prefix and no route and the plugin logs one info line when the fallback address binds, "carries no delegated prefix although ipv6_pd asks for one". It is also refused in <code>mode=ipvlan</code>, unsupported because the router routes the prefix to the endpoint's link-local address and ipvlan slaves share the parent's link. The upstream router must route the delegated prefix to the container, as it does for any delegating router; the plugin does not configure the router. See <a href="#delegated-prefixes">Delegated prefixes</a>. (#214)</td>
 </tr>
 <tr>
 <td><code>ipv6_iid</code></td>
@@ -3919,12 +3927,12 @@ plugin's client accepts one, and has since v2.1.1's DHCP library pin
 </tr>
 </tbody>
 </table>
-<p><strong>There is no counter for this yet.</strong> A Reconfigure the client accepted
-and one it discarded are both invisible on <code>/Plugin.Health</code> and on
-<code>/metrics</code>: the DHCP library counts them rule by rule in its lease
-statistics, and the plugin publishes none of those numbers. The counters
-are part of <a href="https://github.com/claymore666/docker-net-dhcp/issues/925">#925</a>
-and land when the plugin reads them.</p>
+<p><strong>Two counters show it.</strong> <code>reconfigures_accepted</code> counts a Reconfigure
+the client accepted and <code>reconfigures_refused</code> one it discarded, on
+<code>/Plugin.Health</code> and on <code>/metrics</code> (v2.4.0+,
+<a href="https://github.com/claymore666/docker-net-dhcp/issues/1119">#1119</a>).
+The refused count does not say which rule refused; that is in the
+library's journal. See <a href="#pluginhealth"><code>/Plugin.Health</code></a>.</p>
 <p><strong>Two bounds worth knowing.</strong> A reconfigure key survives a plugin
 restart: the lease record carries the key, the replay detection value
 and whether one exists, and a resume restores them for the server that
@@ -4551,7 +4559,7 @@ already parse it were not told to expect a new type.</p>
 <td><code>tombstone_write_failures</code></td>
 <td>yes</td>
 <td>fail</td>
-<td>Failed tombstone saves (disk full, EROFS). The next restart of some container will pick a fresh MAC/IP instead of inheriting. Since v1.8.0 it also moves when the tombstone file could not be <strong>read</strong> for a transient reason (EIO, a read racing a writer): the plugin refuses to rewrite the file from nothing instead of destroying contents that may be perfectly good, and the consequence for that endpoint is identical to a failed write. The name is narrower than the meaning; the meaning is "an endpoint will not keep its address across a restart" (#724).</td>
+<td>Failed tombstone saves (disk full, EROFS). The next restart of some container will pick a fresh MAC/IP instead of inheriting. Since v1.8.0 a save also fails, and this moves, when the read that precedes it fails for a transient reason (EIO, a read racing a writer): the plugin refuses to rewrite the file from nothing instead of destroying contents that may be perfectly good, and the consequence for that endpoint is identical to a failed write. <strong>Only the write path counts.</strong> A read failure when a restarting container looks up its tombstone is logged (<code>Failed to load tombstones; treating as empty</code>) and counted nowhere, and that container starts with a fresh MAC and address (#724).</td>
 </tr>
 <tr>
 <td><code>tombstone_quarantines</code></td>
@@ -4653,7 +4661,7 @@ already parse it were not told to expect a new type.</p>
 <td><code>dhcp_server_policy_exhausted</code></td>
 <td>no</td>
 <td>n/a</td>
-<td>(v1.8.0+) Initial acquisitions abandoned because <strong>no</strong> server listed in <code>dhcp_servers</code> answered (#111). Not healthy-affecting on its own: the acquisition failure it accompanies already fails the operation and is counted. It exists because "the servers you named are all silent" and "DHCP is broken" look identical in a timeout log and call for different action.</td>
+<td>(v1.8.0+) Initial acquisitions abandoned because <strong>no</strong> server listed in <code>dhcp_servers</code> answered (#111). Not healthy-affecting on its own: the acquisition failure it accompanies already fails the operation, and <code>dhcp_timeouts</code> does not count that failure (see its row). It exists because "the servers you named are all silent" and "DHCP is broken" look identical in a timeout log and call for different action.</td>
 </tr>
 <tr>
 <td><code>dhcp_server_policy_timeouts</code></td>
@@ -4665,13 +4673,13 @@ already parse it were not told to expect a new type.</p>
 <td><code>dhcp_timeouts</code></td>
 <td>no</td>
 <td>n/a</td>
-<td>DHCP failures reported by the client itself: an acquisition that found no server, or a held lease that ran out without being renewed. <strong>Changed in 2.0.</strong> 1.x had no direct signal and inferred one from a watchdog that compared the granted lifetime against the time since the client was last served, so a bound endpoint's outage surfaced only after its whole lease had elapsed plus one watchdog tick, up to ~24 hours on a 24-hour lease. The in-tree client owns the lease and its own retransmission schedule, so it reports the failure when the schedule runs out instead of one watchdog tick later. <strong>Read that per case.</strong> For an acquisition the schedule is bounded by <code>lease_timeout</code>, so the counter moves at the end of that budget. For a <strong>held</strong> lease the client keeps retransmitting until the lease itself expires, so on a long lease the counter still moves only at the end of it; <code>renewals_unanswered</code> is the earlier signal there (#940), and the two rows are read together. <code>OUTAGE_TICK</code> and <code>OUTAGE_GRACE</code> are gone with the watchdog. v4+v6 aggregate, equal to its <code>_v4</code> half in 2.0.</td>
+<td>DHCP failures reported by a running client itself: one tick for each <code>leasefail</code> the container's persistent client raises when its retransmission schedule runs out with no server answering, which includes a held lease that ran out without being renewed. <strong>A container whose first lease fails does not move it.</strong> The acquisition at endpoint creation runs before that client exists and its failure only fails <code>docker run</code>, so with the server down or UDP 67 and 68 blocked, containers fail to start and this counter stays at 0. What moves then is <code>dhcp_server_tier_fallbacks</code> for each step down the <code>dhcp_servers</code> ladder and, only when <code>dhcp_servers</code> is set, <code>dhcp_server_policy_exhausted</code>; with no <code>dhcp_servers</code> a failed first acquisition moves none of the three and shows only as the <code>docker run</code> error. <strong>Changed in 2.0.</strong> 1.x had no direct signal and inferred one from a watchdog that compared the granted lifetime against the time since the client was last served, so a bound endpoint's outage surfaced only after its whole lease had elapsed plus one watchdog tick, up to ~24 hours on a 24-hour lease. The in-tree client owns the lease and its own retransmission schedule, so it reports the failure when the schedule runs out instead of one watchdog tick later. <strong>Read that against the lease.</strong> On a <strong>held</strong> lease the client keeps retransmitting until the lease itself expires, so on a long lease the counter moves only at the end of it; <code>renewals_unanswered</code> is the earlier signal there (#940), and the two rows are read together. <code>OUTAGE_TICK</code> and <code>OUTAGE_GRACE</code> are gone with the watchdog. v4+v6 aggregate, equal to its <code>_v4</code> half in 2.0.</td>
 </tr>
 <tr>
 <td><code>client_stop_failures</code></td>
 <td>no</td>
 <td>n/a</td>
-<td>(renamed from <code>lease_release_failures</code> in v1.9.0, #800) A renewal client did not shut down cleanly when the plugin stopped it at teardown. <strong>What "cleanly" means changed in 2.0:</strong> there is no client process to signal and no exit status to read. The plugin cancels the client's context and waits for its goroutine to return, so a tick here means the run loop came back with an error that was not the cancellation, or did not come back inside the finish timeout at all. It does <strong>not</strong> mean a lease went unreleased: since v1.9.0 nothing this plugin runs sends a DHCPRELEASE on any path, so every stopped container's address is held until it expires whatever this counter reads. A pattern points at clients wedging in their own loop, or at a finish timeout set too tight.</td>
+<td>(renamed from <code>lease_release_failures</code> in v1.9.0, #800) A renewal client did not shut down cleanly when the plugin stopped it at teardown. <strong>What "cleanly" means changed in 2.0:</strong> there is no client process to signal and no exit status to read. The plugin cancels the client's context and waits for its goroutine to return, so a tick here means the run loop came back with an error that was not the cancellation, or did not come back inside the finish timeout at all. It does <strong>not</strong> mean a lease went unreleased: the client's stop sends no DHCPRELEASE, and whether the address goes back is the network's <code>release_lease</code> setting, which sends one itself (see the <code>release_lease</code> row, and <code>releases_sent</code> and <code>release_failures</code>). On the default <code>never</code> every stopped container's address is held until it expires whatever this counter reads. A pattern points at clients wedging in their own loop, or at a finish timeout set too tight.</td>
 </tr>
 <tr>
 <td><code>releases_sent</code></td>
@@ -5495,8 +5503,8 @@ consumer-side:</p>
 </tr>
 <tr>
 <td>Reservations don't stick on ipvlan</td>
-<td>DHCP server keys on MAC only, ignores option 61</td>
-<td>Use <code>mode=macvlan</code>, or configure the server to honor client identifiers</td>
+<td>ipvlan has no per-container reservation key that survives a restart: every child shows the parent's MAC, and the default client identifier comes from the endpoint ID, which Docker replaces at each <code>docker restart</code></td>
+<td>Pin an address with <code>--ip</code> (see <a href="#requesting-a-specific-address">Requesting a specific address</a>), or use <code>mode=macvlan</code>, where a MAC reservation holds</td>
 </tr>
 <tr>
 <td>One container on two plugin networks fails to start with <code>cannot program address ... conflicts with existing route</code></td>
