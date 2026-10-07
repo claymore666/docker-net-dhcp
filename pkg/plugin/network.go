@@ -416,7 +416,7 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		}
 	}
 	done := p.beginBridgeCreate(opts)
-	created, err := p.ensureBridge(context.Background(), opts, "create_network")
+	created, taken, err := p.ensureBridgeTaking(context.Background(), opts, "create_network")
 	if err == nil {
 		err = p.createBridgeNetwork(r.NetworkID, opts, binding)
 	}
@@ -424,6 +424,9 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 	if err != nil {
 		if created {
 			p.retireBridge(context.Background(), r.NetworkID, opts, "create_network_failed")
+		}
+		if taken {
+			p.releaseParent(context.Background(), opts, "create_network_failed")
 		}
 		return err
 	}

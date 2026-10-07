@@ -473,6 +473,8 @@ type Plugin struct {
 	// bridgeMu and bridgePending do the same for a bridge this plugin makes from parent (#903).
 	bridgeMu      sync.Mutex
 	bridgePending map[string]int
+	// bridgeTaken holds the bridges whose parent an in-flight create enslaved again and no other call has relied on since (#1242).
+	bridgeTaken map[string]bool
 
 	// createMu guards creating, the CreateNetwork calls not yet returned, in no network list; a leaf lock (#1187).
 	createMu  sync.Mutex

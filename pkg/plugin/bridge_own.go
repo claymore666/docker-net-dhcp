@@ -322,51 +322,70 @@ func bridgeParentRefusal(opts DHCPNetworkOptions, exists bool) error {
 	return nil
 }
 
-// ensureBridge adopts the bridge this plugin marked, enslaving the parent again when a reboot released it, or
-// creates, marks and enslaves it. It runs at CreateNetwork and before every child, since a host reboot loses the bridge
-// while Docker keeps the network (#903). It reports whether it created one.
+// ensureBridge is ensureBridgeTaking for the callers that have nothing to undo (#903).
 func (p *Plugin) ensureBridge(ctx context.Context, opts DHCPNetworkOptions, op string) (bool, error) {
+	created, _, err := p.ensureBridgeTaking(ctx, opts, op)
+	return created, err
+}
+
+// ensureBridgeTaking adopts the bridge this plugin marked, enslaving the parent again when a reboot released it, or
+// creates, marks and enslaves it, since a host reboot loses the bridge while Docker keeps the network (#903). It
+// reports whether it created the bridge and whether it enslaved the parent again, which a failed create undoes (#1242).
+func (p *Plugin) ensureBridgeTaking(ctx context.Context, opts DHCPNetworkOptions, op string) (bool, bool, error) {
 	if !opts.ownsBridge() {
-		return false, nil
+		return false, false, nil
 	}
 	p.bridgeMu.Lock()
 	defer p.bridgeMu.Unlock()
 
 	parent, err := validateParentForChild(opts.Parent)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	if existing, err := nlLinkByName(opts.Bridge); err == nil {
 		if !bridgeOwned(existing) {
-			return false, bridgeNotOursRefusal(opts, existing)
+			return false, false, bridgeNotOursRefusal(opts, existing)
 		}
 		if parent.Attrs().MasterIndex == existing.Attrs().Index {
-			return false, nil
+			// Another call now relies on the port, so the create that enslaved it leaves it be (#1242).
+			delete(p.bridgeTaken, opts.Bridge)
+			return false, false, nil
 		}
-		return false, p.enslaveAgain(ctx, opts, parent, existing, op)
+		if err := p.enslaveAgain(ctx, opts, parent, existing, op); err != nil {
+			return false, false, err
+		}
+		if p.bridgeTaken == nil {
+			p.bridgeTaken = map[string]bool{}
+		}
+		p.bridgeTaken[opts.Bridge] = true
+		return false, true, nil
 	} else if !isLinkNotFound(err) {
-		return false, fmt.Errorf("failed to look up bridge %v: %w", opts.Bridge, err)
+		return false, false, fmt.Errorf("failed to look up bridge %v: %w", opts.Bridge, err)
 	}
 
 	if err := bridgeParentRefusal(opts, false); err != nil {
-		return false, err
+		return false, false, err
 	}
 	if err := refuseUnsafeParent(opts, parent, 0); err != nil {
-		return false, err
+		return false, false, err
 	}
 	guard := p.lockParent(ctx, opts.Parent, parentGateKindBridge, op)
 	defer guard.Unlock()
 	la := netlink.NewLinkAttrs()
 	la.Name = opts.Bridge
-	if err := bridgeLinkAdd(guard, &netlink.Bridge{LinkAttrs: la}); err != nil {
+	made := &netlink.Bridge{LinkAttrs: la}
+	if err := bridgeLinkAdd(guard, made); err != nil {
 		// Made outside the plugin since the lookup above, so it carries no mark (#903).
 		if existing, lerr := nlLinkByName(opts.Bridge); errors.Is(err, unix.EEXIST) && lerr == nil {
-			return false, bridgeNotOursRefusal(opts, existing)
+			return false, false, bridgeNotOursRefusal(opts, existing)
 		}
-		return false, fmt.Errorf("failed to create bridge %v: %w", opts.Bridge, err)
+		return false, false, fmt.Errorf("failed to create bridge %v: %w", opts.Bridge, err)
 	}
+	// Removed by the attributes it was made from when the lookup fails, or it stays unmarked (#1242).
+	var setupLink netlink.Link = made
 	created, err := nlLinkByName(opts.Bridge)
 	if err == nil {
+		setupLink = created
 		err = nlLinkSetAlias(created, vlanOwnerAlias)
 	}
 	if err == nil {
@@ -379,15 +398,13 @@ func (p *Plugin) ensureBridge(ctx context.Context, opts DHCPNetworkOptions, op s
 		err = enslaveParent(guard, parent, created)
 	}
 	if err != nil {
-		if created != nil {
-			if derr := nlLinkDel(created); derr != nil {
-				log.WithError(derr).WithField("bridge", opts.Bridge).Warn("Failed to remove a bridge after its setup failed")
-			}
+		if derr := nlLinkDel(setupLink); derr != nil {
+			log.WithError(derr).WithField("bridge", opts.Bridge).Warn("Failed to remove a bridge after its setup failed")
 		}
-		return false, fmt.Errorf("failed to set up bridge %v on parent %v: %w", opts.Bridge, opts.Parent, err)
+		return false, false, fmt.Errorf("failed to set up bridge %v on parent %v: %w", opts.Bridge, opts.Parent, err)
 	}
 	log.WithFields(log.Fields{"bridge": opts.Bridge, "parent": opts.Parent, "op": op}).Info("Created bridge and enslaved the parent")
-	return true, nil
+	return true, false, nil
 }
 
 // enslaveAgain makes the parent a port of the plugin's bridge again, after the same checks a create runs (#903).
@@ -405,6 +422,33 @@ func (p *Plugin) enslaveAgain(ctx context.Context, opts DHCPNetworkOptions, pare
 	}
 	log.WithFields(log.Fields{"bridge": opts.Bridge, "parent": opts.Parent, "op": op}).Info("Enslaved the parent into the bridge this plugin made")
 	return nil
+}
+
+// releaseParent undoes the enslaveAgain of a create that failed, unless a later call has relied on the port or the
+// parent has another master by now; the stored network's own bridge stays, so retireBridge would not free it (#1242).
+func (p *Plugin) releaseParent(ctx context.Context, opts DHCPNetworkOptions, op string) {
+	p.bridgeMu.Lock()
+	defer p.bridgeMu.Unlock()
+	fields := log.Fields{"bridge": opts.Bridge, "parent": opts.Parent, "op": op}
+	if !p.bridgeTaken[opts.Bridge] {
+		return
+	}
+	delete(p.bridgeTaken, opts.Bridge)
+	bridge, err := nlLinkByName(opts.Bridge)
+	if err != nil || !bridgeOwned(bridge) {
+		return
+	}
+	parent, err := nlLinkByName(opts.Parent)
+	if err != nil || parent.Attrs().MasterIndex != bridge.Attrs().Index {
+		return
+	}
+	guard := p.lockParent(ctx, opts.Parent, parentGateKindBridge, op)
+	defer guard.Unlock()
+	if err := nlLinkSetNoMaster(parent); err != nil {
+		log.WithError(err).WithFields(fields).Warn("Failed to release the parent from the bridge after the create failed")
+		return
+	}
+	log.WithFields(fields).Info("Released the parent from the bridge; the create that enslaved it failed")
 }
 
 // bridgeUsers names the networks other than self on bridge: this plugin's stored records, and every network Docker
