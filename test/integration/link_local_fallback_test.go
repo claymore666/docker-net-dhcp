@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
-	docker "github.com/docker/docker/client"
 )
 
 var containerV4 = regexp.MustCompile(`inet (\d+\.\d+\.\d+\.\d+/\d+)`)
@@ -57,7 +56,7 @@ func TestLinkLocalFallback_AServerlessStartThenMovesToALease(t *testing.T) {
 			harness.DumpPluginLog(t)
 		}
 	})
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}

@@ -288,6 +288,10 @@ net_dhcp_join_aborted_no_container_total 4265654
 # TYPE net_dhcp_join_aborted_endpoint_left_total counter
 net_dhcp_join_aborted_endpoint_left_total 2013096
 
+# HELP net_dhcp_join_aborted_link_withdrawn_total Joins abandoned because the container's link left its sandbox after Join, as when the engine refuses the attach. Not a fault.
+# TYPE net_dhcp_join_aborted_link_withdrawn_total counter
+net_dhcp_join_aborted_link_withdrawn_total 9064536
+
 # HELP net_dhcp_join_attach_slow_total Attaches that outran their expected window and needed the daemon-busy grace.
 # TYPE net_dhcp_join_attach_slow_total counter
 net_dhcp_join_attach_slow_total 6508941

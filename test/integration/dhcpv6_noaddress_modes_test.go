@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
-	docker "github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	docker "github.com/moby/moby/client"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
@@ -36,19 +36,17 @@ func startContainerOn(t *testing.T, ctx context.Context, cli *docker.Client, net
 	at.createNet(t, ctx, netName, opts)
 	ctrName := netName + "-ctr"
 	create, err := cli.ContainerCreate(ctx,
-		&container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}, Hostname: ctrName},
-		harness.HostConfig(),
-		&network.NetworkingConfig{
+		docker.ContainerCreateOptions{Config: &container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}, Hostname: ctrName}, HostConfig: harness.HostConfig(), NetworkingConfig: &network.NetworkingConfig{
 			EndpointsConfig: map[string]*network.EndpointSettings{netName: {}},
-		},
-		nil, ctrName)
+		}, Name: ctrName})
 	if err != nil {
 		t.Fatalf("ContainerCreate(%s): %v", ctrName, err)
 	}
 	t.Cleanup(func() {
-		_ = cli.ContainerRemove(context.Background(), create.ID, container.RemoveOptions{Force: true})
+		_, _ = cli.ContainerRemove(context.Background(), create.ID, docker.ContainerRemoveOptions{Force: true})
 	})
-	return create.ID, cli.ContainerStart(ctx, create.ID, container.StartOptions{})
+	_, startErr := cli.ContainerStart(ctx, create.ID, docker.ContainerStartOptions{})
+	return create.ID, startErr
 }
 
 // dumpOnFailure wires the fixture's and the plugin's logs to a failing test.
@@ -120,7 +118,7 @@ func testDHCPv6_NoAddressModes_StartTheEndpoint(t *testing.T, at v6Attach) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -199,7 +197,7 @@ func testDHCPv6_Stateless_ConfigurationReachesTheContainer(t *testing.T, at v6At
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -271,7 +269,7 @@ func testDHCPv6_Managed_StillRequiresALease(t *testing.T, at v6Attach) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -293,21 +291,21 @@ func testDHCPv6_Managed_StillRequiresALease(t *testing.T, at v6Attach) {
 
 	assertAttachedAs(t, ctx, f, id, at)
 
-	inspect, err := cli.ContainerInspect(ctx, id)
+	inspect, err := cli.ContainerInspect(ctx, id, docker.ContainerInspectOptions{})
 	if err != nil {
 		t.Fatalf("ContainerInspect: %v", err)
 	}
-	settings, ok := inspect.NetworkSettings.Networks[netName]
+	settings, ok := inspect.Container.NetworkSettings.Networks[netName]
 	if !ok {
 		t.Fatalf("the container is not attached to %s at all; attached to %v",
-			netName, inspect.NetworkSettings.Networks)
+			netName, inspect.Container.NetworkSettings.Networks)
 	}
-	if settings.GlobalIPv6Address == "" {
+	if !settings.GlobalIPv6Address.IsValid() {
 		t.Fatalf("the container started on a managed DHCPv6 segment with NO IPv6 address. " +
 			"That is the shape #868's fix must not produce: tolerating an absent v6 lease " +
 			"where the segment offers one turns a fatal misconfiguration into a silent one")
 	}
-	if !strings.HasPrefix(settings.GlobalIPv6Address, harness.V6Prefix) {
+	if !strings.HasPrefix(harness.AddrString(settings.GlobalIPv6Address), harness.V6Prefix) {
 		t.Errorf("the container's IPv6 address %q is not from this segment's prefix %q — "+
 			"it did not come from the fixture's DHCPv6 server",
 			settings.GlobalIPv6Address, harness.V6Prefix)
@@ -316,7 +314,7 @@ func testDHCPv6_Managed_StillRequiresALease(t *testing.T, at v6Attach) {
 	// GlobalIPv6Address is the plugin's own value relayed by the engine; dnsmasq's DHCPREPLY naming the address is the
 	// evidence. dnsmasq renders it with inet_ntop and the engine with net.IP.String(), both RFC 5952 lowercase, as
 	// countDHCPv6Replies in ipv6_test.go already relies on (#868).
-	if n := f.CountLogLines("DHCPREPLY", settings.GlobalIPv6Address); n < 1 {
+	if n := f.CountLogLines("DHCPREPLY", harness.AddrString(settings.GlobalIPv6Address)); n < 1 {
 		t.Errorf("the DHCPv6 server logged no DHCPREPLY carrying %s (it logged %d "+
 			"DHCPREPLY lines in total). docker inspect reports that address, but the "+
 			"server never handed it out — so it came from the plugin rather than from "+
@@ -360,7 +358,7 @@ func testDHCPv6_Managed_ServerSilent_IsStillFatal(t *testing.T, at v6Attach) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}

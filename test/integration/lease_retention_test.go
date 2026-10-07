@@ -10,9 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
-	docker "github.com/docker/docker/client"
+	docker "github.com/moby/moby/client"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
@@ -52,7 +50,7 @@ func TestLeaseRetention_NothingEverReleases(t *testing.T) {
 
 	harness.CreateNetwork(t, ctx, netName, "macvlan", nil)
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -89,7 +87,7 @@ func TestLeaseRetention_NothingEverReleases(t *testing.T) {
 	}
 
 	// A release_lease=on_stop network does release here (#962).
-	if err := cli.ContainerStop(ctx, id, container.StopOptions{}); err != nil {
+	if _, err := cli.ContainerStop(ctx, id, docker.ContainerStopOptions{}); err != nil {
 		t.Fatalf("ContainerStop: %v", err)
 	}
 	assertNoRelease("a graceful `docker stop`",
@@ -98,19 +96,19 @@ func TestLeaseRetention_NothingEverReleases(t *testing.T) {
 			"restart that may be seconds away, and the release told the server it "+
 			"was free.")
 
-	if err := cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
+	if _, err := cli.ContainerStart(ctx, id, docker.ContainerStartOptions{}); err != nil {
 		t.Fatalf("ContainerStart: %v", err)
 	}
 	deadline := time.Now().Add(harness.IPAcquisitionBudget)
 	var ipAfter string
 	for time.Now().Before(deadline) {
-		ins, err := cli.ContainerInspect(ctx, id)
+		ins, err := cli.ContainerInspect(ctx, id, docker.ContainerInspectOptions{})
 		if err != nil {
 			t.Fatalf("ContainerInspect: %v", err)
 		}
-		for _, ep := range ins.NetworkSettings.Networks {
-			if ep.IPAddress != "" {
-				ipAfter = ep.IPAddress
+		for _, ep := range ins.Container.NetworkSettings.Networks {
+			if ep.IPAddress.IsValid() {
+				ipAfter = harness.AddrString(ep.IPAddress)
 			}
 		}
 		if ipAfter != "" {
@@ -126,7 +124,7 @@ func TestLeaseRetention_NothingEverReleases(t *testing.T) {
 	assertNoRelease("a stop/start cycle", "Neither half of a restart releases.")
 
 	// The case the removed reclaim existed for: a missed reclaim leaves a lease to expire, a wrong one takes an address in use (#800).
-	if err := cli.ContainerRemove(ctx, id, container.RemoveOptions{Force: true}); err != nil {
+	if _, err := cli.ContainerRemove(ctx, id, docker.ContainerRemoveOptions{Force: true}); err != nil {
 		t.Fatalf("ContainerRemove: %v", err)
 	}
 	assertNoRelease("`docker rm -f`",
@@ -159,7 +157,7 @@ func TestLeaseRetention_ARestartRebootsRatherThanDiscovers(t *testing.T) {
 
 	harness.CreateNetwork(t, ctx, netName, "macvlan", nil)
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -184,13 +182,13 @@ func TestLeaseRetention_ARestartRebootsRatherThanDiscovers(t *testing.T) {
 	t.Logf("before the recycle: %d DHCPDISCOVER, %d DHCPREQUEST for %s",
 		discoverBefore, requestBefore, mac)
 
-	if err := cli.PluginDisable(ctx, harness.PluginRef, types.PluginDisableOptions{Force: true}); err != nil {
+	if _, err := cli.PluginDisable(ctx, harness.PluginRef, docker.PluginDisableOptions{Force: true}); err != nil {
 		t.Fatalf("PluginDisable: %v", err)
 	}
 	if err := harness.WaitPluginEnabled(ctx, cli, false, 15*time.Second); err != nil {
 		t.Fatalf("plugin did not reach disabled state: %v", err)
 	}
-	if err := cli.PluginEnable(ctx, harness.PluginRef, types.PluginEnableOptions{Timeout: 30}); err != nil {
+	if _, err := cli.PluginEnable(ctx, harness.PluginRef, docker.PluginEnableOptions{Timeout: 30}); err != nil {
 		t.Fatalf("PluginEnable: %v", err)
 	}
 	if err := harness.WaitPluginEnabled(ctx, cli, true, 30*time.Second); err != nil {

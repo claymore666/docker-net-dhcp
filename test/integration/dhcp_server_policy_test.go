@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
-	docker "github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	docker "github.com/moby/moby/client"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
@@ -28,7 +28,7 @@ import (
 
 func policyClient(t *testing.T) *docker.Client {
 	t.Helper()
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -295,28 +295,25 @@ func TestServerPolicy_ExhaustedFailsClosed(t *testing.T) {
 
 	ctrName := netName + "-ctr"
 	create, err := cli.ContainerCreate(ctx,
-		&container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}, Hostname: ctrName},
-		harness.HostConfig(),
-		&network.NetworkingConfig{
+		docker.ContainerCreateOptions{Config: &container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}, Hostname: ctrName}, HostConfig: harness.HostConfig(), NetworkingConfig: &network.NetworkingConfig{
 			EndpointsConfig: map[string]*network.EndpointSettings{netName: {}},
-		},
-		nil, ctrName)
+		}, Name: ctrName})
 	if err != nil {
 		t.Fatalf("ContainerCreate(%s): %v", ctrName, err)
 	}
 	t.Cleanup(func() {
-		_ = cli.ContainerRemove(context.Background(), create.ID, container.RemoveOptions{Force: true})
+		_, _ = cli.ContainerRemove(context.Background(), create.ID, docker.ContainerRemoveOptions{Force: true})
 	})
 
 	w := harness.BeginCounterWindow(t, ctx, cli, "dhcp_server_policy_exhausted")
-	startErr := cli.ContainerStart(ctx, create.ID, container.StartOptions{})
+	_, startErr := cli.ContainerStart(ctx, create.ID, docker.ContainerStartOptions{})
 	before, after := w.End()
 
 	if startErr == nil {
-		ins, _ := cli.ContainerInspect(ctx, create.ID)
+		ins, _ := cli.ContainerInspect(ctx, create.ID, docker.ContainerInspectOptions{})
 		var got string
-		for _, ep := range ins.NetworkSettings.Networks {
-			got = ep.IPAddress
+		for _, ep := range ins.Container.NetworkSettings.Networks {
+			got = harness.AddrString(ep.IPAddress)
 		}
 		t.Fatalf("container started with address %q though the only permitted DHCP server "+
 			"(%s) is silent — the policy widened instead of failing closed",

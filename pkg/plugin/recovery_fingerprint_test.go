@@ -37,6 +37,10 @@ func (d *lockedDocker) ContainerInspect(_ context.Context, id string, _ docker.C
 	return docker.ContainerInspectResult{Container: d.containers[id]}, nil
 }
 
+func (d *lockedDocker) ContainerList(context.Context, docker.ContainerListOptions) (docker.ContainerListResult, error) {
+	return docker.ContainerListResult{}, errors.New("no container list in this fixture")
+}
+
 func (d *lockedDocker) Close() error { return nil }
 
 // These fixtures skip the engine probe in NewPlugin, so the fake answers as an unreachable daemon.

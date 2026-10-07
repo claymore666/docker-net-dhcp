@@ -41,6 +41,10 @@ type fakeDocker struct {
 	// (#406).
 	containerDelay time.Duration
 
+	runningResult []dContainer.Summary
+	runningErr    error
+	runningOpts   []docker.ContainerListOptions
+
 	closeErr error
 
 	pingErr       error
@@ -106,6 +110,14 @@ func (f *fakeDocker) ContainerInspect(ctx context.Context, id string, _ docker.C
 		return docker.ContainerInspectResult{Container: dContainer.InspectResponse{}}, f.containerErr
 	}
 	return docker.ContainerInspectResult{Container: f.containerResult[id]}, nil
+}
+
+func (f *fakeDocker) ContainerList(_ context.Context, o docker.ContainerListOptions) (docker.ContainerListResult, error) {
+	f.runningOpts = append(f.runningOpts, o)
+	if f.runningErr != nil {
+		return docker.ContainerListResult{}, f.runningErr
+	}
+	return docker.ContainerListResult{Items: f.runningResult}, nil
 }
 
 func (f *fakeDocker) Close() error { return f.closeErr }

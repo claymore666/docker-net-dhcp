@@ -115,6 +115,7 @@ func metricDefs() []metricDef {
 		{name: "join_aborted_container_gone", counter: true, help: "Joins abandoned because the container disappeared mid-attach. Not a fault.", field: "join_aborted_container_gone"},
 		{name: "join_aborted_no_container", counter: true, help: "Joins abandoned because no container was ever found for the endpoint. Not a fault.", field: "join_aborted_no_container"},
 		{name: "join_aborted_endpoint_left", counter: true, help: "Joins abandoned because a Leave arrived while the attach was in flight. Not a fault.", field: "join_aborted_endpoint_left"},
+		{name: "join_aborted_link_withdrawn", counter: true, help: "Joins abandoned because the container's link left its sandbox after Join, as when the engine refuses the attach. Not a fault.", field: "join_aborted_link_withdrawn"},
 		{name: "join_attach_slow", counter: true, help: "Attaches that outran their expected window and needed the daemon-busy grace.", field: "join_attach_slow"},
 		{name: "join_attach_completed", counter: true, help: "Successful attaches. The population the join_attach_* buckets partition.", field: "join_attach_completed"},
 		{name: "join_attach_under_1s", counter: true, help: "Successful attaches that finished in under a second.", field: "join_attach_under_1s"},

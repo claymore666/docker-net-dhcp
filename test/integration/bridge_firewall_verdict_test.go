@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
-	docker "github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	docker "github.com/moby/moby/client"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
@@ -37,7 +37,7 @@ func TestBridgeFirewallVerdict_NamedAtCreateAndAtTheDeadline(t *testing.T) {
 			harness.DumpPluginLog(t)
 		}
 	})
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -87,18 +87,15 @@ func TestBridgeFirewallVerdict_NamedAtCreateAndAtTheDeadline(t *testing.T) {
 
 		ctrName := tc.name + "-ctr"
 		create, err := cli.ContainerCreate(ctx,
-			&container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}, Hostname: ctrName},
-			harness.HostConfig(),
-			&network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{tc.name: {}}},
-			nil, ctrName)
+			docker.ContainerCreateOptions{Config: &container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}, Hostname: ctrName}, HostConfig: harness.HostConfig(), NetworkingConfig: &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{tc.name: {}}}, Name: ctrName})
 		if err != nil {
 			t.Fatalf("ContainerCreate(%s): %v", ctrName, err)
 		}
 		t.Cleanup(func() {
-			_ = cli.ContainerRemove(context.Background(), create.ID, container.RemoveOptions{Force: true})
+			_, _ = cli.ContainerRemove(context.Background(), create.ID, docker.ContainerRemoveOptions{Force: true})
 		})
 		deadlineMark := harness.MarkPluginLog(t, ctx)
-		startErr := cli.ContainerStart(ctx, create.ID, container.StartOptions{})
+		_, startErr := cli.ContainerStart(ctx, create.ID, docker.ContainerStartOptions{})
 		if startErr == nil {
 			t.Fatalf("%s: the container started although no frame can cross from its port to the challenger's; the drop did not take effect", tc.name)
 		}
@@ -115,10 +112,10 @@ func TestBridgeFirewallVerdict_NamedAtCreateAndAtTheDeadline(t *testing.T) {
 		if !strings.Contains(logged, "Error while processing request") || !strings.Contains(logged, rule) {
 			t.Errorf("%s: the plugin's log line for the failed request does not carry the verdict:\n%s", tc.name, logged)
 		}
-		if err := cli.ContainerRemove(ctx, create.ID, container.RemoveOptions{Force: true}); err != nil {
+		if _, err := cli.ContainerRemove(ctx, create.ID, docker.ContainerRemoveOptions{Force: true}); err != nil {
 			t.Fatalf("%s: removing the container that failed to start: %v", tc.name, err)
 		}
-		if err := cli.NetworkRemove(ctx, netID); err != nil {
+		if _, err := cli.NetworkRemove(ctx, netID, docker.NetworkRemoveOptions{}); err != nil {
 			t.Fatalf("%s: removing the network the next leg's create would be refused for: %v", tc.name, err)
 		}
 	}

@@ -12,8 +12,7 @@ import (
 	"time"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
-	"github.com/docker/docker/api/types"
-	docker "github.com/docker/docker/client"
+	docker "github.com/moby/moby/client"
 )
 
 // Do not parallelize: disabling the plugin takes RPC service from every other test.
@@ -36,7 +35,7 @@ func TestRecovery_PluginDisableEnable_PreservesEndpoint(t *testing.T) {
 	id, ipBefore, macBefore := harness.RunContainer(t, ctx, netName, ctrName)
 	t.Logf("before recycle: ip=%s mac=%s", ipBefore, macBefore)
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -46,7 +45,7 @@ func TestRecovery_PluginDisableEnable_PreservesEndpoint(t *testing.T) {
 	t.Cleanup(func() {
 		bg, bgCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer bgCancel()
-		if err := cli.PluginEnable(bg, harness.PluginRef, types.PluginEnableOptions{Timeout: 30}); err != nil {
+		if _, err := cli.PluginEnable(bg, harness.PluginRef, docker.PluginEnableOptions{Timeout: 30}); err != nil {
 			if !strings.Contains(err.Error(), "already enabled") {
 				t.Logf("WARN: cleanup PluginEnable: %v", err)
 			}
@@ -70,7 +69,7 @@ func TestRecovery_PluginDisableEnable_PreservesEndpoint(t *testing.T) {
 	logMark := harness.MarkPluginLog(t, ctx)
 	harness.DumpPluginLogOnFailure(t, ctx, logMark, "the plugin was disabled")
 
-	if err := cli.PluginDisable(ctx, harness.PluginRef, types.PluginDisableOptions{Force: true}); err != nil {
+	if _, err := cli.PluginDisable(ctx, harness.PluginRef, docker.PluginDisableOptions{Force: true}); err != nil {
 		t.Fatalf("PluginDisable: %v", err)
 	}
 	if err := harness.WaitPluginEnabled(ctx, cli, false, 15*time.Second); err != nil {
@@ -78,7 +77,7 @@ func TestRecovery_PluginDisableEnable_PreservesEndpoint(t *testing.T) {
 	}
 	t.Log("plugin disabled")
 
-	if err := cli.PluginEnable(ctx, harness.PluginRef, types.PluginEnableOptions{Timeout: 30}); err != nil {
+	if _, err := cli.PluginEnable(ctx, harness.PluginRef, docker.PluginEnableOptions{Timeout: 30}); err != nil {
 		t.Fatalf("PluginEnable: %v", err)
 	}
 	if err := harness.WaitPluginEnabled(ctx, cli, true, 30*time.Second); err != nil {
@@ -112,15 +111,15 @@ func TestRecovery_PluginDisableEnable_PreservesEndpoint(t *testing.T) {
 			healthAfter.RecoveryAbortedContainerGone)
 	}
 
-	ins, err := cli.ContainerInspect(ctx, id)
+	ins, err := cli.ContainerInspect(ctx, id, docker.ContainerInspectOptions{})
 	if err != nil {
 		t.Fatalf("ContainerInspect: %v", err)
 	}
 	var ipAfter, macAfter string
-	for _, ep := range ins.NetworkSettings.Networks {
-		if ep.IPAddress != "" {
-			ipAfter = ep.IPAddress
-			macAfter = ep.MacAddress
+	for _, ep := range ins.Container.NetworkSettings.Networks {
+		if ep.IPAddress.IsValid() {
+			ipAfter = harness.AddrString(ep.IPAddress)
+			macAfter = ep.MacAddress.String()
 		}
 	}
 	if ipAfter != ipBefore {

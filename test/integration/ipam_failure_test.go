@@ -14,10 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
-	docker "github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	docker "github.com/moby/moby/client"
 	"github.com/vishvananda/netlink"
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
@@ -70,7 +69,7 @@ func TestFailure_IPAMServerDownFailsInsideTheBudget(t *testing.T) {
 		}
 	})
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -171,7 +170,7 @@ func TestFailure_IPAMResentRequestIsRefusedNotServedTwice(t *testing.T) {
 		}
 	})
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -181,20 +180,20 @@ func TestFailure_IPAMResentRequestIsRefusedNotServedTwice(t *testing.T) {
 	t.Cleanup(func() {
 		bg, bgCancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer bgCancel()
-		if err := cli.PluginEnable(bg, harness.PluginRef, types.PluginEnableOptions{Timeout: 30}); err != nil &&
+		if _, err := cli.PluginEnable(bg, harness.PluginRef, docker.PluginEnableOptions{Timeout: 30}); err != nil &&
 			!strings.Contains(err.Error(), "already enabled") {
 			t.Logf("WARN: cleanup PluginEnable: %v", err)
 		}
 		_ = harness.WaitPluginEnabled(bg, cli, true, 30*time.Second)
 	})
 
-	if err := cli.PluginDisable(ctx, harness.PluginRef, types.PluginDisableOptions{Force: true}); err != nil {
+	if _, err := cli.PluginDisable(ctx, harness.PluginRef, docker.PluginDisableOptions{Force: true}); err != nil {
 		t.Fatalf("PluginDisable: %v", err)
 	}
 	if err := harness.WaitPluginEnabled(ctx, cli, false, 15*time.Second); err != nil {
 		t.Fatalf("plugin did not reach disabled state: %v", err)
 	}
-	if err := cli.PluginEnable(ctx, harness.PluginRef, types.PluginEnableOptions{Timeout: pluginTimeout}); err != nil {
+	if _, err := cli.PluginEnable(ctx, harness.PluginRef, docker.PluginEnableOptions{Timeout: pluginTimeout}); err != nil {
 		t.Fatalf("PluginEnable with --timeout %d: %v", pluginTimeout, err)
 	}
 	if err := harness.WaitPluginEnabled(ctx, cli, true, 30*time.Second); err != nil {
@@ -207,24 +206,22 @@ func TestFailure_IPAMResentRequestIsRefusedNotServedTwice(t *testing.T) {
 		nil, map[string]string{"parent": harness.EphemeralHostVeth})
 
 	create, err := cli.ContainerCreate(ctx,
-		&container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}, Hostname: ctrName},
-		harness.HostConfig(),
-		&network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{netName: {}}},
-		nil, ctrName)
+		docker.ContainerCreateOptions{Config: &container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}, Hostname: ctrName}, HostConfig: harness.HostConfig(), NetworkingConfig: &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{netName: {}}}, Name: ctrName})
 	if err != nil {
 		t.Fatalf("ContainerCreate: %v", err)
 	}
 	t.Cleanup(func() {
 		bg := context.Background()
-		_ = cli.ContainerStop(bg, create.ID, container.StopOptions{})
-		_ = cli.ContainerRemove(bg, create.ID, container.RemoveOptions{Force: true})
+		_, _ = cli.ContainerStop(bg, create.ID, docker.ContainerStopOptions{})
+		_, _ = cli.ContainerRemove(bg, create.ID, docker.ContainerRemoveOptions{Force: true})
 	})
 
 	ef.Stop()
 	startErr := make(chan error, 1)
 	go func() {
 		// No t.Fatalf off the test goroutine: it would report against whichever test is running.
-		startErr <- cli.ContainerStart(context.Background(), create.ID, container.StartOptions{})
+		_, err := cli.ContainerStart(context.Background(), create.ID, docker.ContainerStartOptions{})
+		startErr <- err
 	}()
 
 	time.Sleep(outage)
@@ -283,13 +280,13 @@ func TestFailure_IPAMResentRequestIsRefusedNotServedTwice(t *testing.T) {
 
 	// At --timeout 5 no reserve can finish: RFC 5227's three probes 1 to 2s apart span about 6s (roleAcquire under
 	// ConflictWait), so the retry needs the stock timeout (#110).
-	if err := cli.PluginDisable(ctx, harness.PluginRef, types.PluginDisableOptions{Force: true}); err != nil {
+	if _, err := cli.PluginDisable(ctx, harness.PluginRef, docker.PluginDisableOptions{Force: true}); err != nil {
 		t.Fatalf("PluginDisable before the retry: %v", err)
 	}
 	if err := harness.WaitPluginEnabled(ctx, cli, false, 15*time.Second); err != nil {
 		t.Fatalf("plugin did not reach disabled state before the retry: %v", err)
 	}
-	if err := cli.PluginEnable(ctx, harness.PluginRef, types.PluginEnableOptions{Timeout: 30}); err != nil {
+	if _, err := cli.PluginEnable(ctx, harness.PluginRef, docker.PluginEnableOptions{Timeout: 30}); err != nil {
 		t.Fatalf("PluginEnable back at the stock timeout: %v", err)
 	}
 	if err := harness.WaitPluginEnabled(ctx, cli, true, 30*time.Second); err != nil {
@@ -300,7 +297,7 @@ func TestFailure_IPAMResentRequestIsRefusedNotServedTwice(t *testing.T) {
 
 	// An abandoned reservation is retained and its records live on disk, so the recycled process still finds the
 	// candidate; the assertion is the container starting, since the address is the server's choice (#110).
-	if err := cli.ContainerStart(ctx, create.ID, container.StartOptions{}); err != nil {
+	if _, err := cli.ContainerStart(ctx, create.ID, docker.ContainerStartOptions{}); err != nil {
 		t.Fatalf("the container did not start on the retry, with the server back: %v\n"+
 			"A reservation the daemon gave up on has left this endpoint unable to get an "+
 			"address at all, which is worse than the failed run it came from.", err)
