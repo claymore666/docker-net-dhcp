@@ -25,6 +25,11 @@ var (
 	nlLinkSetName    = netlink.LinkSetName
 	nlLinkAddAltName = netlink.LinkAddAltName
 
+	nlLinkAdd            = netlink.LinkAdd
+	nlEndpointLinkByName = netlink.LinkByName
+	nlLinkByIndexCurNS   = netlink.LinkByIndex
+	nlVethPeerIndex      = netlink.VethPeerIndex
+
 	// nlRouteDel acts in the caller's current namespace; purgeRouterAdvertRoutes calls it inside the sandbox on a locked thread.
 	nlRouteDel = netlink.RouteDel
 

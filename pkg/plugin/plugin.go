@@ -458,6 +458,12 @@ type Plugin struct {
 	// manager (#46).
 	endpointFingerprints map[string]endpointFingerprint
 
+	// handBackMu guards handingBack, the held records a deferred release has taken, and runningOnHeld; a leaf lock
+	// (#1237).
+	handBackMu    sync.Mutex
+	handingBack   map[string]chan struct{}
+	runningOnHeld map[string]bool
+
 	// vlanMu serialises a vlan sub-interface's create, adoption and removal, and guards vlanPending, the creates
 	// between their ensure and their save; it is never held with mu (#902).
 	vlanMu      sync.Mutex
