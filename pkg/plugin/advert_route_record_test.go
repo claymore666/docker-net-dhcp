@@ -83,16 +83,17 @@ func TestReconcileAdvertisedRoutes_AWithdrawnRouteAlreadyGoneIsDroppedOnce(t *te
 	}
 }
 
-// joinManagerWithRoutes builds the manager Join registers for an answer holding an advertised route, a host route
-// (#102), and an advertised route that lost its destination to a host route in uniqueStaticRoutes.
+// joinManagerWithRoutes builds the manager Join registers for an answer holding an on-link prefix, an advertised
+// route, a host route (#102), and an advertised route that lost its destination to a host route in uniqueStaticRoutes.
 func joinManagerWithRoutes(t *testing.T, opts DHCPNetworkOptions) (*dhcpManager, *fakeRouteTable) {
 	t.Helper()
 	adv := &StaticRoute{Destination: "2001:db8:1::/48", RouteType: RouteTypeNextHop, NextHop: "fe80::1"}
 	shadowed := &StaticRoute{Destination: "2001:db8:5::/48", RouteType: RouteTypeNextHop, NextHop: "fe80::1"}
 	host := &StaticRoute{Destination: "2001:db8:77::/48", RouteType: RouteTypeNextHop, NextHop: "fe80::1"}
 	hostSameDest := &StaticRoute{Destination: "2001:db8:5::/48", RouteType: RouteTypeNextHop, NextHop: "fe80::99"}
-	hint := joinHint{RoutesIPv6: []*StaticRoute{adv, shadowed}}
-	res := JoinResponse{StaticRoutes: []*StaticRoute{host, hostSameDest, adv}}
+	onLink := &StaticRoute{Destination: "2001:db8:9::/64", RouteType: RouteTypeOnLink}
+	hint := joinHint{RoutesIPv6: []*StaticRoute{onLink, adv, shadowed}}
+	res := JoinResponse{StaticRoutes: []*StaticRoute{host, hostSameDest, onLink, adv}}
 	m := (&Plugin{}).newJoinManager(JoinRequest{NetworkID: "net-1", EndpointID: "ep-1"}, opts, hint, res)
 	f := &fakeRouteTable{}
 	f.install(t, m)
@@ -106,6 +107,20 @@ func TestNewJoinManager_AnAdvertisedRouteJoinInstalledIsWithdrawn(t *testing.T) 
 	}
 	if got := destinations(f.deleted); len(got) != 1 || got[0] != "2001:db8:1::/48" {
 		t.Errorf("deleted %v, want only the advertised route Join installed; host routes (#102) stay", got)
+	}
+}
+
+func TestRenew_TheFirstBoundWithdrawsAnAdvertisedRouteJoinInstalled(t *testing.T) {
+	m, f := joinManagerWithRoutes(t, DHCPNetworkOptions{IPv6: true})
+	prevMTU, prevAddr := nlHandleLinkSetMTU, nlHandleAddrReplace
+	nlHandleLinkSetMTU = func(*netlink.Handle, netlink.Link, int) error { return nil }
+	nlHandleAddrReplace = func(*netlink.Handle, netlink.Link, *netlink.Addr) error { return nil }
+	t.Cleanup(func() { nlHandleLinkSetMTU, nlHandleAddrReplace = prevMTU, prevAddr })
+	if err := m.renew(true, dhcp.Info{IP: "2001:db8::5/64", Gateway: "fe80::1", RouterSeen: true}); err != nil {
+		t.Fatalf("renew: %v", err)
+	}
+	if got := destinations(f.deleted); len(got) != 1 || got[0] != "2001:db8:1::/48" {
+		t.Errorf("deleted %v after the first bound omitted the route Join installed", got)
 	}
 }
 
@@ -201,6 +216,21 @@ func TestRecoveredManager_AdoptsNothingBeforeARouterIsHeard(t *testing.T) {
 	if len(f.deleted) != 0 || len(f.replace) != 0 || m.lastAdvertRoutes["2001:db8:1::/48"] != "fe80::1" {
 		t.Errorf("deleted %v, rewrote %v, record %v: the advertised route on the link was not adopted as is",
 			destinations(f.deleted), destinations(f.replace), m.lastAdvertRoutes)
+	}
+}
+
+func TestRecoveredManager_AdoptsOnce(t *testing.T) {
+	m, f := recoveredWithHostRoutes(t, DHCPNetworkOptions{IPv6: true}, parentHostRoutes, nil)
+	info := dhcp.Info{Gateway: "fe80::1", Routes: []dhcp.Route{{Destination: "2001:db8:1::/48", Gateway: "fe80::1"}}}
+	if err := m.reconcileAdvertisedRoutes(info); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	f.routes = append(f.routes, v6LinkRoute(t, "2001:db8:42::/48", "fe80::1", unixRTPROTBOOT))
+	if err := m.reconcileAdvertisedRoutes(info); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if len(f.deleted) != 0 {
+		t.Errorf("deleted %v: a route added on the link after recovery was adopted", destinations(f.deleted))
 	}
 }
 
