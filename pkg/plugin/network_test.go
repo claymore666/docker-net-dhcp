@@ -227,7 +227,7 @@ func TestParseDriverOptIP(t *testing.T) {
 		{name: "cidr_form_rejected", opts: map[string]interface{}{"ip": "192.168.0.55/24"}, wantErr: true},
 		{name: "v6_rejected", opts: map[string]interface{}{"ip": "fe80::1"}, wantErr: true},
 		{name: "non_string_value", opts: map[string]interface{}{"ip": 42}, wantErr: true},
-		{name: "empty_string", opts: map[string]interface{}{"ip": ""}, wantErr: true},
+		{name: "empty_string_is_unset", opts: map[string]interface{}{"ip": ""}, wantIP: ""},
 		{name: "garbage", opts: map[string]interface{}{"ip": "not-an-ip"}, wantErr: true},
 		{name: "unspecified_rejected", opts: map[string]interface{}{"ip": "0.0.0.0"}, wantErr: true},
 	}
@@ -314,6 +314,65 @@ func TestResolveExplicitV4(t *testing.T) {
 				t.Errorf("ip mismatch: got %q want %q", ip, c.wantIP)
 			}
 		})
+	}
+}
+
+// `docker network connect --driver-opt IP=...` and Compose `driver_opts: {IP: ...}` reach the plugin with the key
+// case preserved (#1245), so a mixed-case spelling must not fall back to a DHCP address.
+func TestResolveExplicitV4KeyCase(t *testing.T) {
+	cases := []struct {
+		name    string
+		opts    map[string]interface{}
+		wantIP  string
+		wantErr bool
+	}{
+		{name: "upper", opts: map[string]interface{}{"IP": "192.168.0.50"}, wantIP: "192.168.0.50"},
+		{name: "mixed", opts: map[string]interface{}{"Ip": "192.168.0.50"}, wantIP: "192.168.0.50"},
+		{name: "two_spellings_agree", opts: map[string]interface{}{"ip": "192.168.0.50", "IP": "192.168.0.50"}, wantIP: "192.168.0.50"},
+		{name: "two_spellings_differ", opts: map[string]interface{}{"ip": "192.168.0.50", "IP": "192.168.0.51"}, wantErr: true},
+		{name: "upper_invalid", opts: map[string]interface{}{"IP": "not-an-ip"}, wantErr: true},
+		{name: "upper_empty_is_unset", opts: map[string]interface{}{"IP": ""}},
+		{name: "empty_beside_value", opts: map[string]interface{}{"ip": "", "IP": "192.168.0.50"}, wantIP: "192.168.0.50"},
+		{name: "upper_non_string", opts: map[string]interface{}{"IP": 42}, wantErr: true},
+		{name: "lower_valid_upper_non_string", opts: map[string]interface{}{"ip": "192.168.0.50", "IP": 42}, wantErr: true},
+		{name: "other_key_ignored", opts: map[string]interface{}{"IPX": "192.168.0.50", "xip": "192.168.0.50"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ip, err := resolveExplicitV4(CreateEndpointRequest{Options: c.opts})
+			if c.wantErr {
+				if err == nil || !errors.Is(err, util.ErrIPAM) {
+					t.Errorf("want ErrIPAM, got ip=%q err=%v", ip, err)
+				}
+				return
+			}
+			if err != nil || ip != c.wantIP {
+				t.Errorf("got ip=%q err=%v, want %q", ip, err, c.wantIP)
+			}
+		})
+	}
+}
+
+func TestParseDriverOptIPSpellingConflictIsDeterministic(t *testing.T) {
+	opts := map[string]interface{}{"ip": "192.168.0.50", "IP": "192.168.0.51", "Ip": "192.168.0.52"}
+	_, first := parseDriverOptIP(opts)
+	if first == nil {
+		t.Fatal("want conflict error")
+	}
+	for i := 0; i < 50; i++ {
+		if _, err := parseDriverOptIP(opts); err == nil || err.Error() != first.Error() {
+			t.Fatalf("run %d: error %v differs from %v", i, err, first)
+		}
+	}
+}
+
+func TestResolveExplicitV4KeyCaseConflictsWithIface(t *testing.T) {
+	r := CreateEndpointRequest{
+		Interface: &EndpointInterface{Address: "192.168.0.50/24"},
+		Options:   map[string]interface{}{"IP": "192.168.0.51"},
+	}
+	if ip, err := resolveExplicitV4(r); err == nil {
+		t.Errorf("want conflict error, got ip=%q", ip)
 	}
 }
 
