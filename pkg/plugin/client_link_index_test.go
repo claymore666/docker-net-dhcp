@@ -5,6 +5,7 @@ package plugin
 
 import (
 	"context"
+	"net"
 	"os"
 	"testing"
 	"time"
@@ -43,6 +44,7 @@ func TestSetupClient_TheClientIsOpenedOnTheLinkAndNotOnlyOnItsName(t *testing.T)
 			Index:        index,
 			Name:         renamed,
 			HardwareAddr: m.MacAddress,
+			Flags:        net.FlagUp,
 		}}, nil
 	}
 	t.Cleanup(func() { nlLinkByIndex = prevByIndex })

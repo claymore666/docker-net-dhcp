@@ -306,6 +306,8 @@ type HealthResponse struct {
 
 	// JoinAbortedEndpointLeft counts attaches cancelled because the endpoint left first; not healthy-affecting.
 	JoinAbortedEndpointLeft int32 `json:"join_aborted_endpoint_left"`
+	// JoinAbortedLinkWithdrawn counts attaches whose located link left the sandbox (#1236); not healthy-affecting.
+	JoinAbortedLinkWithdrawn int32 `json:"join_aborted_link_withdrawn"`
 	// TombstoneWriteFailures counts failed tombstone writes and reads refused since #724; Healthy-affecting.
 	TombstoneWriteFailures int32 `json:"tombstone_write_failures"`
 	// TombstoneQuarantines counts unparseable tombstone files moved aside as tombstones.json.corrupt-<ts>, since
@@ -648,6 +650,7 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		RestartLinkUpWaited:          p.restartLinkUpWaited.Load(),
 		RestartLinkUpTimeouts:        p.restartLinkUpTimeouts.Load(),
 		JoinAbortedEndpointLeft:      p.joinAbortedEndpointLeft.Load(),
+		JoinAbortedLinkWithdrawn:     p.joinAbortedLinkWithdrawn.Load(),
 		TombstoneWriteFailures:       tsFails,
 		TombstoneQuarantines:         tsQuarantines,
 		UnsafeHostnamesRejected:      p.unsafeHostnamesRejected.Load(),
