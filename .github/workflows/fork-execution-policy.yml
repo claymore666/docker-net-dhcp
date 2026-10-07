@@ -93,8 +93,8 @@ name: Fork execution policy
 
 on:
   schedule:
-    # Daily, offset from Label taxonomy (7 8), Milestone scope (23 6) and
-    # Starter tasks (41 7) so the API-reading jobs do not land together.
+    # Daily, offset from Label taxonomy (7 8) and Milestone scope (23 6) so
+    # the API-reading jobs do not land together.
     - cron: '19 9 * * *'
   workflow_dispatch:
 
