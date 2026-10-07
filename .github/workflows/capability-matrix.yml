@@ -92,6 +92,9 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Install the DHCP server
+        # A hosted mirror hang held six cells at the 30-minute cap on one
+        # evening; the install takes under a minute when the mirror answers (#1266).
+        timeout-minutes: 6
         run: |
           set -euo pipefail
           sudo apt-get update
@@ -146,6 +149,9 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: capability-row-${{ matrix.cell }}
+          # A rerun after a cancelled cell replaces the earlier attempt's row;
+          # download-artifact dedupes by name and took the stale one (#1266).
+          overwrite: true
           path: |
             rows/
             cell.log
