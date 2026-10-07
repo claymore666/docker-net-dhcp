@@ -1878,7 +1878,7 @@ func (m *dhcpManager) awaitContainerLinkUp(ctx context.Context) error {
 	defer cancel()
 	index := m.ctrLink.Attrs().Index
 	err := util.AwaitCondition(awaitCtx, func() (bool, error) {
-		link, err := m.netHandle.LinkByIndex(index)
+		link, err := nlLinkByIndex(m.netHandle, index)
 		if err != nil {
 			return false, fmt.Errorf("failed to read container link %d: %w", index, err)
 		}
@@ -1888,6 +1888,22 @@ func (m *dhcpManager) awaitContainerLinkUp(ctx context.Context) error {
 		return fmt.Errorf("container link %s was never set up: %w", m.ctrLink.Attrs().Name, err)
 	}
 	return nil
+}
+
+// errContainerLinkWithdrawn marks a Start whose located link libnetwork moved back out on a refused attach (#1236).
+var errContainerLinkWithdrawn = errors.New("the container link left the sandbox")
+
+// withdrawnLinkError marks err only when the kernel no longer has the located link's index in the sandbox (#1236).
+func (m *dhcpManager) withdrawnLinkError(err error) error {
+	if m.ctrLink == nil {
+		return err
+	}
+	_, lerr := nlLinkByIndex(m.netHandle, m.ctrLink.Attrs().Index)
+	var notFound netlink.LinkNotFoundError
+	if !errors.As(lerr, &notFound) {
+		return err
+	}
+	return fmt.Errorf("%w: %w", errContainerLinkWithdrawn, err)
 }
 
 // joinPhases times each stage of Start so an expired budget shows where it went: a slow daemon and an earlier
@@ -2138,6 +2154,7 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 		phases.mark("start_clients")
 		return nil
 	}(); err != nil {
+		err = m.withdrawnLinkError(err)
 		closeNetHandle(m.netHandle)
 		closeNsHandle(m.nsHandle)
 		return err

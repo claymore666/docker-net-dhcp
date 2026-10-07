@@ -8,6 +8,17 @@ The notes below go back to the first release of this project.
 
 [predecessor]: https://github.com/devplayer0/docker-net-dhcp
 
+## v2.5.0 (unreleased)
+
+### Fixed
+
+- A container whose attach Docker refuses after the plugin's `Join`, such
+  as a second network in a subnet the container already routes, no longer
+  counts as `join_start_failures` and no longer turns `healthy` false.
+  Docker moves the container's link back out of the sandbox, and the
+  plugin now counts that attach in the new `join_aborted_link_withdrawn`,
+  which does not affect `healthy` (#1236).
+
 ## v2.4.0
 
 The client reads and sends more DHCP options: Rapid Commit on both address

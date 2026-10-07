@@ -555,6 +555,9 @@ type Plugin struct {
 	// joinAbortedEndpointLeft counts attaches cancelled by Leave (#406); not healthy-affecting.
 	joinAbortedEndpointLeft atomic.Int32
 
+	// joinAbortedLinkWithdrawn counts attaches whose located link left the sandbox (#1236); not healthy-affecting.
+	joinAbortedLinkWithdrawn atomic.Int32
+
 	// unsafeHostnamesRejected counts hostnames with a control character dropped before option 12 (#692); a legitimate
 	// hostname has none, so non-zero means someone is trying.
 	unsafeHostnamesRejected atomic.Int32
