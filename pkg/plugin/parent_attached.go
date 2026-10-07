@@ -178,6 +178,29 @@ func linkUpAwaitingAddress(ctx context.Context, link netlink.Link, budget time.D
 	}
 }
 
+var childHostIPv6Off = func(name string) error { return disableHostIPv6Under(ipv6DisableSysctlDir, name) }
+
+// childIPv6Off turns IPv6 off on a child before it comes up in the host namespace, or a router advertisement gives
+// the host a SLAAC address and a default route through a link about to move (#1247). A link entering a namespace
+// gets fresh IPv6 state, measured on Linux 6.12. Best effort: a read-only /proc/sys leaves the old exposure.
+func childIPv6Off(name string) {
+	if err := childHostIPv6Off(name); err != nil {
+		log.WithError(err).WithField("link", name).Warn("Could not turn IPv6 off on a link before it comes up; the host may take router advertisements on it until it moves (#1247)")
+	}
+}
+
+// childIPv6OffFor spares an IPv6 network, whose DHCPv6 exchange runs on the link here and needs its link-local (#1247).
+func childIPv6OffFor(opts DHCPNetworkOptions, name string) {
+	if !opts.ipv6Enabled() {
+		childIPv6Off(name)
+	}
+}
+
+func upChildLink(ctx context.Context, opts DHCPNetworkOptions, link netlink.Link, budget time.Duration) (bool, error) {
+	childIPv6OffFor(opts, link.Attrs().Name)
+	return linkUpAwaitingAddress(ctx, link, budget)
+}
+
 // noteRestartLinkUpWait records a #408 wait; neither counter affects healthy, since a timeout surfaces through
 // CreateEndpoint (#422).
 func (p *Plugin) noteRestartLinkUpWait(r CreateEndpointRequest, waited bool, err error) {
@@ -222,7 +245,7 @@ func pinChildMAC(opts DHCPNetworkOptions, userMAC bool, fresh, parent netlink.Li
 	return mac, nil
 }
 
-func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart time.Time, r CreateEndpointRequest, opts DHCPNetworkOptions) (CreateEndpointResponse, error) {
+func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart time.Time, r CreateEndpointRequest, opts DHCPNetworkOptions) (_ CreateEndpointResponse, err error) {
 	res := CreateEndpointResponse{Interface: &EndpointInterface{}}
 	mode := opts.effectiveMode()
 
@@ -257,6 +280,12 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 	requestedV6 := explicitV6
 	if mode == ModeMacvlan && effectiveMAC == "" {
 		if tombMAC, tombIP, tombIPv6, ok := p.consumeTombstone(r.NetworkID, hostname); ok {
+			// A failed create hands it back, or the retry leases a new MAC and address (#657).
+			defer func() {
+				if err != nil {
+					p.addTombstone(r.NetworkID, hostname.name, tombMAC, tombIP, tombIPv6)
+				}
+			}()
 			// The kernel ignores a passthru child's create address, and the pin below sets the parent's (#905).
 			if !opts.macvlanPassthru() {
 				effectiveMAC = tombMAC
@@ -341,7 +370,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 			return err
 		}
 
-		waited, err := linkUpAwaitingAddress(ctx, fresh, childLinkUpBudget)
+		waited, err := upChildLink(ctx, opts, fresh, childLinkUpBudget)
 		p.noteRestartLinkUpWait(r, waited, err)
 		if err != nil {
 			return fmt.Errorf("failed to set %v link up: %w", mode, err)
@@ -445,10 +474,12 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 		}
 		return nil
 	}(); err != nil {
-		// Best-effort rollback: a link LinkDel misses goes with its netns.
+		// The child is still in the host netns: the engine moves it only after CreateEndpoint returns (#657).
 		p.closeRecord(recordID)
 		p.closeRecord(recordID6)
-		_ = nlLinkDel(link)
+		if delErr := nlLinkDel(link); delErr != nil {
+			log.WithError(delErr).WithField("link", la.Name).Warn("Endpoint link cleanup failed; remove it with `ip link del`")
+		}
 		return res, err
 	}
 

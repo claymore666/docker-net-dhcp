@@ -473,8 +473,11 @@ func (p *Plugin) addIPAMReserveLink(ctx context.Context, name, peer, mode string
 			guard.Unlock()
 			return nil, explainChildLinkAdd(err, mode, opts.linkParent(), parent.Attrs().Index)
 		}
+		childIPv6Off(name)
 		if err := nlLinkSetUp(link); err != nil {
-			_ = nlLinkDel(link)
+			if delErr := nlLinkDel(link); delErr != nil {
+				log.WithError(delErr).WithField("link", name).Warn("Reservation link cleanup failed; remove it with `ip link del`")
+			}
 			guard.Unlock()
 			return nil, fmt.Errorf("failed to bring the reservation link up: %w", err)
 		}
@@ -508,6 +511,8 @@ func (p *Plugin) addIPAMReserveLink(ctx context.Context, name, peer, mode string
 		remove()
 		return nil, fmt.Errorf("failed to find the reservation veth peer: %w", err)
 	}
+	// The DHCP client runs on veth, which carries the MAC; the peer is a bridge port.
+	childIPv6Off(name)
 	for _, l := range []netlink.Link{veth, peerLink} {
 		if err := nlLinkSetUp(l); err != nil {
 			remove()

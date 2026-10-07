@@ -79,6 +79,7 @@ func (p *Plugin) runDHCPProbe(ctx context.Context, opts DHCPNetworkOptions, pol 
 	if err := pinPassthruProbe(opts, parentLink, probeName); err != nil {
 		return fmt.Errorf("validate_dhcp: %w", err)
 	}
+	childIPv6Off(probeName)
 	if err := nlLinkSetUp(probeLink); err != nil {
 		return fmt.Errorf("validate_dhcp: bring probe link up: %w", err)
 	}
