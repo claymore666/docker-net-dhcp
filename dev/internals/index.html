@@ -1525,7 +1525,9 @@ namespace to it. Two things differ:</p>
    reason. Between the two calls nothing on the host answers to the
    <code>dh-</code> name, so those lookups go through one reader that waits for a
    rename in flight; the rename's own lookup is the exception and runs
-   inside it.</li>
+   inside it. The link is up at that point, so a kernel before 6.2
+   refuses the rename with <code>EBUSY</code> and the link keeps its <code>dh-</code> name
+   (#1248).</li>
 <li>The client keeps running, renewing the lease when required, until the
    container shuts down.</li>
 </ol>
