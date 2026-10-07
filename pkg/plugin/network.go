@@ -14,6 +14,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -1701,6 +1702,15 @@ func (p *Plugin) newJoinManager(r JoinRequest, opts DHCPNetworkOptions, hint joi
 	m.MacAddress = hint.MacAddress
 	m.engineGateway(false).Store(res.Gateway != "")
 	m.engineGateway(true).Store(res.GatewayIPv6 != "")
+	// By identity: a host route (#102) that won the destination in uniqueStaticRoutes is not the advertisement's (#1239).
+	for _, sr := range res.StaticRoutes {
+		if !opts.SkipRoutes && sr.RouteType == RouteTypeNextHop && slices.Contains(hint.RoutesIPv6, sr) {
+			if m.lastAdvertRoutes == nil {
+				m.lastAdvertRoutes = map[string]string{}
+			}
+			m.lastAdvertRoutes[sr.Destination] = sr.NextHop
+		}
+	}
 	return m
 }
 
