@@ -22,9 +22,10 @@ The notes below go back to the first release of this project.
 - `docker run --ip <address>` no longer fails with "held by another
   endpoint" after a container on an IPAM network was removed while the
   plugin was disabled or down. At start-up the plugin now hands such an
-  address back when Docker no longer runs a container with its MAC, and a
-  reservation whose lease record cannot be written now fails before any
-  address is requested, so no lease is left without a record (#1246).
+  address back when Docker no longer runs a container with its MAC, after
+  the minute it keeps a removed lease for a restart. A reservation whose
+  lease record cannot be written now fails before any address is
+  requested, so no lease is left without a record (#1246).
 
 ## v2.4.0
 
