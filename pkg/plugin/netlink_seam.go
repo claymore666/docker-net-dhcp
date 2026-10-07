@@ -18,6 +18,7 @@ var (
 	nlLinkList          = netlink.LinkList
 	nlLinkSetAlias      = netlink.LinkSetAlias
 	nlLinkSetMaster     = netlink.LinkSetMaster
+	nlLinkSetNoMaster   = netlink.LinkSetNoMaster
 
 	nlLinkSetHardwareAddr = netlink.LinkSetHardwareAddr
 

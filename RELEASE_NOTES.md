@@ -8,6 +8,15 @@ The notes below go back to the first release of this project.
 
 [predecessor]: https://github.com/devplayer0/docker-net-dhcp
 
+## v2.5.0 (unreleased)
+
+### Fixed
+
+- A bridge-mode `docker network create` that failed after the plugin had put
+  the parent NIC back into its own bridge no longer leaves the NIC a port of
+  that bridge. The plugin releases it again, unless another call has relied
+  on the port in the meantime (#1242).
+
 ## v2.4.0
 
 The client reads and sends more DHCP options: Rapid Commit on both address
