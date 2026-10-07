@@ -334,7 +334,13 @@
 #   floor the release after v2.3.0, and the v2.3.0 release PR is
 #   measured against main's floors.
 #
+# #657 PR 2: pkg/plugin 90.5 -> 90.9: RAISED to the PR head's unit-only
+# reading (90.1 at its base). The merged profile unions the unit blocks,
+# so it meets 90.9 whenever CI's unit run executes what the local one
+# did; the last merged reading, run 37274363352, was 92.9 on older code,
+# 2.0 above, wider than any spread this file records.
+#
 github.com/claymore666/docker-net-dhcp/v2/pkg/util 95.2
-github.com/claymore666/docker-net-dhcp/v2/pkg/plugin 90.5
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin 90.9
 github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp 93.1
 github.com/claymore666/docker-net-dhcp/v2/cmd/net-dhcp 82.8
