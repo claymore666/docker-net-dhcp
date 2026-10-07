@@ -964,6 +964,9 @@ type endpointFingerprint struct {
 	Released bool
 	// Prefixes is the IA_PD prefixes of the last v6 lease event, carried to the tombstone (#214).
 	Prefixes []string
+	// RecordKey is the key the endpoint's lease records were filed under, so release_lease=on_remove reaches an
+	// endpoint with no MAC to tombstone: ipvlan, passthru recovery, a recovery with no hostname (#1249).
+	RecordKey net.HardwareAddr
 }
 
 // dhcpHostname is a hostname with its trust bit, one value because safeHostname's "" means both refused and absent,
@@ -978,13 +981,13 @@ type dhcpHostname struct {
 // trusted reports whether name may narrow a tombstone match; an absent hostname is trusted and matches network-wide.
 func (h dhcpHostname) trusted() bool { return !h.refused }
 
-// rememberEndpoint stashes a created endpoint's fingerprint for DeleteEndpoint's tombstone; a no-op with no MAC.
+// rememberEndpoint stashes a created endpoint's fingerprint for DeleteEndpoint; a no-op with no MAC and no record key.
 // The hostname is a dhcpHostname parameter so the trust bit cannot be dropped: a bool parameter let `true` restore
 // #726 with the package green, and TestHostnameTrustIsWired refuses a laundered value.
 func (p *Plugin) rememberEndpoint(endpointID string, fp endpointFingerprint, h dhcpHostname) {
 	fp.Hostname = h.name
 	fp.HostnameRefused = h.refused
-	if fp.MAC == "" {
+	if fp.MAC == "" && len(fp.RecordKey) == 0 {
 		return
 	}
 	p.mu.Lock()
@@ -1247,7 +1250,7 @@ func (p *Plugin) containerGone(ctx context.Context, containerID string) bool {
 }
 
 // recoveredHostname returns the hostname for a recovered fingerprint; ok=false, for no inspect answer or a refused
-// hostname (#693), records no fingerprint, since an empty hostname would write a wildcard tombstone (#726).
+// hostname (#693), gives the fingerprint no MAC, since an empty hostname would write a wildcard tombstone (#726).
 func (p *Plugin) recoveredHostname(ctx context.Context, containerID string) (dhcpHostname, bool) {
 	if containerID == "" {
 		p.recoveryFingerprintsSkipped.Add(1)
@@ -1338,23 +1341,24 @@ func (p *Plugin) recoverOneEndpoint(ctx context.Context, containerID, networkID,
 	// Recovery records the fingerprint, or DeleteEndpoint lays no tombstone and the next `docker restart` loses the
 	// address (#721); after the compare-and-set, so a winning Join's fingerprint stands. Ifname stays empty, as Docker
 	// does not record the custom name (#125).
-	if hostname, ok := p.recoveredHostname(ctx, containerID); ok {
-		fpIPv4, fpIPv6 := "", ""
-		if ipv4 != nil {
-			fpIPv4 = ipv4.IP.String()
-		}
-		if ipv6 != nil {
-			fpIPv6 = ipv6.IP.String()
-		}
-		// Only an accepted hostname reaches here; a refusal writes no fingerprint (#726).
-		p.rememberEndpoint(endpointID, endpointFingerprint{
-			// Docker's MAC, not the resolved one: a tombstone must not offer an address filed under the ipvlan
-			// parent's MAC (#911).
-			MAC:  macStr,
-			IPv4: fpIPv4,
-			IPv6: fpIPv6,
-		}, hostname)
+	hostname, trusted := p.recoveredHostname(ctx, containerID)
+	fp := endpointFingerprint{
+		// Docker's MAC, not the resolved one: a tombstone must not offer an address filed under the ipvlan parent's
+		// MAC (#911). No MAC without a trusted hostname, whose "" would be a wildcard tombstone (#726); the record key
+		// still lets the removal hand the lease back (#1249).
+		MAC:       macStr,
+		RecordKey: endpointRecordKey(opts.effectiveMode(), endpointID, mac),
 	}
+	if !trusted {
+		fp.MAC = ""
+	}
+	if ipv4 != nil {
+		fp.IPv4 = ipv4.IP.String()
+	}
+	if ipv6 != nil {
+		fp.IPv6 = ipv6.IP.String()
+	}
+	p.rememberEndpoint(endpointID, fp, hostname)
 
 	go func() {
 		startCtx, cancel := context.WithTimeout(context.Background(), p.awaitTimeout)

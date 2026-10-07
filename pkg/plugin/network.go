@@ -1218,8 +1218,10 @@ func (p *Plugin) createEndpoint(ctx context.Context, r CreateEndpointRequest) (_
 
 	gateway := ""
 	var v4IP, v6IP string
+	var recordKey net.HardwareAddr
 	p.updateJoinHint(r.EndpointID, func(h *joinHint) {
 		gateway = h.Gateway
+		recordKey = endpointRecordKey(opts.effectiveMode(), r.EndpointID, h.MacAddress)
 		if h.IPv4 != nil {
 			v4IP = h.IPv4.IP.String()
 		}
@@ -1233,7 +1235,8 @@ func (p *Plugin) createEndpoint(ctx context.Context, r CreateEndpointRequest) (_
 	if mac == "" {
 		mac = res.Interface.MacAddress
 	}
-	p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: mac, IPv4: v4IP, IPv6: v6IP, Ifname: p.hintIfname(r.EndpointID)}, hostname)
+	p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: mac, IPv4: v4IP, IPv6: v6IP, Ifname: p.hintIfname(r.EndpointID),
+		RecordKey: recordKey}, hostname)
 
 	log.WithFields(log.Fields{
 		"network":  shortID(r.NetworkID),
@@ -1346,12 +1349,12 @@ func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) er
 			p.addTombstone(r.NetworkID, fp.Hostname, fp.MAC, fp.IPv4, fp.IPv6, fp.Prefixes...)
 		}
 		// RETAINED on every mode and hostname decision, so plugin-restart recovery never resumes a gone endpoint's
-		// lease; keyed as the record was filed, since fp.MAC is empty on ipvlan (#899).
-		hw, _ := net.ParseMAC(fp.MAC)
+		// lease and release_lease=on_remove hands it back; by the key the record was filed under, which create wrote
+		// down, since fp.MAC is empty on ipvlan and the mode may be unknown here (#899, #1249).
 		if isLinkLocalV4String(fp.IPv4) {
-			p.closeLinkLocalRecord(r.NetworkID, endpointRecordKey(mode, r.EndpointID, hw))
+			p.closeLinkLocalRecord(r.NetworkID, fp.RecordKey)
 		}
-		p.retainRecordFor(r.NetworkID, endpointRecordKey(mode, r.EndpointID, hw))
+		p.retainRecordFor(r.NetworkID, fp.RecordKey)
 	}
 
 	if mode == ModeMacvlan || mode == ModeIPvlan {
