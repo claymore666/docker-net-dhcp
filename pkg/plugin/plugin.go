@@ -1289,6 +1289,17 @@ func recoveredMAC(opts DHCPNetworkOptions, macStr string) (net.HardwareAddr, err
 // errNoRecoveryMAC is the empty-MAC refusal for modes with their own MAC.
 var errNoRecoveryMAC = errors.New("invalid MAC address")
 
+// recoveredManager builds the manager for an endpoint found after a plugin restart, whose child may predate the
+// endpoint alias (#1243).
+func (p *Plugin) recoveredManager(networkID, endpointID string, mac net.HardwareAddr, ipv4, ipv6 *netlink.Addr, opts DHCPNetworkOptions) *dhcpManager {
+	m := newDHCPManager(p.docker, JoinRequest{NetworkID: networkID, EndpointID: endpointID}, opts).withPlugin(p)
+	m.setLastIP(false, ipv4)
+	m.setLastIP(true, ipv6)
+	m.MacAddress = mac
+	m.recovered = true
+	return m
+}
+
 // recoverOneEndpoint builds a manager for one existing endpoint and starts it, returning adopted=false when a
 // manager already exists (#480); containerID lets a Start failure recognise an exited container (#376).
 func (p *Plugin) recoverOneEndpoint(ctx context.Context, containerID, networkID, endpointID, macStr, ipv4Cidr, ipv6Cidr string, opts DHCPNetworkOptions) (adopted bool, err error) {
@@ -1318,15 +1329,7 @@ func (p *Plugin) recoverOneEndpoint(ctx context.Context, containerID, networkID,
 
 	ipv4 = p.recoveredV4(networkID, endpointRecordKey(opts.Mode, endpointID, mac), ipv4)
 
-	fakeJoin := JoinRequest{
-		NetworkID:  networkID,
-		EndpointID: endpointID,
-	}
-	m := newDHCPManager(p.docker, fakeJoin, opts).withPlugin(p)
-	m.setLastIP(false, ipv4)
-	m.setLastIP(true, ipv6)
-	m.MacAddress = mac
-	m.recovered = true
+	m := p.recoveredManager(networkID, endpointID, mac, ipv4, ipv6, opts)
 	// Checked and registered in one operation, so a mid-recovery Join keeps its manager (#480).
 	if !p.registerDHCPManagerIfAbsent(endpointID, m) {
 		p.recoveryAlreadyManaged.Add(1)

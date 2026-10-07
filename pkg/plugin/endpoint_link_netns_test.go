@@ -125,6 +125,11 @@ func (s sandboxLinks) locate(t *testing.T, endpointID string, opts DHCPNetworkOp
 	t.Helper()
 	m := newDHCPManager(nil, JoinRequest{NetworkID: "net-1243", EndpointID: endpointID}, opts)
 	m.MacAddress = mac
+	return s.bind(m, budget)
+}
+
+// bind runs m's link lookup in the sandbox and returns the link it bound to.
+func (s sandboxLinks) bind(m *dhcpManager, budget time.Duration) (netlink.Link, error) {
 	m.netHandle = s.h
 	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
@@ -241,6 +246,52 @@ func TestLocateContainerLink_AnUntaggedSameMACLinkIsNeverTakenOnJoin(t *testing.
 			if r.link.Attrs().Index != ownIndex {
 				t.Errorf("the client binds to %s (index %d), want this endpoint's child (index %d)",
 					r.link.Attrs().Name, r.link.Attrs().Index, ownIndex)
+			}
+		})
+	}
+}
+
+// A restarted plugin looks the link up again from Docker's state: it finds its tagged child behind the engine's
+// untagged one, takes the single untagged child a release before the alias left, and refuses two (#1243).
+func TestLocateContainerLink_ARecoveredEndpointFindsItsOwnChild(t *testing.T) {
+	if !inOwnNetns(t) {
+		return
+	}
+	for _, tc := range []struct {
+		name          string
+		engine, owned bool
+	}{
+		{"its tagged child behind the engine's link", true, true},
+		{"the one untagged child an older release made", false, false},
+		{"an untagged child beside the engine's link", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			parent, _ := hostParents(t)
+			opts := ipvlanOn(parent.Attrs().Name)
+			s := newSandbox(t)
+			if tc.engine {
+				s.moveIn(t, childFor(t, "", "engine1243", opts, parent), "eth0")
+			}
+			tag := ""
+			if tc.owned {
+				tag = ep1243B
+			}
+			own := s.moveIn(t, childFor(t, tag, subLinkName(ep1243B), opts, parent), "eth1")
+			m := (&Plugin{}).recoveredManager("net-1243", ep1243B, parent.Attrs().HardwareAddr, nil, nil, opts)
+			got, err := s.bind(m, 5*pollTime)
+			if tc.engine && !tc.owned {
+				if err == nil {
+					t.Errorf("recovery took %s (index %d) of two untagged links with one MAC; want a refusal",
+						got.Attrs().Name, got.Attrs().Index)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("the recovered endpoint found no link: %v", err)
+			}
+			if got.Attrs().Index != own {
+				t.Errorf("the recovered client binds to %s (index %d), want its own child (index %d)",
+					got.Attrs().Name, got.Attrs().Index, own)
 			}
 		})
 	}
