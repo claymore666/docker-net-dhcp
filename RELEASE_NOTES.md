@@ -8,6 +8,19 @@ The notes below go back to the first release of this project.
 
 [predecessor]: https://github.com/devplayer0/docker-net-dhcp
 
+## v2.5.0 (unreleased)
+
+### Fixed
+
+- A macvlan or ipvlan child, and the container end of a bridge-mode veth
+  pair, no longer take a router advertisement in the host namespace between
+  `CreateEndpoint` and the move into the container: with IPv6 forwarding off
+  and `accept_ra=1`, the host got a SLAAC address and a default route
+  through a link about to leave. The same holds for the IPAM reservation
+  link and the `validate_dhcp` probe link. IPv6 is switched off on the link
+  before it comes up; networks with IPv6 enabled are unchanged, since their
+  DHCPv6 exchange runs on that link and needs its link-local (#1247).
+
 ## v2.4.0
 
 The client reads and sends more DHCP options: Rapid Commit on both address

@@ -1016,6 +1016,7 @@ func (p *Plugin) createEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		if err != nil {
 			return fmt.Errorf("failed to find container side of veth pair: %w", err)
 		}
+		childIPv6OffFor(opts, ctrName)
 		if err := nlLinkSetUp(ctrLink); err != nil {
 			return fmt.Errorf("failed to set container side link of veth pair up: %w", err)
 		}
