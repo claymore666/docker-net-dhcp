@@ -8,6 +8,17 @@ The notes below go back to the first release of this project.
 
 [predecessor]: https://github.com/devplayer0/docker-net-dhcp
 
+## v2.5.0 (unreleased)
+
+### Fixed
+
+- `docker network create` now refuses, naming the option, five values that
+  were accepted and then failed every container: a `gateway` that is not a
+  bare IPv4 address (`192.168.0.1/24`, `fe80::1`), a `vendor_class` over 255
+  octets, a `client_id` over 254, a negative `lease_timeout`, and an `mtu`
+  below 1280 beside `ipv6_mode=dhcp`, `slaac` or `auto`. Networks created
+  earlier keep loading as before (#1240).
+
 ## v2.4.0
 
 The client reads and sends more DHCP options: Rapid Commit on both address
