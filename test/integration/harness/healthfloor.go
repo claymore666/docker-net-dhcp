@@ -124,10 +124,11 @@ type HealthResponse struct {
 	JoinAttachMsMax      int32 `json:"join_attach_ms_max"`
 
 	// RestartLinkUpWaited counts child links that came up only after the departing link released the address (#408, #422).
-	RestartLinkUpWaited     int32 `json:"restart_link_up_waited"`
-	RestartLinkUpTimeouts   int32 `json:"restart_link_up_timeouts"`
-	JoinAbortedEndpointLeft int32 `json:"join_aborted_endpoint_left"`
-	TombstoneWriteFailures  int32 `json:"tombstone_write_failures"`
+	RestartLinkUpWaited      int32 `json:"restart_link_up_waited"`
+	RestartLinkUpTimeouts    int32 `json:"restart_link_up_timeouts"`
+	JoinAbortedEndpointLeft  int32 `json:"join_aborted_endpoint_left"`
+	JoinAbortedLinkWithdrawn int32 `json:"join_aborted_link_withdrawn"`
+	TombstoneWriteFailures   int32 `json:"tombstone_write_failures"`
 	// TombstoneQuarantines counts unparseable tombstone files moved aside, which is healthy-affecting (#724).
 	TombstoneQuarantines int32 `json:"tombstone_quarantines"`
 	// TombstonesConsumed counts addresses preserved by replaying a tombstone (#386).

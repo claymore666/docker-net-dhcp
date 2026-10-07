@@ -1950,7 +1950,7 @@ func (p *Plugin) daemonSaysContainerGone(r JoinRequest) bool {
 	return ctr.State.Status == dContainer.StateExited || ctr.State.Status == dContainer.StateDead
 }
 
-// settleFailedAttach counts a failed attach once: endpoint left, vanished, no container, start failure (#1186).
+// settleFailedAttach counts a failed attach once: left, vanished, withdrawn, no container, start failure (#1186, #1236).
 func (p *Plugin) settleFailedAttach(r JoinRequest, m *dhcpManager, err error) {
 	fields := log.Fields{
 		"network":  shortID(r.NetworkID),
@@ -1979,6 +1979,14 @@ func (p *Plugin) settleFailedAttach(r JoinRequest, m *dhcpManager, err error) {
 			Info("Container went away during attach; no persistent client needed")
 		p.removeDHCPManagerIfSame(r.EndpointID, m)
 		// No persistent client; the one-shot's address expires on the server (#800).
+		return
+	}
+	// The engine took the located link back out of the sandbox, which it does when it refuses the attach (#1236).
+	if errors.Is(err, errContainerLinkWithdrawn) {
+		p.joinAbortedLinkWithdrawn.Add(1)
+		log.WithError(err).WithFields(fields).
+			Info("The container's link left its sandbox during attach; no persistent client needed")
+		p.removeDHCPManagerIfSame(r.EndpointID, m)
 		return
 	}
 	// No container claimed the endpoint (#566), not a plugin fault; the address is left to expire (#800).
