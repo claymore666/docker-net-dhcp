@@ -8,6 +8,31 @@ The notes below go back to the first release of this project.
 
 [predecessor]: https://github.com/devplayer0/docker-net-dhcp
 
+## v2.5.0 (unreleased)
+
+### Fixed
+
+- With `propagate_mtu=true`, a container link whose MTU a DHCP server or
+  router had lowered kept the lowered value after the server stopped
+  sending one, and every renewal logged an application that changed
+  nothing. The plugin compared the supplied MTU with a copy of the link it
+  read when the container started, which its own change never updated. It
+  now reads the link's MTU from the kernel, so a withdrawn value puts back
+  the MTU the link had before the plugin first changed it (#1238).
+- With `release_lease=on_remove`, the deferred release no longer hands
+  back an address a running container holds. Each held address is checked
+  again just before its release goes out, not once per pass; a container
+  that restarted onto a held record keeps it out of the release; and a
+  network removal running beside the periodic pass releases each address
+  once, not twice (#1237).
+- An IPv6 route a router advertises (RFC 4191 Route Information) is now
+  added again at the next advertisement when adding it failed, and removed
+  again when removing it failed; before, one failed write left the
+  container wrong until it restarted. A route Join installed, or one on
+  the container's link when the plugin restarted, is now removed when the
+  router stops advertising it. Host routes Join copied into the container
+  stay, and nothing is removed before a router has been heard (#1239).
+
 ## v2.4.0
 
 The client reads and sends more DHCP options: Rapid Commit on both address

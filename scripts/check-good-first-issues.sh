@@ -92,7 +92,7 @@
 #             count, in both directions. This is NOT safe at PR time — an
 #             unrelated PR would go red because somebody closed the last
 #             starter issue, charging the cost to whoever pushed next. It
-#             runs on a schedule instead.
+#             is a manual step of docs/release-runbook.md instead (#748).
 #
 # WHERE THE LABEL NAME COMES FROM, and why it changed (#851). This gate
 # used to decode the label out of the promise URL. That works only while
@@ -718,7 +718,7 @@ fi
 # stop existing, which happens without a commit — Discussions switched
 # off in repository settings, or the category renamed or deleted. That is
 # the same class of silent decay as the label's open count, so it is
-# checked in the same place and on the same schedule.
+# checked in the same place.
 #
 # The repository, and the category, are derived from ASK_ROUTE rather
 # than restated, so there is one copy of the fact and not three.

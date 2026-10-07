@@ -7,21 +7,20 @@ name: Label taxonomy
 # Both rots were found by a person reading the tracker. The second, caught
 # immediately before the v1.8.0 release PR: a duplicate type label `tests`
 # with no description, a `security` label created during a review with no
-# description and no entry in the labeller's allow-list, ten open issues
+# description and no entry in the labeller's rule map, ten open issues
 # carrying two type labels and seven carrying none.
 #
 # None of it was catchable until #715, because no file said which labels may
-# exist. `.github/issue-labeler.yml` and `ALLOWED_LABELS` are inputs to the
-# labeller: a label missing from them is invisible to the automation, not
-# forbidden.
+# exist. `.github/issue-labeler.yml` is an input to the labeller: a label
+# missing from it is invisible to the automation, not forbidden.
 #
 # WHY THIS IS NOT IN test.yaml. The claim can become false with nobody
 # touching the tree — somebody adds a label or edits an issue in the web UI —
 # so gating a pull request on it would charge that cost to whoever pushed
 # next, and would fail on a tracker API blip. The half that IS a property of
-# the tree (the declaration is well formed; the labeller's two lists are
-# subsets of it) runs there instead, as `Label taxonomy check`. Same split,
-# and the same accepted cost, as Milestone scope and Starter tasks.
+# the tree (the declaration is well formed; the labeller's rule map is a
+# subset of it) runs there instead, as `Label taxonomy check`. Same split,
+# and the same accepted cost, as Milestone scope.
 #
 # A red schedule is easier to ignore than a red PR. That is affordable here
 # because the risk window is long: a wrong label sits for days before it
@@ -52,9 +51,9 @@ name: Label taxonomy
 # `dev` (#839).
 on:
   schedule:
-    # Daily, offset from Milestone scope (23 6) and Starter tasks (41 7) so
-    # three API-reading jobs do not land together. Labels change at human
-    # pace; hourly would only add noise.
+    # Daily, offset from Milestone scope (23 6) so the API-reading jobs do
+    # not land together. Labels change at human pace; hourly would only add
+    # noise.
     - cron: '7 8 * * *'
   workflow_dispatch:
 
