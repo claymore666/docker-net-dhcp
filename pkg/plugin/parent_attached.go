@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/mitchellh/mapstructure"
@@ -333,6 +334,9 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 		if err != nil {
 			return fmt.Errorf("failed to re-fetch %v link: %w", mode, err)
 		}
+		if err := tagEndpointLink(fresh, r.EndpointID); err != nil {
+			return fmt.Errorf("failed to tag %v link with its endpoint: %w", mode, err)
+		}
 		if err := applyEndpointMTU(opts.MTU, fresh); err != nil {
 			return err
 		}
@@ -508,17 +512,40 @@ func (p *Plugin) deleteParentAttachedEndpoint(r DeleteEndpointRequest) error {
 	return nil
 }
 
-func findLinkByMAC(handle linkLister, mac net.HardwareAddr) (netlink.Link, error) {
+// endpointAliasPrefix starts a child's endpoint alias; the bare vlanOwnerAlias marks a sub-interface.
+const endpointAliasPrefix = vlanOwnerAlias + " endpoint "
+
+// tagEndpointLink writes the endpoint into the child's alias, which findEndpointLink reads in the sandbox. ipvlan and
+// passthru children wear the parent's MAC, so two in one container share it; the alias survives the move and the
+// engine's rename, measured on Linux 6.12, and libnetwork sets none (moby v28.5.2) (#1243).
+func tagEndpointLink(link netlink.Link, endpointID string) error {
+	return nlLinkSetAlias(link, endpointAliasPrefix+endpointID)
+}
+
+// findEndpointLink returns the link tagged for the endpoint. An untagged link with the MAC is taken where the MAC is
+// the endpoint's own, or on recovery of an endpoint tagged by no release as its only candidate; on a Join the engine's
+// own ipvlan child on the same parent can be there before this one (#1243).
+func findEndpointLink(handle linkLister, mac net.HardwareAddr, endpointID string, sharedMAC, recovered bool) (netlink.Link, error) {
 	links, err := util.DumpResult(handle.LinkList())
 	if err != nil {
 		return nil, fmt.Errorf("failed to list links: %w", err)
 	}
+	var untagged []netlink.Link
 	for _, l := range links {
-		if bytes.Equal(l.Attrs().HardwareAddr, mac) {
+		if !bytes.Equal(l.Attrs().HardwareAddr, mac) {
+			continue
+		}
+		if l.Attrs().Alias == endpointAliasPrefix+endpointID {
 			return l, nil
 		}
+		if !strings.HasPrefix(l.Attrs().Alias, endpointAliasPrefix) {
+			untagged = append(untagged, l)
+		}
 	}
-	return nil, fmt.Errorf("no link with MAC %v", mac)
+	if len(untagged) > 0 && (!sharedMAC || (recovered && len(untagged) == 1)) {
+		return untagged[0], nil
+	}
+	return nil, fmt.Errorf("no link with MAC %v tagged for endpoint %v (%d untagged)", mac, shortID(endpointID), len(untagged))
 }
 
 // parentAttachedOperInfo is the EndpointOperInfo answer for macvlan and ipvlan endpoints.

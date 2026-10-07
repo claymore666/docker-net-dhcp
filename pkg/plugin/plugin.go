@@ -1326,6 +1326,7 @@ func (p *Plugin) recoverOneEndpoint(ctx context.Context, containerID, networkID,
 	m.setLastIP(false, ipv4)
 	m.setLastIP(true, ipv6)
 	m.MacAddress = mac
+	m.recovered = true
 	// Checked and registered in one operation, so a mid-recovery Join keeps its manager (#480).
 	if !p.registerDHCPManagerIfAbsent(endpointID, m) {
 		p.recoveryAlreadyManaged.Add(1)

@@ -272,23 +272,23 @@ type fakeLinkLister struct {
 
 func (f fakeLinkLister) LinkList() ([]netlink.Link, error) { return f.links, f.err }
 
-func TestFindLinkByMAC(t *testing.T) {
+func TestFindEndpointLink(t *testing.T) {
 	mac, _ := net.ParseMAC("aa:bb:cc:dd:ee:ff")
 	other, _ := net.ParseMAC("11:22:33:44:55:66")
 	match := &fakeLink{typ: "macvlan", attrs: netlink.LinkAttrs{HardwareAddr: mac}}
 
 	t.Run("list_error", func(t *testing.T) {
-		_, err := findLinkByMAC(fakeLinkLister{err: errors.New("boom")}, mac)
+		_, err := findEndpointLink(fakeLinkLister{err: errors.New("boom")}, mac, "ep", false, false)
 		if err == nil {
 			t.Fatal("expected error when LinkList fails")
 		}
 	})
 	// netlink v1.3.1 returns ErrDumpInterrupted with a usable result set, so the result must survive (#802).
 	t.Run("dump_interrupted_still_finds_it", func(t *testing.T) {
-		got, err := findLinkByMAC(fakeLinkLister{
+		got, err := findEndpointLink(fakeLinkLister{
 			links: []netlink.Link{match},
 			err:   netlink.ErrDumpInterrupted,
-		}, mac)
+		}, mac, "ep", false, false)
 		if err != nil {
 			t.Fatalf("ErrDumpInterrupted treated as fatal: %v", err)
 		}
@@ -297,18 +297,18 @@ func TestFindLinkByMAC(t *testing.T) {
 		}
 	})
 	t.Run("no_match", func(t *testing.T) {
-		_, err := findLinkByMAC(fakeLinkLister{links: []netlink.Link{
+		_, err := findEndpointLink(fakeLinkLister{links: []netlink.Link{
 			&fakeLink{typ: "device", attrs: netlink.LinkAttrs{HardwareAddr: other}},
-		}}, mac)
+		}}, mac, "ep", false, false)
 		if err == nil {
 			t.Fatal("expected error when no link matches the MAC")
 		}
 	})
 	t.Run("found", func(t *testing.T) {
-		got, err := findLinkByMAC(fakeLinkLister{links: []netlink.Link{
+		got, err := findEndpointLink(fakeLinkLister{links: []netlink.Link{
 			&fakeLink{typ: "device", attrs: netlink.LinkAttrs{HardwareAddr: other}},
 			match,
-		}}, mac)
+		}}, mac, "ep", false, false)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -334,5 +334,44 @@ func TestAddRoutes_StaticNextHopV4(t *testing.T) {
 	}
 	if res.StaticRoutes[0].RouteType != RouteTypeNextHop || res.StaticRoutes[0].NextHop != "192.168.0.254" {
 		t.Fatalf("static route: got %+v", res.StaticRoutes[0])
+	}
+}
+
+// A child created before the endpoint alias is found again after a plugin restart only when nothing else could be
+// it; on a Join an untagged link with a shared MAC is never the endpoint's (#1243).
+func TestFindEndpointLink_UntaggedLinks(t *testing.T) {
+	mac, _ := net.ParseMAC("aa:bb:cc:dd:ee:ff")
+	link := func(name, alias string) netlink.Link {
+		return &fakeLink{typ: "ipvlan", attrs: netlink.LinkAttrs{Name: name, HardwareAddr: mac, Alias: alias}}
+	}
+	sibling := link("eth0", endpointAliasPrefix+"other")
+	own := link("eth1", endpointAliasPrefix+"ep")
+	legacy := link("eth1", "")
+	engine := link("eth2", "")
+	for _, tc := range []struct {
+		name                 string
+		links                []netlink.Link
+		sharedMAC, recovered bool
+		want                 netlink.Link
+	}{
+		{"recovery finds its tagged child behind a sibling", []netlink.Link{sibling, own}, true, true, own},
+		{"recovery takes the only untagged child", []netlink.Link{sibling, legacy}, true, true, legacy},
+		{"recovery refuses two untagged children", []netlink.Link{legacy, engine}, true, true, nil},
+		{"a join never takes an untagged shared-MAC link", []netlink.Link{sibling, engine}, true, false, nil},
+		{"a join takes an untagged link with the endpoint's own MAC", []netlink.Link{sibling, legacy}, false, false, legacy},
+		{"another endpoint's child is never taken", []netlink.Link{sibling}, false, true, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := findEndpointLink(fakeLinkLister{links: tc.links}, mac, "ep", tc.sharedMAC, tc.recovered)
+			if tc.want == nil {
+				if err == nil {
+					t.Fatalf("bound to %s, want no link", got.Attrs().Name)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Fatalf("got %v (err %v), want %s", got, err, tc.want.Attrs().Name)
+			}
+		})
 	}
 }

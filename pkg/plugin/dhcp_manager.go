@@ -140,6 +140,8 @@ type dhcpManager struct {
 
 	// MacAddress is set in macvlan mode to re-find the link after Docker moves and renames it; empty in bridge mode.
 	MacAddress net.HardwareAddr
+	// recovered marks a manager built after a plugin restart, whose child may predate the endpoint alias (#1243).
+	recovered bool
 
 	// hostname is the name put on the wire, empty for no name or a refused one; it sits under ipMu because the attach
 	// writes it while the v4 client already leases (#961). Use hostnameOnTheWire and setHostname.
@@ -1826,7 +1828,8 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 }
 
 // locateContainerLink finds the moved link in the sandbox: bridge by the host veth's peer index after Docker's
-// rename, macvlan and ipvlan by MAC (#125); an ipvlan child's parent is outside the netns, so its MAC is unique.
+// rename, macvlan and ipvlan by the endpoint alias on a link with its MAC (#125); ipvlan and passthru children wear
+// the parent's MAC, so two in one container share it (#1243).
 func (m *dhcpManager) locateContainerLink(ctx context.Context) error {
 	if mode := m.opts.effectiveMode(); mode == ModeMacvlan || mode == ModeIPvlan {
 		if len(m.MacAddress) == 0 {
@@ -1836,7 +1839,7 @@ func (m *dhcpManager) locateContainerLink(ctx context.Context) error {
 		awaitCtx, cancel := context.WithTimeout(ctx, linkAwaitTimeout)
 		defer cancel()
 		return util.AwaitCondition(awaitCtx, func() (bool, error) {
-			link, err := findLinkByMAC(m.netHandle, m.MacAddress)
+			link, err := findEndpointLink(m.netHandle, m.MacAddress, m.joinReq.EndpointID, m.opts.childWearsParentMAC(), m.recovered)
 			if err != nil {
 				return false, nil
 			}
