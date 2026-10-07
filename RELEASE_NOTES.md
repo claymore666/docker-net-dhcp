@@ -8,6 +8,18 @@ The notes below go back to the first release of this project.
 
 [predecessor]: https://github.com/devplayer0/docker-net-dhcp
 
+## v2.5.0 (unreleased)
+
+### Fixed
+
+- A per-endpoint `ip` driver option written with another letter case, such
+  as `docker network connect --driver-opt IP=192.168.0.50` or `IP:` under
+  Compose `driver_opts:`, was ignored and the container got an address from
+  DHCP with no message. The key now matches without regard to case, and two
+  spellings with different values are refused. An empty `ip` value, as
+  Compose sends for `ip: "${IP}"` with `IP` unset, now counts as not set
+  and the container gets a DHCP lease instead of failing to start (#1245).
+
 ## v2.4.0
 
 The client reads and sends more DHCP options: Rapid Commit on both address

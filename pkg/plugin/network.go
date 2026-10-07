@@ -666,12 +666,38 @@ func resolveExplicitV6(r CreateEndpointRequest) (string, error) {
 	return addr.IP.String(), nil
 }
 
-// parseDriverOptIP reads the bare IPv4 of the `ip` driver-opt, a flat key in r.Options (#46).
+// parseDriverOptIP reads the bare IPv4 of the `ip` driver-opt, a flat key in r.Options (#46). The key matches
+// case-insensitively because `docker network connect --driver-opt IP=` and Compose keep its case (#1245).
 func parseDriverOptIP(options map[string]interface{}) (string, error) {
-	raw, ok := options["ip"]
-	if !ok {
+	var keys []string
+	for k := range options {
+		if strings.EqualFold(k, "ip") {
+			keys = append(keys, k)
+		}
+	}
+	if len(keys) == 0 {
 		return "", nil
 	}
+	sort.Strings(keys)
+	var first, firstKey string
+	for _, k := range keys {
+		if s, ok := options[k].(string); ok && s == "" {
+			continue
+		}
+		v, err := parseDriverOptIPValue(options[k])
+		if err != nil {
+			return "", err
+		}
+		if firstKey == "" {
+			first, firstKey = v, k
+		} else if v != first {
+			return "", fmt.Errorf("conflicting driver-opt ip spellings %q=%q vs %q=%q: %w", firstKey, first, k, v, util.ErrIPAM)
+		}
+	}
+	return first, nil
+}
+
+func parseDriverOptIPValue(raw interface{}) (string, error) {
 	s, ok := raw.(string)
 	if !ok || s == "" {
 		return "", fmt.Errorf("invalid driver-opt ip %v: expected non-empty string: %w", raw, util.ErrIPAM)
