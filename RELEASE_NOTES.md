@@ -32,13 +32,13 @@ The notes below go back to the first release of this project.
   the container's link when the plugin restarted, is now removed when the
   router stops advertising it. Host routes Join copied into the container
   stay, and nothing is removed before a router has been heard (#1239).
-- `host_ifname` needs Linux 6.2 or later, and now says so. On an older
-  kernel, such as Debian 12 or Unraid 6.12 (both 6.1), the rename of the
-  up host-side link is refused with `EBUSY`, every link keeps its generated
-  name and `host_ifname_failures` rises; the reference names the minimum
-  and the plugin log names the reason. The `conflict_check` row no longer
-  says `validate_dhcp`'s probe address is released at once: its lease is
-  left to expire (#1248).
+- `docker network create` now refuses, naming the option, five values that
+  were accepted and then failed every container: a `gateway` that is not a
+  bare unicast IPv4 address (`192.168.0.1/24`, `fe80::1`, `0.0.0.0`), a
+  `vendor_class` over 255 octets, a `client_id` over 254, a negative
+  `lease_timeout`, and an `mtu` below 1280 with IPv6 on (`ipv6_mode=dhcp`,
+  `slaac`, `auto` or `ipv6=true`). Networks created earlier keep loading
+  as before (#1240).
 
 ## v2.4.0
 
