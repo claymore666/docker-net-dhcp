@@ -756,6 +756,13 @@ jobs:
       - name: Proc-path discipline
         run: bash scripts/check-proc-path-discipline.sh
 
+      # pkg/plugin/netlink_seam.go lets a unit test inject a netlink
+      # failure without CAP_NET_ADMIN. Most call sites
+      # reached past it, and the two most complex functions in the
+      # package were unreachable from a unit test for that reason (#657).
+      - name: netlink calls go through the seam
+        run: bash scripts/check-netlink-seam.sh
+
       # Go's os package sets O_CLOEXEC; the unix and syscall packages
       # pass through whatever flags they are given. This plugin forks
       # unshare, sh and a root dhcpcd constantly, and os/exec does not
