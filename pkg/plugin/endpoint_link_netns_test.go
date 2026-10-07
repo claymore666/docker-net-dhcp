@@ -47,8 +47,7 @@ func newSandbox(t *testing.T) sandboxLinks {
 	return sandboxLinks{ns: ns, h: h}
 }
 
-// moveIn does what the engine does at Join: moves the host-side child into the sandbox and renames it. It returns
-// the index the link holds there, the identity a lookup is judged by, since the lookup may see it before the rename.
+// moveIn moves the child into the sandbox and renames it as the engine does at Join, returning its index there (#1243).
 func (s sandboxLinks) moveIn(t *testing.T, hostName, ctrName string) int {
 	t.Helper()
 	if err := netlink.LinkSetNsFd(mustLinkByName(t, hostName), int(s.ns)); err != nil {
@@ -87,8 +86,7 @@ func hostParents(t *testing.T) (parent, vlan netlink.Link) {
 	return parent, vlan
 }
 
-// childFor adds an endpoint's child under subLinkName on parent and tags it as CreateEndpoint does; an empty
-// endpointID makes an untagged child, as the engine's built-in ipvlan or macvlan driver leaves.
+// childFor adds a child on parent, tagged for endpointID as CreateEndpoint does, or untagged like the engine's when empty.
 func childFor(t *testing.T, endpointID, name string, opts DHCPNetworkOptions, parent netlink.Link) string {
 	t.Helper()
 	la := netlink.NewLinkAttrs()
@@ -128,7 +126,6 @@ func (s sandboxLinks) locate(t *testing.T, endpointID string, opts DHCPNetworkOp
 	return s.bind(m, budget)
 }
 
-// bind runs m's link lookup in the sandbox and returns the link it bound to.
 func (s sandboxLinks) bind(m *dhcpManager, budget time.Duration) (netlink.Link, error) {
 	m.netHandle = s.h
 	ctx, cancel := context.WithTimeout(context.Background(), budget)
@@ -142,8 +139,7 @@ const (
 	ep1243B = "bbbb1243bbbb1243bbbb1243bbbb1243bbbb1243bbbb1243bbbb1243bbbb1243"
 )
 
-// Two endpoints whose children wear one MAC sit in one container; each client binds to its own link however the
-// engine ordered and renamed them (#1243).
+// Two same-MAC children in one container: each client binds to its own however the engine ordered them (#1243).
 func TestLocateContainerLink_SameMACChildrenInOneContainerEachFindTheirOwn(t *testing.T) {
 	if !inOwnNetns(t) {
 		return
@@ -194,8 +190,7 @@ func TestLocateContainerLink_SameMACChildrenInOneContainerEachFindTheirOwn(t *te
 	}
 }
 
-// The engine's own ipvlan or macvlan link on the same parent is already in the container while this endpoint's
-// child is still on the host: the first poll must not take it (#1243).
+// The engine's own same-MAC link is in the container before this endpoint's child: the lookup must wait (#1243).
 func TestLocateContainerLink_AnUntaggedSameMACLinkIsNeverTakenOnJoin(t *testing.T) {
 	if !inOwnNetns(t) {
 		return
@@ -251,8 +246,7 @@ func TestLocateContainerLink_AnUntaggedSameMACLinkIsNeverTakenOnJoin(t *testing.
 	}
 }
 
-// A restarted plugin looks the link up again from Docker's state: it finds its tagged child behind the engine's
-// untagged one, takes the single untagged child a release before the alias left, and refuses two (#1243).
+// After a restart: the tagged child behind the engine's link, a lone untagged child, and two untagged refused (#1243).
 func TestLocateContainerLink_ARecoveredEndpointFindsItsOwnChild(t *testing.T) {
 	if !inOwnNetns(t) {
 		return
@@ -297,8 +291,7 @@ func TestLocateContainerLink_ARecoveredEndpointFindsItsOwnChild(t *testing.T) {
 	}
 }
 
-// CreateEndpoint leaves on the child the identity the sandbox lookup reads: the alias the kernel holds for the link,
-// read back at the moment it was written, finds this endpoint and not another one (#1243).
+// CreateEndpoint leaves the alias the sandbox lookup reads, as the kernel holds it, finding this endpoint only (#1243).
 func TestCreateEndpoint_TheChildCarriesTheIdentityTheSandboxLookupReads(t *testing.T) {
 	if !inOwnNetns(t) {
 		return

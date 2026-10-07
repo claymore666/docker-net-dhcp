@@ -1289,8 +1289,7 @@ func recoveredMAC(opts DHCPNetworkOptions, macStr string) (net.HardwareAddr, err
 // errNoRecoveryMAC is the empty-MAC refusal for modes with their own MAC.
 var errNoRecoveryMAC = errors.New("invalid MAC address")
 
-// recoveredManager builds the manager for an endpoint found after a plugin restart, whose child may predate the
-// endpoint alias (#1243).
+// recoveredManager builds the manager for an endpoint found after a plugin restart (#1243).
 func (p *Plugin) recoveredManager(networkID, endpointID string, mac net.HardwareAddr, ipv4, ipv6 *netlink.Addr, opts DHCPNetworkOptions) *dhcpManager {
 	m := newDHCPManager(p.docker, JoinRequest{NetworkID: networkID, EndpointID: endpointID}, opts).withPlugin(p)
 	m.setLastIP(false, ipv4)

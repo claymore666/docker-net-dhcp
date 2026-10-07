@@ -515,16 +515,14 @@ func (p *Plugin) deleteParentAttachedEndpoint(r DeleteEndpointRequest) error {
 // endpointAliasPrefix starts a child's endpoint alias; the bare vlanOwnerAlias marks a sub-interface.
 const endpointAliasPrefix = vlanOwnerAlias + " endpoint "
 
-// tagEndpointLink writes the endpoint into the child's alias, which findEndpointLink reads in the sandbox. ipvlan and
-// passthru children wear the parent's MAC, so two in one container share it; the alias survives the move and the
-// engine's rename, measured on Linux 6.12, and libnetwork sets none (moby v28.5.2) (#1243).
+// tagEndpointLink names the endpoint in the child's alias, which survives the move and rename (Linux 6.12) and which
+// libnetwork never sets, so findEndpointLink tells apart ipvlan and passthru children wearing one MAC (#1243).
 func tagEndpointLink(link netlink.Link, endpointID string) error {
 	return nlLinkSetAlias(link, endpointAliasPrefix+endpointID)
 }
 
-// findEndpointLink returns the link tagged for the endpoint. An untagged link with the MAC is taken where the MAC is
-// the endpoint's own, or on recovery of an endpoint tagged by no release as its only candidate; on a Join the engine's
-// own ipvlan child on the same parent can be there before this one (#1243).
+// findEndpointLink returns the MAC's link tagged for endpointID, else an untagged one where the MAC is the endpoint's
+// own or, on recovery only, the sole candidate, since the engine's own ipvlan may reach a Join's sandbox first (#1243).
 func findEndpointLink(handle linkLister, mac net.HardwareAddr, endpointID string, sharedMAC, recovered bool) (netlink.Link, error) {
 	links, err := util.DumpResult(handle.LinkList())
 	if err != nil {

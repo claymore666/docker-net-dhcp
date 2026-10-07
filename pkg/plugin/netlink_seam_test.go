@@ -337,8 +337,7 @@ func TestAddRoutes_StaticNextHopV4(t *testing.T) {
 	}
 }
 
-// A child created before the endpoint alias is found again after a plugin restart only when nothing else could be
-// it; on a Join an untagged link with a shared MAC is never the endpoint's (#1243).
+// An untagged shared-MAC link is taken only on recovery as the sole candidate, never on a Join (#1243).
 func TestFindEndpointLink_UntaggedLinks(t *testing.T) {
 	mac, _ := net.ParseMAC("aa:bb:cc:dd:ee:ff")
 	link := func(name, alias string) netlink.Link {

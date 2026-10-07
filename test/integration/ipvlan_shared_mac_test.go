@@ -82,9 +82,8 @@ func endpointIDAndAddr(t *testing.T, ctx context.Context, cli *docker.Client, id
 	return ep.EndpointID, addr
 }
 
-// assertEachLinkHoldsItsOwnLease checks, from inside the container, that the interface on each endpoint's lower link
-// holds that endpoint's address and only addresses of its own segment, and that each server's row for the address
-// names that endpoint's client-id while the other server saw it never.
+// assertEachLinkHoldsItsOwnLease checks inside the container that each endpoint's link holds its address and only its
+// segment's, and that only its own server leased to its client-id (#1243).
 func assertEachLinkHoldsItsOwnLease(t *testing.T, ctx context.Context, id string, eps []*sharedMACEndpoint) {
 	t.Helper()
 	ifaces := strings.Fields(harness.ExecOutput(t, ctx, id, "ls", "/sys/class/net"))
