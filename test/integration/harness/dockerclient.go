@@ -34,7 +34,11 @@ func PrefixString(p netip.Prefix) string {
 	return p.String()
 }
 
+// MustMAC: "" is no MAC (nil), as the old string field took it.
 func MustMAC(s string) network.HardwareAddr {
+	if s == "" {
+		return nil
+	}
 	hw, err := net.ParseMAC(s)
 	if err != nil {
 		panic(fmt.Sprintf("MustMAC(%q): %v", s, err))
