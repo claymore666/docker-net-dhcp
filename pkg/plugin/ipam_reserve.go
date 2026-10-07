@@ -16,6 +16,7 @@ import (
 
 	"github.com/claymore666/dhcp-golib/lease"
 	dNetwork "github.com/moby/moby/api/types/network"
+	docker "github.com/moby/moby/client"
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 
@@ -243,6 +244,10 @@ func (p *Plugin) runIPAMReserve(ctx context.Context, networkID string, sn stored
 	if recordID == "" {
 		recordID = p.recordReserved(networkID, mac, identity)
 	}
+	// CreateEndpoint refuses a reservation with no record, and nothing would release its lease (#1246).
+	if recordID == "" {
+		return none, fmt.Errorf("%w: the lease record for %v could not be written, so no address is requested for it; check the plugin's state directory", util.ErrIPAM, mac)
+	}
 
 	giveUp := func(keepTheWindow bool) { p.ipamGiveUpAttempt(recordID, keepTheWindow, time.Now()) }
 
@@ -468,8 +473,11 @@ func (p *Plugin) addIPAMReserveLink(ctx context.Context, name, peer, mode string
 			guard.Unlock()
 			return nil, explainChildLinkAdd(err, mode, opts.linkParent(), parent.Attrs().Index)
 		}
+		childIPv6Off(name)
 		if err := nlLinkSetUp(link); err != nil {
-			_ = nlLinkDel(link)
+			if delErr := nlLinkDel(link); delErr != nil {
+				log.WithError(delErr).WithField("link", name).Warn("Reservation link cleanup failed; remove it with `ip link del`")
+			}
 			guard.Unlock()
 			return nil, fmt.Errorf("failed to bring the reservation link up: %w", err)
 		}
@@ -503,6 +511,8 @@ func (p *Plugin) addIPAMReserveLink(ctx context.Context, name, peer, mode string
 		remove()
 		return nil, fmt.Errorf("failed to find the reservation veth peer: %w", err)
 	}
+	// The DHCP client runs on veth, which carries the MAC; the peer is a bridge port.
+	childIPv6Off(name)
 	for _, l := range []netlink.Link{veth, peerLink} {
 		if err := nlLinkSetUp(l); err != nil {
 			remove()
@@ -712,13 +722,13 @@ func ipamListedMACs(containers map[string]dNetwork.EndpointResource) ([]net.Hard
 	return out, true
 }
 
-// giveUpStrandedIPAMRecords gives up a CREATED record left by a process that ended between RequestAddress and
-// CreateEndpoint: it has no tombstone, still answers lookups, and no sweep hands it back. Both keys are needed:
-// an earlier process wrote it, since a running endpoint can sit in CREATED across a restart until setupClient
-// binds, and the engine does not list its MAC, since a start in this process is listed only after
-// CreateEndpoint returns. An engine returning a short list after a store read error is indistinguishable, and an
-// IPAM handler may not ask Docker for a second source (#1047).
-func (p *Plugin) giveUpStrandedIPAMRecords(networkID string, listed []net.HardwareAddr, now time.Time) int {
+// giveUpStrandedIPAMRecords gives up a record an earlier process wrote whose MAC the engine does not list: a CREATED
+// one left between RequestAddress and CreateEndpoint, or a JOINED, LEFT or ADOPTED one whose DeleteEndpoint went to
+// no plugin, which would refuse its address to every --ip (#1246). A running endpoint can sit in CREATED across a
+// restart until setupClient binds, and a start in this process is listed only after CreateEndpoint returns. The
+// endpoint list drops entries its store cannot read and still answers (#1047), so a joined record also needs its MAC
+// absent from the running containers, read only when one is a candidate; CREATED keeps that limit.
+func (p *Plugin) giveUpStrandedIPAMRecords(ctx context.Context, networkID string, listed []net.HardwareAddr, now time.Time) int {
 	if p.records == nil {
 		return 0
 	}
@@ -729,8 +739,26 @@ func (p *Plugin) giveUpStrandedIPAMRecords(networkID string, listed []net.Hardwa
 		return 0
 	}
 	instance := p.records.Instance()
+	var running []net.HardwareAddr
+	asked, known := false, false
+	notRunning := func(chaddr []byte) bool {
+		if !asked {
+			asked = true
+			running, known = p.ipamRunningMACs(ctx, networkID)
+		}
+		return known && !ipamMACIsListed(running, chaddr)
+	}
 	stranded := func(rec lease.Record) bool {
-		return rec.Phase == lease.PhaseCreated && rec.Instance != instance && !ipamMACIsListed(listed, rec.CHAddr)
+		if rec.Instance == instance || ipamMACIsListed(listed, rec.CHAddr) {
+			return false
+		}
+		switch rec.Phase {
+		case lease.PhaseCreated:
+			return true
+		case lease.PhaseJoined, lease.PhaseLeft, lease.PhaseAdopted:
+			return notRunning(rec.CHAddr)
+		}
+		return false
 	}
 	// The v4 scope first, so a v6 record is given up with its v4 twin's deadline; then a v6 record left alone (#960).
 	done := map[string]bool{}
@@ -749,11 +777,46 @@ func (p *Plugin) giveUpStrandedIPAMRecords(networkID string, listed []net.Hardwa
 			log.WithFields(log.Fields{
 				"network":  shortID(networkID),
 				"record":   rec.ID,
+				"phase":    rec.Phase.String(),
 				"retained": held,
 			}).Info("A previous plugin process left this endpoint's lease record behind and no endpoint on this network claims it; giving it up so a container restarting can claim the address back")
 		}
 	}
 	return given
+}
+
+// ipamRunningMACs is the container store's view of the network, a second source beside libnetwork's endpoint store.
+// An error, a nil client or an unreadable entry answers false, which leaves every joined record alone (#1246).
+func (p *Plugin) ipamRunningMACs(ctx context.Context, networkID string) ([]net.HardwareAddr, bool) {
+	if p.docker == nil {
+		return nil, false
+	}
+	ctx, cancel := context.WithTimeout(ctx, recoveryPerNetworkTimeout)
+	defer cancel()
+	res, err := p.docker.ContainerList(ctx, docker.ContainerListOptions{Filters: make(docker.Filters).Add("network", networkID)})
+	if err != nil {
+		log.WithError(err).WithField("network", shortID(networkID)).
+			Warn("Could not list the running containers on this network, so lease records a previous plugin process left joined stay where they are")
+		return nil, false
+	}
+	var out []net.HardwareAddr
+	for _, c := range res.Items {
+		if c.NetworkSettings == nil {
+			return nil, false
+		}
+		for _, ep := range c.NetworkSettings.Networks {
+			if ep == nil || ep.NetworkID != networkID {
+				continue
+			}
+			if len(ep.MacAddress) == 0 {
+				log.WithField("network", shortID(networkID)).
+					Warn("A running container on this network reports no hardware address, so lease records a previous plugin process left joined stay where they are")
+				return nil, false
+			}
+			out = append(out, net.HardwareAddr(ep.MacAddress))
+		}
+	}
+	return out, true
 }
 
 func ipamMACIsListed(listed []net.HardwareAddr, chaddr []byte) bool {

@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/network"
-	docker "github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/network"
+	docker "github.com/moby/moby/client"
 	"github.com/vishvananda/netlink"
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
@@ -60,14 +60,14 @@ func TestParentGate_EndpointQueuesBehindAProbe(t *testing.T) {
 		t.Fatalf("LinkSetUp dummy parent: %v", err)
 	}
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
 	t.Cleanup(func() { _ = cli.Close() })
 
 	// Created without validate_dhcp, so creating it neither probes nor waits.
-	res, err := cli.NetworkCreate(ctx, netName, network.CreateOptions{
+	res, err := cli.NetworkCreate(ctx, netName, docker.NetworkCreateOptions{
 		Driver: harness.DriverName,
 		IPAM:   &network.IPAM{Driver: "null"},
 		Options: map[string]string{
@@ -79,7 +79,7 @@ func TestParentGate_EndpointQueuesBehindAProbe(t *testing.T) {
 		t.Fatalf("NetworkCreate(%s): %v", netName, err)
 	}
 	netID := res.ID
-	t.Cleanup(func() { _ = cli.NetworkRemove(context.Background(), netID) })
+	t.Cleanup(func() { _, _ = cli.NetworkRemove(context.Background(), netID, docker.NetworkRemoveOptions{}) })
 
 	drv := harness.NewDriverClient(t, ctx, cli)
 
@@ -92,7 +92,7 @@ func TestParentGate_EndpointQueuesBehindAProbe(t *testing.T) {
 	probeStart := time.Now()
 	go func() {
 		defer close(probeDone)
-		r, err := cli.NetworkCreate(context.Background(), probeNet, network.CreateOptions{
+		r, err := cli.NetworkCreate(context.Background(), probeNet, docker.NetworkCreateOptions{
 			Driver: harness.DriverName,
 			IPAM:   &network.IPAM{Driver: "null"},
 			Options: map[string]string{
@@ -102,7 +102,7 @@ func TestParentGate_EndpointQueuesBehindAProbe(t *testing.T) {
 			},
 		})
 		if err == nil {
-			_ = cli.NetworkRemove(context.Background(), r.ID)
+			_, _ = cli.NetworkRemove(context.Background(), r.ID, docker.NetworkRemoveOptions{})
 		}
 	}()
 

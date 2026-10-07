@@ -11,8 +11,9 @@ import (
 	"testing"
 	"time"
 
+	docker "github.com/moby/moby/client"
+
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
-	docker "github.com/docker/docker/client"
 )
 
 // dhcpcd keys its pidfile and control socket by interface name in a shared runtime dir, so a second eth0 client once
@@ -100,7 +101,7 @@ func TestConcurrentRenew_SameInterfaceNameBothRenew(t *testing.T) {
 	case <-time.After(waitFor):
 	}
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -116,13 +117,13 @@ func TestConcurrentRenew_SameInterfaceNameBothRenew(t *testing.T) {
 			t.Logf("container %d: renewed (%d -> %d ACKs)", i, c.startACKs, endACKs)
 		}
 
-		ins, err := cli.ContainerInspect(ctx, c.id)
+		ins, err := cli.ContainerInspect(ctx, c.id, docker.ContainerInspectOptions{})
 		if err != nil {
 			t.Fatalf("ContainerInspect(%s): %v", c.name, err)
 		}
 		var ipAfter string
-		for _, ep := range ins.NetworkSettings.Networks {
-			ipAfter = ep.IPAddress
+		for _, ep := range ins.Container.NetworkSettings.Networks {
+			ipAfter = harness.AddrString(ep.IPAddress)
 		}
 		if ipAfter != c.ip {
 			t.Errorf("container %d: IP changed across the renewal window: %s -> %s", i, c.ip, ipAfter)

@@ -191,6 +191,9 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: engine-row-${{ matrix.engine }}
+          # A rerun after a cancelled cell replaces the earlier attempt's row;
+          # download-artifact dedupes by name and took the stale one (#1266).
+          overwrite: true
           path: |
             rows/
             cell.log

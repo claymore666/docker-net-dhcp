@@ -269,6 +269,7 @@ func TestStart_TheClientOpensOnTheNameTheLinkHasAtOpenTime(t *testing.T) {
 			Index:        index,
 			Name:         renamed,
 			HardwareAddr: m.MacAddress,
+			Flags:        net.FlagUp,
 		}}, nil
 	}
 	t.Cleanup(func() { nlLinkByIndex = prev })

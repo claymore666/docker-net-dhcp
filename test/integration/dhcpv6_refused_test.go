@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	docker "github.com/docker/docker/client"
+	docker "github.com/moby/moby/client"
 	"github.com/vishvananda/netlink"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
@@ -105,7 +105,7 @@ func TestDHCPv6_RefusedAndSilentAreTwoRows(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestIPv6Mode_SurvivesAPluginRestart(t *testing.T) {
 		}
 	})
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -260,7 +260,7 @@ func TestDHCPv6_ARefusalLogsItsStatusCodeByNameOnce(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*daemonCallDeadline)
 	defer cancel()
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}

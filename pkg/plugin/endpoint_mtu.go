@@ -8,6 +8,8 @@ import (
 
 	"github.com/vishvananda/netlink"
 
+	"github.com/claymore666/dhcp-golib/proto"
+
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
 
@@ -18,6 +20,9 @@ const (
 	maxOptionMTU = 65535
 )
 
+// minIPv6MTU is RFC 8200 section 5's floor; below it the kernel removes every IPv6 address (measured 6.12, #1240).
+const minIPv6MTU = 1280
+
 var hostNetHandle = &netlink.Handle{}
 
 // validateMTUOption refuses an mtu outside the kernel's bounds or beside propagate_mtu=true, a second source (#1037).
@@ -27,6 +32,11 @@ func validateMTUOption(opts DHCPNetworkOptions) error {
 	}
 	if opts.MTU < minOptionMTU || opts.MTU > maxOptionMTU {
 		return fmt.Errorf("%w: mtu=%d is outside %d..%d", util.ErrIPAM, opts.MTU, minOptionMTU, maxOptionMTU)
+	}
+	if mode, err := opts.ipv6Mode(); err == nil && mode != proto.Mode6Off && opts.MTU < minIPv6MTU {
+		return fmt.Errorf("%w: mtu=%d is below %d, the least an IPv6 link can carry (RFC 8200 section 5): the kernel "+
+			"would remove every IPv6 address from each container link, so ipv6_mode=%s could never lease one. "+
+			"Raise mtu to at least %d or set ipv6_mode=off", util.ErrIPAM, opts.MTU, minIPv6MTU, mode, minIPv6MTU)
 	}
 	if opts.PropagateMTU {
 		return fmt.Errorf("%w: mtu=%d cannot be combined with propagate_mtu=true: each sets the link MTU, so set one",

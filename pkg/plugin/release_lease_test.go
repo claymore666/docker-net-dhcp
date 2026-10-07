@@ -659,7 +659,7 @@ func TestReleaseLease_AReleasedEndpointLeavesNothingBehind(t *testing.T) {
 			p.recordBound(id6, "created")
 
 			p.rememberEndpoint("ep-1", endpointFingerprint{
-				MAC: mac.String(), IPv4: "192.168.99.50",
+				MAC: mac.String(), IPv4: "192.168.99.50", RecordKey: mac,
 			}, dhcpHostname{name: "web"})
 			p.settleReleasedRecord(id4, tc.releasedV4)
 			p.settleReleasedRecord(id6, tc.releasedV6)

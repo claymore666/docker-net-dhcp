@@ -758,7 +758,7 @@ func TestDeleteEndpoint_ClosesTheRecordOfALinkLocalEndpointOnly(t *testing.T) {
 			p.records = recordingPlugin(t).records
 			mac, _ := net.ParseMAC("02:42:a9:fe:3c:c7")
 			id := p.recordCreated(netID, mac, dhcp.ClientIdentity([]byte{3}))
-			p.rememberEndpoint(epID, endpointFingerprint{MAC: mac.String(), IPv4: tc.ip}, dhcpHostname{name: "ll-1"})
+			p.rememberEndpoint(epID, endpointFingerprint{MAC: mac.String(), IPv4: tc.ip, RecordKey: mac}, dhcpHostname{name: "ll-1"})
 			if err := p.DeleteEndpoint(context.Background(), DeleteEndpointRequest{NetworkID: netID, EndpointID: epID}); err != nil {
 				t.Fatalf("DeleteEndpoint: %v", err)
 			}

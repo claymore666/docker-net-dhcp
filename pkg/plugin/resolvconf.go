@@ -68,6 +68,22 @@ func openContainerProc(pid int, ctrID string) (*os.File, error) {
 	return d, nil
 }
 
+// usableSearchDomain returns the one option-15 domain a search line may carry, or empty (#704, #689).
+func usableSearchDomain(searchDomain string) string {
+	if !dhcp.SafeValue(searchDomain) {
+		log.WithField("domain", fmt.Sprintf("%q", searchDomain)).
+			Warn("Dropping DHCP domain name: it carries a control character")
+		return ""
+	}
+	if trimmed, truncated := dhcp.FirstSearchDomain(searchDomain); truncated {
+		log.WithField("domain", fmt.Sprintf("%q", searchDomain)).
+			WithField("kept", trimmed).
+			Warn("DHCP domain name carried more than one domain; keeping only the first")
+		return trimmed
+	}
+	return searchDomain
+}
+
 // writeContainerResolvConf enters pid's mount namespace and rewrites /etc/resolv.conf (#100): config.json does not
 // mount /var/lib/docker/containers, and a new mount prompts every user for a re-grant on upgrade. If setns back fails
 // the thread stays locked and retires with its goroutine. Docker rewrites the file on network connect and disconnect,
@@ -76,17 +92,7 @@ func writeContainerResolvConf(pid int, ctrID string, dns []string, searchList []
 	// Unusable values are dropped before the emptiness guard, so all-unusable lands on it (#689).
 	dns = resolvSafe(dns)
 	searchList = resolvSafe(searchList)
-	if !dhcp.SafeValue(searchDomain) {
-		log.WithField("domain", fmt.Sprintf("%q", searchDomain)).
-			Warn("Dropping DHCP domain name: it carries a control character")
-		searchDomain = ""
-	}
-	if trimmed, truncated := dhcp.FirstSearchDomain(searchDomain); truncated {
-		log.WithField("domain", fmt.Sprintf("%q", searchDomain)).
-			WithField("kept", trimmed).
-			Warn("DHCP domain name carried more than one domain; keeping only the first")
-		searchDomain = trimmed
-	}
+	searchDomain = usableSearchDomain(searchDomain)
 
 	if len(dns) == 0 {
 		return fmt.Errorf("refusing to write empty resolv.conf")
@@ -139,6 +145,9 @@ func writeContainerResolvConf(pid int, ctrID string, dns []string, searchList []
 	runtime.UnlockOSThread()
 	return writeErr
 }
+
+// resolvConfWriter is a test seam over writeContainerResolvConf (#1250).
+var resolvConfWriter = writeContainerResolvConf
 
 // resolvRewriteStep is a test seam: it runs after the open, after a growing write's extension and after the write (#1188).
 var resolvRewriteStep = func(stage string) {}
@@ -300,6 +309,30 @@ func resolvSafe(vals []string) []string {
 			continue
 		}
 		out = append(out, v)
+	}
+	return out
+}
+
+type familyDNS struct {
+	servers []string
+	search  []string
+}
+
+// mergeFamilyDNS lists v4 then v6, a repeat once (#1250).
+func mergeFamilyDNS(v4, v6 familyDNS) (servers, search []string) {
+	return dedupStrings(v4.servers, v6.servers), dedupStrings(v4.search, v6.search)
+}
+
+func dedupStrings(lists ...[]string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, l := range lists {
+		for _, v := range l {
+			if !seen[v] {
+				seen[v] = true
+				out = append(out, v)
+			}
+		}
 	}
 	return out
 }

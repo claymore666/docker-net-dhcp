@@ -119,10 +119,11 @@ func TestContainerGone_EmptyIDSkipsTheDaemon(t *testing.T) {
 func recoverAndAwaitCounter(t *testing.T, f *fakeDocker, containerID string) *Plugin {
 	t.Helper()
 	p := &Plugin{
-		docker:         f,
-		joinHints:      make(map[string]joinHint),
-		persistentDHCP: make(map[string]*dhcpManager),
-		awaitTimeout:   150 * time.Millisecond,
+		docker:               f,
+		joinHints:            make(map[string]joinHint),
+		persistentDHCP:       make(map[string]*dhcpManager),
+		endpointFingerprints: make(map[string]endpointFingerprint),
+		awaitTimeout:         150 * time.Millisecond,
 	}
 
 	if _, err := p.recoverOneEndpoint(t.Context(), containerID, "net-1", "ep-1",
