@@ -11,8 +11,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/docker/docker/api/types/filters"
-	docker "github.com/docker/docker/client"
+	docker "github.com/moby/moby/client"
 )
 
 // PluginRef is the plugin the run's pre-test step installed; the harness never installs one. INTEGRATION_PLUGIN_REF overrides it.
@@ -25,22 +24,22 @@ var PluginRef = func() string {
 
 // VerifyPluginEnabled checks that PluginRef is installed and enabled.
 func VerifyPluginEnabled(ctx context.Context) error {
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := NewDockerClient()
 	if err != nil {
 		return fmt.Errorf("docker client: %w", err)
 	}
 	defer cli.Close()
-	plugins, err := cli.PluginList(ctx, filters.NewArgs())
+	plugins, err := cli.PluginList(ctx, docker.PluginListOptions{})
 	if err != nil {
 		return fmt.Errorf("PluginList: %w", err)
 	}
-	for _, p := range plugins {
+	for _, p := range plugins.Items {
 		if p.Name == PluginRef && p.Enabled {
 			return nil
 		}
 	}
 	available := []string{}
-	for _, p := range plugins {
+	for _, p := range plugins.Items {
 		available = append(available, fmt.Sprintf("%s(enabled=%v)", p.Name, p.Enabled))
 	}
 	return fmt.Errorf("plugin %q is not enabled. Available: %s. Install/enable it before running integration tests", PluginRef, strings.Join(available, ", "))

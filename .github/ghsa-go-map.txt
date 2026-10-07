@@ -32,12 +32,11 @@
 # The GHSA page names the Go id under its references, and pkg.go.dev's
 # vuln page names the GHSA under aliases.
 
-# Live in both lists.
+# Removed from both lists by #178, when github.com/docker/docker left the
+# module graph. GHSA-pxq6-2prw-chj9 was below fail-on-severity, so
+# dependency-review never accepted it; it lived in vuln-allowlist.txt
+# only.
 GHSA-x744-4wpc-v9h2 GO-2026-4887
-
-# Below fail-on-severity, so dependency-review never acts on it; live in
-# vuln-allowlist.txt only. Recorded so the pairing is not re-derived by
-# hand the next time it comes up.
 GHSA-pxq6-2prw-chj9 GO-2026-4883
 
 # Removed from vuln-allowlist.txt on 2026-07-28 and 2026-08-14

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	docker "github.com/docker/docker/client"
+	docker "github.com/moby/moby/client"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )

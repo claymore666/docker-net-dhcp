@@ -12,10 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
-	docker "github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/network"
+	docker "github.com/moby/moby/client"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
@@ -44,10 +42,10 @@ func leaseRowFor(t *testing.T, ip string) string {
 // accepted network is removed at cleanup (#905).
 func createPluginNetworkErr(t *testing.T, ctx context.Context, cli *docker.Client, name string, opts map[string]string) error {
 	t.Helper()
-	res, err := cli.NetworkCreate(ctx, name, network.CreateOptions{
+	res, err := cli.NetworkCreate(ctx, name, docker.NetworkCreateOptions{
 		Driver: harness.DriverName, IPAM: &network.IPAM{Driver: "null"}, Options: opts})
 	if err == nil {
-		t.Cleanup(func() { _ = cli.NetworkRemove(context.Background(), res.ID) })
+		t.Cleanup(func() { _, _ = cli.NetworkRemove(context.Background(), res.ID, docker.NetworkRemoveOptions{}) })
 	}
 	return err
 }
@@ -115,7 +113,7 @@ func TestSubModes_PassthruTakesItsParentAlone(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), plainNet) || !strings.Contains(err.Error(), "takes its parent alone") {
 		t.Fatalf("a passthru network beside %s on %s: %v", plainNet, parent, err)
 	}
-	if err := cli.NetworkRemove(ctx, plainID); err != nil {
+	if _, err := cli.NetworkRemove(ctx, plainID, docker.NetworkRemoveOptions{}); err != nil {
 		t.Fatalf("NetworkRemove(%s): %v", plainNet, err)
 	}
 
@@ -152,7 +150,7 @@ func TestSubModes_PassthruTakesItsParentAlone(t *testing.T) {
 		t.Errorf("a second container on the passthru network: %v", err)
 	}
 	err = ipamRunContainerErr(t, ctx, cli, netName, netName+"-mac",
-		&network.EndpointSettings{MacAddress: "02:00:00:09:05:03"})
+		&network.EndpointSettings{MacAddress: harness.MustMAC("02:00:00:09:05:03")})
 	if err == nil || !strings.Contains(err.Error(), "does not support a custom MAC address") {
 		t.Errorf("--mac-address on the passthru network: %v", err)
 	}
@@ -161,7 +159,7 @@ func TestSubModes_PassthruTakesItsParentAlone(t *testing.T) {
 	}
 
 	restartOff := fileSize(t, fixture.DnsmasqLog())
-	if err := cli.ContainerRestart(ctx, id, container.StopOptions{}); err != nil {
+	if _, err := cli.ContainerRestart(ctx, id, docker.ContainerRestartOptions{}); err != nil {
 		t.Fatalf("docker restart of the passthru container: %v", err)
 	}
 	after, _ := ipamNetworkAddress(t, ctx, cli, id, netName)
@@ -191,7 +189,7 @@ func TestSubModes_DockersOwnIPvlanL3NetworkRefusesAnIPvlanNetworkOnItsParent(t *
 	cli := ipamDockerClient(t)
 
 	const dockerNet, netName = "dh-itest-docker-ipvlan-l3", "dh-itest-ipvlan-beside-l3"
-	res, err := cli.NetworkCreate(ctx, dockerNet, network.CreateOptions{Driver: "ipvlan",
+	res, err := cli.NetworkCreate(ctx, dockerNet, docker.NetworkCreateOptions{Driver: "ipvlan",
 		Options: map[string]string{"parent": harness.IpvlanParent, "ipvlan_mode": "l3"}})
 	if err != nil {
 		t.Fatalf("Docker's ipvlan driver refused an l3 network on %s: %v", harness.IpvlanParent, err)
@@ -199,7 +197,7 @@ func TestSubModes_DockersOwnIPvlanL3NetworkRefusesAnIPvlanNetworkOnItsParent(t *
 	removed := false
 	t.Cleanup(func() {
 		if !removed {
-			_ = cli.NetworkRemove(context.Background(), res.ID)
+			_, _ = cli.NetworkRemove(context.Background(), res.ID, docker.NetworkRemoveOptions{})
 		}
 	})
 
@@ -207,7 +205,7 @@ func TestSubModes_DockersOwnIPvlanL3NetworkRefusesAnIPvlanNetworkOnItsParent(t *
 	if err == nil || !strings.Contains(err.Error(), dockerNet) || !strings.Contains(err.Error(), "one ipvlan mode per parent") {
 		t.Errorf("an ipvlan network beside Docker's l3 network on %s: %v", harness.IpvlanParent, err)
 	}
-	if err := cli.NetworkRemove(ctx, res.ID); err != nil {
+	if _, err := cli.NetworkRemove(ctx, res.ID, docker.NetworkRemoveOptions{}); err != nil {
 		t.Fatalf("NetworkRemove(%s): %v", dockerNet, err)
 	}
 	removed = true
@@ -244,7 +242,7 @@ func TestSubModes_APluginRecycleKeepsTheSubMode(t *testing.T) {
 	t.Cleanup(func() {
 		bg, bgCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer bgCancel()
-		if err := cli.PluginEnable(bg, harness.PluginRef, types.PluginEnableOptions{Timeout: 30}); err != nil &&
+		if _, err := cli.PluginEnable(bg, harness.PluginRef, docker.PluginEnableOptions{Timeout: 30}); err != nil &&
 			!strings.Contains(err.Error(), "already enabled") {
 			t.Logf("WARN: cleanup PluginEnable: %v", err)
 		}
@@ -252,13 +250,13 @@ func TestSubModes_APluginRecycleKeepsTheSubMode(t *testing.T) {
 	w := harness.BeginCounterWindow(t, ctx, cli, "recovered_ok", "recovery_failed").ExpectRecycle()
 	// As in TestRecovery_PluginDisableEnable_PreservesEndpoint: the recovered Join client probes asynchronously (#725).
 	harness.AllowUnprobedLeases(1)
-	if err := cli.PluginDisable(ctx, harness.PluginRef, types.PluginDisableOptions{Force: true}); err != nil {
+	if _, err := cli.PluginDisable(ctx, harness.PluginRef, docker.PluginDisableOptions{Force: true}); err != nil {
 		t.Fatalf("PluginDisable: %v", err)
 	}
 	if err := harness.WaitPluginEnabled(ctx, cli, false, 15*time.Second); err != nil {
 		t.Fatalf("plugin did not reach disabled state: %v", err)
 	}
-	if err := cli.PluginEnable(ctx, harness.PluginRef, types.PluginEnableOptions{Timeout: 30}); err != nil {
+	if _, err := cli.PluginEnable(ctx, harness.PluginRef, docker.PluginEnableOptions{Timeout: 30}); err != nil {
 		t.Fatalf("PluginEnable: %v", err)
 	}
 	if err := harness.WaitPluginEnabled(ctx, cli, true, 30*time.Second); err != nil {
@@ -275,7 +273,7 @@ func TestSubModes_APluginRecycleKeepsTheSubMode(t *testing.T) {
 	}
 
 	restartOff := fileSize(t, fixture.DnsmasqLog())
-	if err := cli.ContainerRestart(ctx, id, container.StopOptions{}); err != nil {
+	if _, err := cli.ContainerRestart(ctx, id, docker.ContainerRestartOptions{}); err != nil {
 		t.Fatalf("docker restart after the plugin recycle: %v", err)
 	}
 	after, _ := ipamNetworkAddress(t, ctx, cli, id, netName)

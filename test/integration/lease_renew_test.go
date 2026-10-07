@@ -10,8 +10,9 @@ import (
 	"testing"
 	"time"
 
+	docker "github.com/moby/moby/client"
+
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
-	docker "github.com/docker/docker/client"
 )
 
 // The lease must outlive the wait, since an ACK after expiry is a re-acquisition, so the fixture keeps the default
@@ -55,18 +56,18 @@ func TestLeaseRenew_HonorsT1(t *testing.T) {
 	case <-time.After(waitFor):
 	}
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
 	defer cli.Close()
-	ins, err := cli.ContainerInspect(ctx, id)
+	ins, err := cli.ContainerInspect(ctx, id, docker.ContainerInspectOptions{})
 	if err != nil {
 		t.Fatalf("ContainerInspect: %v", err)
 	}
 	var ipAfter string
-	for _, ep := range ins.NetworkSettings.Networks {
-		ipAfter = ep.IPAddress
+	for _, ep := range ins.Container.NetworkSettings.Networks {
+		ipAfter = harness.AddrString(ep.IPAddress)
 	}
 	if ipAfter != ipBefore {
 		t.Errorf("IP changed during renewal window: before=%s after=%s (renewal client did not preserve lease)", ipBefore, ipAfter)

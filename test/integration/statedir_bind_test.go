@@ -14,8 +14,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 	"time"
+
+	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
 // Since #440 the manifest bind-mounts STATE_DIR from the host and the daemon does not create a missing bind source;

@@ -10,8 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	docker "github.com/docker/docker/client"
+	docker "github.com/moby/moby/client"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
@@ -40,7 +39,7 @@ func TestPersistentBind_ASecondNetworkOnTheSameFixtureBinds(t *testing.T) {
 		}
 	})
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -79,19 +78,19 @@ func TestPersistentBind_ASecondNetworkOnTheSameFixtureBinds(t *testing.T) {
 		}
 		t.Logf("container %d: renewal at %v, lease file expiry %v", i+1, renewal.At.Format(time.RFC3339), expiry)
 
-		ins, err := cli.ContainerInspect(ctx, id)
+		ins, err := cli.ContainerInspect(ctx, id, docker.ContainerInspectOptions{})
 		if err != nil {
 			t.Fatalf("ContainerInspect: %v", err)
 		}
-		if got := ins.NetworkSettings.Networks[netName]; got == nil || got.IPAddress != ip {
+		if got := ins.Container.NetworkSettings.Networks[netName]; got == nil || harness.AddrString(got.IPAddress) != ip {
 			t.Errorf("container %d no longer holds %s after its renewal: %+v", i+1, ip, got)
 		}
 
 		if i == 0 {
-			if err := cli.ContainerRemove(ctx, id, container.RemoveOptions{Force: true}); err != nil {
+			if _, err := cli.ContainerRemove(ctx, id, docker.ContainerRemoveOptions{Force: true}); err != nil {
 				t.Fatalf("remove the first container: %v", err)
 			}
-			if err := cli.NetworkRemove(ctx, netID); err != nil {
+			if _, err := cli.NetworkRemove(ctx, netID, docker.NetworkRemoveOptions{}); err != nil {
 				t.Fatalf("remove the first network: %v", err)
 			}
 		}

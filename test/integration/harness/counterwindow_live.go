@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	docker "github.com/docker/docker/client"
+	docker "github.com/moby/moby/client"
 )
 
 // CounterWindow brackets two /Plugin.Health reads and refuses a delta across a plugin restart: counters are in-memory
