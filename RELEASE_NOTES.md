@@ -32,6 +32,13 @@ The notes below go back to the first release of this project.
   the container's link when the plugin restarted, is now removed when the
   router stops advertising it. Host routes Join copied into the container
   stay, and nothing is removed before a router has been heard (#1239).
+- `docker network create` now refuses, naming the option, five values that
+  were accepted and then failed every container: a `gateway` that is not a
+  bare unicast IPv4 address (`192.168.0.1/24`, `fe80::1`, `0.0.0.0`), a
+  `vendor_class` over 255 octets, a `client_id` over 254, a negative
+  `lease_timeout`, and an `mtu` below 1280 with IPv6 on (`ipv6_mode=dhcp`,
+  `slaac`, `auto` or `ipv6=true`). Networks created earlier keep loading
+  as before (#1240).
 
 ## v2.4.0
 
