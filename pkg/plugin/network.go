@@ -1020,7 +1020,8 @@ func (p *Plugin) createEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 			return fmt.Errorf("failed to set container side link of veth pair up: %w", err)
 		}
 
-		// Pin the container-side MAC, which the kernel often resets after LinkSetMaster.
+		// Setting the random MAC marks it assigned, so udev's MACAddressPolicy=persistent leaves it alone, as pinChildMAC
+		// does for a child (#103); LinkSetMaster below enslaves the host end, not this one.
 		if effectiveMAC == "" {
 			if err := nlLinkSetHardwareAddr(ctrLink, ctrLink.Attrs().HardwareAddr); err != nil {
 				return fmt.Errorf("failed to set container side of veth pair's MAC address: %w", err)
@@ -1137,10 +1138,11 @@ func (p *Plugin) createEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 
 		return nil
 	}(); err != nil {
-		// Best-effort veth cleanup on failure.
 		p.closeRecord(recordID)
 		p.closeRecord(recordID6)
-		_ = nlLinkDel(hostLink)
+		if delErr := nlLinkDel(hostLink); delErr != nil {
+			log.WithError(delErr).WithField("link", hostName).Warn("Endpoint link cleanup failed; remove it with `ip link del`")
+		}
 		return res, err
 	}
 

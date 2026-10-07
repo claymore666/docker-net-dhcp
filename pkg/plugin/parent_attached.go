@@ -445,10 +445,12 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 		}
 		return nil
 	}(); err != nil {
-		// Best-effort rollback: a link LinkDel misses goes with its netns.
+		// The child is still in the host netns: the engine moves it only after CreateEndpoint returns (#657).
 		p.closeRecord(recordID)
 		p.closeRecord(recordID6)
-		_ = nlLinkDel(link)
+		if delErr := nlLinkDel(link); delErr != nil {
+			log.WithError(delErr).WithField("link", la.Name).Warn("Endpoint link cleanup failed; remove it with `ip link del`")
+		}
 		return res, err
 	}
 

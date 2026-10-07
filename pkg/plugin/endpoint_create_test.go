@@ -9,6 +9,7 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 
 	dContainer "github.com/moby/moby/api/types/container"
 	dNetwork "github.com/moby/moby/api/types/network"
@@ -363,7 +364,7 @@ func TestCreateParentAttachedEndpoint_HappyPaths(t *testing.T) {
 		tombIP  string
 		userMAC string
 	}{
-		{"macvlan", DHCPNetworkOptions{Mode: ModeMacvlan, MTU: 1400}, epKernelMAC, epKernelMAC.String(),
+		{"macvlan", DHCPNetworkOptions{Mode: ModeMacvlan, MTU: 1400, Gateway: "192.0.2.254"}, epKernelMAC, epKernelMAC.String(),
 			"byname:" + epParent + " add:" + child + " byname:" + child + " mtu:" + child + " mac:" + child + " up:" + child + " dhcp4:" + child, "", ""},
 		{"ipvlan", DHCPNetworkOptions{Mode: ModeIPvlan, IPv6: true}, nil, "",
 			"byname:" + epParent + " add:" + child + " byname:" + child + " up:" + child + " dhcp4:" + child + " dhcp6:" + child, "", ""},
@@ -404,6 +405,13 @@ func TestCreateParentAttachedEndpoint_HappyPaths(t *testing.T) {
 			if res.Interface.Address != "192.0.2.57/24" || len(k.deleted) != 0 {
 				t.Errorf("address %q, deleted %v; want the lease and nothing deleted", res.Interface.Address, k.deleted)
 			}
+			gw := c.opts.Gateway
+			if gw == "" {
+				gw = k.v4.Gateway
+			}
+			if hint, _ := p.takeJoinHint(ep); hint.Gateway != gw {
+				t.Errorf("hint gateway %q, want %q", hint.Gateway, gw)
+			}
 		})
 	}
 }
@@ -420,10 +428,12 @@ func TestCreateParentAttachedEndpoint_FailuresBeforeTheChildMakeNothing(t *testi
 		{"bad mac", "MAC", "zz", DHCPNetworkOptions{Mode: ModeMacvlan}, nil, nil},
 		{"bad --ip", "", "", DHCPNetworkOptions{Mode: ModeMacvlan}, func(r *CreateEndpointRequest) { r.Interface.Address = "not-an-ip" }, nil},
 		{"bad --ip6", "", "", DHCPNetworkOptions{Mode: ModeMacvlan}, func(r *CreateEndpointRequest) { r.Interface.AddressIPv6 = "not-an-ip" }, nil},
+		{"bad vlan", "vlan", "", DHCPNetworkOptions{Mode: ModeMacvlan, Vlan: "x"}, nil, nil},
+		{"bad sub-mode", "macvlan_mode", "", DHCPNetworkOptions{Mode: ModeMacvlan, MacvlanMode: "sometimes"}, nil, nil},
 		{"parent lookup", "failed to lookup parent", "", DHCPNetworkOptions{Mode: ModeMacvlan}, nil, func(k *endpointKernel) {
 			k.fail["byname:"+epParent] = errInjected
 		}},
-		{"the child add", "", "", DHCPNetworkOptions{Mode: ModeMacvlan}, nil, func(k *endpointKernel) {
+		{"the child add", errInjected.Error(), "", DHCPNetworkOptions{Mode: ModeMacvlan}, nil, func(k *endpointKernel) {
 			k.fail["add:"+subLinkName(ep)] = errInjected
 		}},
 	} {
@@ -439,7 +449,7 @@ func TestCreateParentAttachedEndpoint_FailuresBeforeTheChildMakeNothing(t *testi
 			if c.req != nil {
 				c.req(&r)
 			}
-			_, err := p.CreateEndpoint(context.Background(), r)
+			_, err := p.createParentAttachedEndpoint(context.Background(), time.Now(), r, opts)
 			if err == nil || !strings.Contains(err.Error(), c.want) {
 				t.Fatalf("err %v, want one naming %q", err, c.want)
 			}
