@@ -1,10 +1,9 @@
 # Rule pass for automatic issue labelling (#393).
 #
 # Issue titles in this repo follow conventional-commit form, so the type
-# label is derivable from the title alone — no model call needed for the
-# common case. Anything these patterns miss falls through to the model
-# pass in .github/workflows/issue-labeler.yml, which is the expensive
-# path; every rule added here is one less issue that reaches it.
+# label is derivable from the title alone. Anything these patterns miss
+# stays unlabelled for the maintainer to label by hand; the model fallback
+# that used to catch it was removed in #748.
 #
 # Matching semantics (github/issue-labeler v3.4, verified against its
 # source):
@@ -19,7 +18,7 @@
 #     labels always survive.
 #
 # Only type labels live here. Area labels (lifecycle, concurrency, ...)
-# need the issue read, not pattern-matched, and are left to the model.
+# need the issue read, not pattern-matched, and are applied by hand.
 
 bug:
   - '/^fix(\([^)]*\))?!?:/i'
