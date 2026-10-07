@@ -36,13 +36,16 @@ name: Issue state labels
 #     written, and the token cannot do more (issues: write only).
 
 on:
-  push:
-    branches: [dev]
+  # Closed only (#748): a merge is the event that sets in-dev. Opened,
+  # reopened, edited and a push to dev were ~3x the run volume (286 runs
+  # in 2026-09-29..10-07, ~100 after) and only moved has-pr, or in-dev
+  # after a direct push, earlier than the next scheduled run.
   pull_request_target:
-    types: [opened, reopened, edited, closed]
-  # Backstop. Events are the fast path, but a reconciler that also runs
-  # on a clock cannot be left permanently wrong by a missed webhook, an
-  # API blip, or a run cancelled at the wrong moment.
+    types: [closed]
+  # The convergence path. The hourly cron fired every 2.5 to 9 hours
+  # (35 runs in 7.7 days, median gap 5.7 h), so has-pr and a label left
+  # by a direct push to dev lag by that much. Accepted in #748: both are
+  # tracker conveniences, and every run recomputes everything.
   schedule:
     - cron: '17 * * * *'
   workflow_dispatch:
@@ -69,7 +72,7 @@ permissions:
 # Keying the group by PR number keeps the ONE cancellation that is
 # wanted — a new push to a PR superseding that same PR's in-flight run,
 # which is why cancel-in-progress stays true — while making it
-# impossible for one PR to cancel another's. push and schedule runs fall
+# impossible for one PR to cancel another's. schedule runs fall
 # back to github.ref, so they get their own keys and do not collide with
 # any PR.
 #
@@ -102,9 +105,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Pinned, and NOT redundant (#490). Without a ref, the script
-          # that runs is whichever branch the trigger points at: dev on a
-          # push, `main` on a schedule (cron only ever runs from the
-          # default branch), and the base branch on pull_request_target
+          # that runs is whichever branch the trigger points at: `main`
+          # on a schedule (cron only ever runs from the default branch)
+          # and the base branch on pull_request_target
           # — `main` for a release PR. Every run is a full reconciler
           # that also REMOVES labels, so two triggers running two
           # versions of the parser undo each other on a loop for the
@@ -114,9 +117,9 @@ jobs:
           # dev is the branch whose script should describe it.
           #
           # Safe under pull_request_target: `dev` is protected and
-          # maintainer-only, the same trust the `push: [dev]` trigger
-          # already grants this workflow with issues: write. Nothing
-          # authored in a pull request is checked out either way.
+          # maintainer-only, which is the trust this workflow already
+          # holds with issues: write. Nothing authored in a pull
+          # request is checked out either way.
           ref: dev
           fetch-depth: 0
 

@@ -137,6 +137,8 @@ type dhcpManager struct {
 	mtuV6 int
 	// mtuBase is the link's MTU before this manager wrote one, restored when neither family supplies an MTU.
 	mtuBase int
+	// mtuWritten is set while the link holds an MTU this manager wrote (#1238).
+	mtuWritten bool
 
 	// MacAddress is set in macvlan mode to re-find the link after Docker moves and renames it; empty in bridge mode.
 	MacAddress net.HardwareAddr
@@ -1017,24 +1019,39 @@ func (m *dhcpManager) propagateMTU(v6 bool, info dhcp.Info) {
 		return
 	}
 
+	// The kernel's MTU: LinkSetMTU never updates the attributes m.ctrLink cached at locate time (#1238).
+	link, err := nlLinkByIndex(m.netHandle, m.ctrLink.Attrs().Index)
+	if err != nil {
+		log.WithError(err).WithFields(m.logFields(v6)).Debug("reading the endpoint's link MTU failed; leaving it as it is")
+		return
+	}
+	current := link.Attrs().MTU
+
 	// Both families write one link MTU, so last-writer-wins flips it on every renewal when option 26 and the
 	// advertisement differ. The smaller is correct for both: the larger is a promise the link cannot keep (#821).
-	m.rememberMTU(v6, info.MTU, m.ctrLink.Attrs().MTU)
+	m.rememberMTU(v6, info.MTU, current)
 	want := m.wantedMTU()
-	if want == 0 {
+	restoring := want == 0
+	if restoring {
 		// Neither family supplies an MTU any more: restore the link's MTU from before this manager wrote one (#821).
+		// A link this manager never wrote is left to whoever moved it (#1238).
+		if !m.mtuWasWritten() {
+			return
+		}
 		want = m.baseMTU()
 	}
 	if want <= 0 {
 		return
 	}
 
-	current := m.ctrLink.Attrs().MTU
 	if current == want {
+		if restoring {
+			m.setMTUWritten(false)
+		}
 		return
 	}
 
-	if err := nlHandleLinkSetMTU(m.netHandle, m.ctrLink, want); err != nil {
+	if err := nlHandleLinkSetMTU(m.netHandle, link, want); err != nil {
 		// Not fatal: the address and gateway work; the loud log surfaces a latent MTU black hole.
 		log.
 			WithError(err).
@@ -1043,6 +1060,7 @@ func (m *dhcpManager) propagateMTU(v6 bool, info dhcp.Info) {
 			Error("Failed to apply DHCP-supplied MTU; container link MTU unchanged")
 		return
 	}
+	m.setMTUWritten(!restoring)
 
 	log.
 		WithFields(m.logFields(v6)).
@@ -1103,6 +1121,18 @@ func (m *dhcpManager) rememberMTU(v6 bool, mtu, base int) {
 		return
 	}
 	m.mtuV4 = mtu
+}
+
+func (m *dhcpManager) mtuWasWritten() bool {
+	m.mtuMu.Lock()
+	defer m.mtuMu.Unlock()
+	return m.mtuWritten
+}
+
+func (m *dhcpManager) setMTUWritten(v bool) {
+	m.mtuMu.Lock()
+	defer m.mtuMu.Unlock()
+	m.mtuWritten = v
 }
 
 func (m *dhcpManager) baseMTU() int {
