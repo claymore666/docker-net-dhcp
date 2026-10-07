@@ -39,12 +39,6 @@ The notes below go back to the first release of this project.
   `lease_timeout`, and an `mtu` below 1280 with IPv6 on (`ipv6_mode=dhcp`,
   `slaac`, `auto` or `ipv6=true`). Networks created earlier keep loading
   as before (#1240).
-- A container whose attach Docker refuses after the plugin's `Join`, such
-  as a second network in a subnet the container already routes, no longer
-  counts as `join_start_failures` and no longer turns `healthy` false.
-  Docker moves the container's link back out of the sandbox, and the
-  plugin now counts that attach in the new `join_aborted_link_withdrawn`,
-  which does not affect `healthy` (#1236).
 
 ## v2.4.0
 
