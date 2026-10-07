@@ -32,12 +32,6 @@ The notes below go back to the first release of this project.
   the container's link when the plugin restarted, is now removed when the
   router stops advertising it. Host routes Join copied into the container
   stay, and nothing is removed before a router has been heard (#1239).
-- On a dual-stack network with a `dhcp_servers` allow-list,
-  `dhcp_server_policy_timeouts` no longer stays at zero while the IPv4
-  client times out. Starting the IPv6 client had cleared the flag that
-  marks the IPv4 client as restricted, so those timeouts were counted in
-  `dhcp_timeouts` only. The flag is now kept per family; IPv6 timeouts
-  still never count there (#1241).
 
 ## v2.4.0
 
