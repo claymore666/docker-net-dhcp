@@ -53,6 +53,7 @@ func (p *Plugin) handRetainedRecordsBack(networkID string, due func(lease.Record
 		log.WithError(err).Warn("Could not read the lease records back; no held address can be handed back this pass")
 		return 0, 0
 	}
+	p.forgetSettledHandBacks(rb)
 
 	// DeleteNetwork runs inside the daemon's own removal call, so only the periodic pass asks Docker (#1158).
 	askDocker := networkID == ""
@@ -87,7 +88,7 @@ func (p *Plugin) handRetainedRecordsBack(networkID string, due func(lease.Record
 		if !o.releasesOnRemove() {
 			continue
 		}
-		if p.handOneRecordBack(rb, rec, *o, id, v6) {
+		if p.handOneRecordBack(rec.ID, due, *o, id, v6) {
 			sent++
 		}
 	}
@@ -127,8 +128,31 @@ func (p *Plugin) networkGone(networkID string) bool {
 	return cerrdefs.IsNotFound(err)
 }
 
-// handOneRecordBack makes one attempt and then closes the record whatever happened, as on_stop does (#962, #984).
-func (p *Plugin) handOneRecordBack(rb lease.Rebuilt, rec lease.Record, opts DHCPNetworkOptions, networkID string, v6 bool) bool {
+// handOneRecordBack makes one attempt and then closes the record whatever happened, as on_stop does (#962, #984). It
+// judges the record on a read taken once the record is its own, not on the pass's: a claim written while an earlier
+// record was on the wire is seen, and the sweep and DeleteNetwork send it once between them (#1237).
+func (p *Plugin) handOneRecordBack(id string, due func(lease.Record) bool, opts DHCPNetworkOptions, networkID string, v6 bool) bool {
+	if !p.takeForHandBack(id) {
+		return false
+	}
+	attempted := false
+	defer func() { p.finishHandBack(id, attempted) }()
+	if p.runningOnHeldRecord(id) {
+		log.WithField("record", id).
+			Debug("A container resumed this held record and its bind could not be written, so nothing is handed back while it runs")
+		return false
+	}
+	rb, err := p.records.Rebuilt()
+	if err != nil {
+		log.WithError(err).WithField("record", id).Warn("Could not read the lease records back; this held address is left for the next pass")
+		return false
+	}
+	rec, ok := rb.ByID(id)
+	if !ok || rec.Phase != lease.PhaseRetained || !due(rec) {
+		return false
+	}
+	attempted = true
+
 	fields := log.Fields{
 		"network": shortID(networkID),
 		"record":  rec.ID,
@@ -156,6 +180,81 @@ func (p *Plugin) handOneRecordBack(rb lease.Rebuilt, rec lease.Record, opts DHCP
 	announceReleaseOutcome(log.WithFields(fields).WithField("outcome", string(out)), out)
 	p.closeRecord(rec.ID)
 	return out == releaseSent
+}
+
+// takeForHandBack waits while another pass holds the record, and refuses one whose attempt was already made: a
+// record whose close did not land would otherwise be sent again on every tick (#1237).
+func (p *Plugin) takeForHandBack(id string) bool {
+	for {
+		p.handBackMu.Lock()
+		if p.handingBack == nil {
+			p.handingBack = make(map[string]chan struct{})
+		}
+		done, taken := p.handingBack[id]
+		if !taken {
+			p.handingBack[id] = make(chan struct{})
+			p.handBackMu.Unlock()
+			return true
+		}
+		select {
+		case <-done:
+			p.handBackMu.Unlock()
+			return false
+		default:
+		}
+		p.handBackMu.Unlock()
+		<-done
+	}
+}
+
+// finishHandBack keeps an attempted record marked until a read shows it no longer held, and frees the rest (#1237).
+func (p *Plugin) finishHandBack(id string, attempted bool) {
+	p.handBackMu.Lock()
+	defer p.handBackMu.Unlock()
+	done := p.handingBack[id]
+	if !attempted {
+		delete(p.handingBack, id)
+	}
+	close(done)
+}
+
+func (p *Plugin) forgetSettledHandBacks(rb lease.Rebuilt) {
+	p.handBackMu.Lock()
+	defer p.handBackMu.Unlock()
+	for id, done := range p.handingBack {
+		select {
+		case <-done:
+		default:
+			continue
+		}
+		if rec, ok := rb.ByID(id); !ok || rec.Phase != lease.PhaseRetained {
+			delete(p.handingBack, id)
+		}
+	}
+}
+
+// markRunningOnHeldRecord covers a Join that resumed a held record and could not write the bind that ends its hold,
+// the full disk that also refused CreateEndpoint's own record: the record still reads as held (#1237).
+func (p *Plugin) markRunningOnHeldRecord(id string) {
+	p.handBackMu.Lock()
+	defer p.handBackMu.Unlock()
+	if p.runningOnHeld == nil {
+		p.runningOnHeld = make(map[string]bool)
+	}
+	p.runningOnHeld[id] = true
+}
+
+func (p *Plugin) runningOnHeldRecord(id string) bool {
+	p.handBackMu.Lock()
+	defer p.handBackMu.Unlock()
+	return p.runningOnHeld[id]
+}
+
+// clearRunningOnHeldRecord runs at the endpoint's teardown, which lays a new hold or ends the record.
+func (p *Plugin) clearRunningOnHeldRecord(id string) {
+	p.handBackMu.Lock()
+	defer p.handBackMu.Unlock()
+	delete(p.runningOnHeld, id)
 }
 
 // recordClaimedBack keys on the address, not the MAC: a --mac-address container restarting after the window gets a

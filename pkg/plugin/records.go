@@ -128,6 +128,16 @@ func (p *Plugin) recordBound(id string, phase string) {
 	if phase == "joined" {
 		return
 	}
+	// A held record is resumed only when CreateEndpoint's own record was not written; left held, its deadline hands
+	// the address this manager runs on back to the server (#1237).
+	if phase == lease.PhaseRetained.String() {
+		if err := p.records.Rebound(id, nil); err != nil {
+			p.markRunningOnHeldRecord(id)
+			log.WithError(err).WithField("record", id).
+				Warn("Could not record that this endpoint took its held address back; the address is kept from the deferred release while the endpoint runs")
+			return
+		}
+	}
 	if err := p.records.Bound(id); err != nil {
 		log.WithError(err).WithField("record", id).Warn("Could not record the start of the renewal client")
 	}
@@ -139,6 +149,7 @@ func (p *Plugin) recordLeft(id string) {
 	if p.records == nil || id == "" {
 		return
 	}
+	p.clearRunningOnHeldRecord(id)
 	if err := p.records.Left(id); err != nil {
 		log.WithError(err).WithField("record", id).Warn("Could not record the end of the renewal client")
 	}
@@ -186,6 +197,7 @@ func (p *Plugin) closeRecord(id string) {
 	if p.records == nil || id == "" {
 		return
 	}
+	p.clearRunningOnHeldRecord(id)
 	if err := p.records.Closed(id); err != nil {
 		log.WithError(err).WithField("record", id).Debug("Could not close the abandoned lease record")
 	}
@@ -195,6 +207,7 @@ func (p *Plugin) recordRetained(id string, deadline time.Time) {
 	if p.records == nil || id == "" {
 		return
 	}
+	p.clearRunningOnHeldRecord(id)
 	if err := p.records.Retained(id, deadline); err != nil {
 		log.WithError(err).WithField("record", id).Warn("Could not lay the lease record's tombstone")
 	}
