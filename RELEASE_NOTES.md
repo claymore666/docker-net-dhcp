@@ -8,6 +8,17 @@ The notes below go back to the first release of this project.
 
 [predecessor]: https://github.com/devplayer0/docker-net-dhcp
 
+## v2.5.0
+
+### Fixed
+
+- On a dual-stack network with a `dhcp_servers` allow-list,
+  `dhcp_server_policy_timeouts` no longer stays at zero while the IPv4
+  client times out. Starting the IPv6 client had cleared the flag that
+  marks the IPv4 client as restricted, so those timeouts were counted in
+  `dhcp_timeouts` only. The flag is now kept per family; IPv6 timeouts
+  still never count there (#1241).
+
 ## v2.4.0
 
 The client reads and sends more DHCP options: Rapid Commit on both address

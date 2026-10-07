@@ -104,8 +104,10 @@ type dhcpManager struct {
 	// recordID6 is the DHCPv6 record, a second one because a lease.Record binds one family and one identity (#911).
 	recordID6 string
 
-	// policyRestricted is captured at setupClient, so the counter describes the policy the client runs under.
-	policyRestricted bool
+	// policyRestrictedV4 and policyRestrictedV6 are captured per family at setupClient, so neither overwrites the
+	// other (#1241).
+	policyRestrictedV4 atomic.Bool
+	policyRestrictedV6 atomic.Bool
 
 	// boundV4 is set once the v4 client reaches bound or renew; a client stopped before that never held the binding,
 	// and Stop must not record a release for it (#549, #800). Written by the v4 consumer goroutine, read in Stop after
@@ -1622,7 +1624,7 @@ func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
 		m.dropPrefixRoutes(v6, "leasefail")
 		// dhcp_timeouts from the library's Failed{ReasonNoServer}, through countOutageTick to keep the policy subset.
 		if m.plugin != nil {
-			m.countOutageTick(v6, m.policyRestricted)
+			m.countOutageTick(v6, m.policyRestrictedFlag(v6).Load())
 		}
 		log.WithFields(m.logFields(v6)).Warn("dhcp failed to get a lease")
 	case "nak":
@@ -1632,6 +1634,13 @@ func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
 		}
 		log.WithFields(m.logFields(v6)).Warn("dhcp client received NAK")
 	}
+}
+
+func (m *dhcpManager) policyRestrictedFlag(v6 bool) *atomic.Bool {
+	if v6 {
+		return &m.policyRestrictedV6
+	}
+	return &m.policyRestrictedV4
 }
 
 // startDHCPClient opens the persistent client's socket; the seam lets a test observe that no daemon call precedes
@@ -1654,14 +1663,19 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 	// The link name is re-read by index here: the engine renames the link after moving it, and the hostname inspect
 	// before this can span the rename on a busy daemon (#406). Hosted run 34624582681 opened a stale name
 	// dh-3b1d3b0061fd and left the container with no renewal client. A failed read keeps the snapshot (#417).
-	if m.netHandle != nil && m.ctrLink != nil {
-		if link, err := nlLinkByIndex(m.netHandle, m.ctrLink.Attrs().Index); err != nil {
+	// Only the v4 set-up, before any client goroutine reads m.ctrLink, stores the re-read; v6 keeps a local (#1241).
+	ctrLink := m.ctrLink
+	if m.netHandle != nil && ctrLink != nil {
+		if link, err := nlLinkByIndex(m.netHandle, ctrLink.Attrs().Index); err != nil {
 			log.
 				WithError(err).
 				WithFields(m.logFields(v6)).
 				Debug("re-reading the endpoint's link before opening the client failed")
 		} else {
-			m.ctrLink = link
+			ctrLink = link
+			if !v6 {
+				m.ctrLink = link
+			}
 		}
 	}
 
@@ -1722,7 +1736,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 	allowServers, denyServers := clientServerLists(pol, v6)
 
 	// Captured once, so the counter describes the policy the client was actually started with.
-	m.policyRestricted = len(allowServers) > 0
+	m.policyRestrictedFlag(v6).Store(len(allowServers) > 0)
 
 	clientOpts := dhcp.DHCPClientOptions{
 		Hostname:     m.hostnameOnTheWire(),
@@ -1732,10 +1746,10 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		V6:           v6,
 		NetNS:        &m.nsHandle,
 		// The link by index, which the engine does not change; the name is resolved again inside the namespace (#1050).
-		LinkIndex: m.ctrLink.Attrs().Index,
+		LinkIndex: ctrLink.Attrs().Index,
 		// The one-shot's MAC, so chaddr and client-id match and the server renews the lease Docker was told about
 		// (#152).
-		MAC:         m.ctrLink.Attrs().HardwareAddr,
+		MAC:         ctrLink.Attrs().HardwareAddr,
 		RequestedIP: requestedIP,
 		// The record's unexpired lease, making the first packet an INIT-REBOOT; nil when there is nothing to resume.
 		Resume:   resumption.Lease,
@@ -1767,7 +1781,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 	// (D23); the durable phase only feeds the warning below.
 	m.noteResumedACD(resumption, clientOpts.ConflictMode, v6)
 
-	client, err := newDHCPClient(m.ctrLink.Attrs().Name, &clientOpts)
+	client, err := newDHCPClient(ctrLink.Attrs().Name, &clientOpts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create DHCP%v client: %w", v6Str, err)
 	}
