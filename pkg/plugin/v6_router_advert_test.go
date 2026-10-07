@@ -6,6 +6,7 @@ package plugin
 import (
 	"errors"
 	"net"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -644,44 +645,179 @@ func TestNoteV6Absence_LeavesTheJoinAnswersIPv6HalfEmpty(t *testing.T) {
 	}
 }
 
+// kernelMTU is the link's MTU in the kernel; real LinkSetMTU leaves the manager's cached attributes unchanged, so
+// does this (#1238).
+type kernelMTU struct {
+	mtu  int
+	sets []int
+}
+
+func installKernelMTU(t *testing.T, m *dhcpManager, initial int) *kernelMTU {
+	t.Helper()
+	k := &kernelMTU{mtu: initial}
+	m.ctrLink.Attrs().MTU = initial
+	prevSet, prevIdx := nlHandleLinkSetMTU, nlLinkByIndex
+	nlHandleLinkSetMTU = func(_ *netlink.Handle, _ netlink.Link, mtu int) error {
+		k.mtu = mtu
+		k.sets = append(k.sets, mtu)
+		return nil
+	}
+	nlLinkByIndex = func(_ *netlink.Handle, index int) (netlink.Link, error) {
+		if index != m.ctrLink.Attrs().Index {
+			return nil, netlink.LinkNotFoundError{}
+		}
+		return &fakeLink{attrs: netlink.LinkAttrs{Index: index, MTU: k.mtu}}, nil
+	}
+	t.Cleanup(func() { nlHandleLinkSetMTU, nlLinkByIndex = prevSet, prevIdx })
+	return k
+}
+
 func TestPropagateMTU_TheTwoFamiliesDoNotFightOverTheLink(t *testing.T) {
 	m, _, _ := v6Manager(t)
 	m.opts.PropagateMTU = true
-	link := m.ctrLink.(*fakeLink)
-	sets := 0
-	prev := nlHandleLinkSetMTU
-	nlHandleLinkSetMTU = func(_ *netlink.Handle, l netlink.Link, mtu int) error {
-		sets++
-		l.Attrs().MTU = mtu
-		return nil
-	}
-	t.Cleanup(func() { nlHandleLinkSetMTU = prev })
-	link.Attrs().MTU = 1500
+	k := installKernelMTU(t, m, 1500)
 
 	m.propagateMTU(false, dhcp.Info{MTU: 9000})
-	if got := link.Attrs().MTU; got != 9000 {
+	if got := k.mtu; got != 9000 {
 		t.Fatalf("link MTU = %d after the v4 option alone, want 9000", got)
 	}
 	m.propagateMTU(true, dhcp.Info{RouterSeen: true, MTU: 1400})
-	if got := link.Attrs().MTU; got != 1400 {
+	if got := k.mtu; got != 1400 {
 		t.Fatalf("link MTU = %d, want the smaller of the two: 9000 is a promise the link "+
 			"cannot keep for the family that asked for 1400", got)
 	}
 
-	before := sets
+	before := len(k.sets)
 	m.propagateMTU(false, dhcp.Info{MTU: 9000})
-	if got := link.Attrs().MTU; got != 1400 {
+	if got := k.mtu; got != 1400 {
 		t.Errorf("a v4 renewal moved the link back to %d; the link flips once per renewal "+
 			"of either family and neither value is ever stable", got)
 	}
-	if sets != before {
-		t.Errorf("the v4 renewal wrote the link MTU %d extra time(s) with nothing to change",
-			sets-before)
+	if n := len(k.sets) - before; n != 0 {
+		t.Errorf("the v4 renewal wrote the link MTU %d extra time(s) with nothing to change", n)
 	}
 
 	m.propagateMTU(true, dhcp.Info{RouterSeen: true, MTU: 1500})
-	if got := link.Attrs().MTU; got != 1500 {
+	if got := k.mtu; got != 1500 {
 		t.Errorf("link MTU = %d after the advertisement raised its own value, want 1500", got)
+	}
+}
+
+func TestPropagateMTU_ARestoredLinkIsLoweredAgain(t *testing.T) {
+	m, _, _ := v6Manager(t)
+	m.opts.PropagateMTU = true
+	k := installKernelMTU(t, m, 1500)
+
+	for round := 1; round <= 2; round++ {
+		m.propagateMTU(false, dhcp.Info{MTU: 1400})
+		if k.mtu != 1400 {
+			t.Fatalf("round %d: link MTU = %d after the server supplied 1400, want 1400", round, k.mtu)
+		}
+		m.propagateMTU(false, dhcp.Info{})
+		if k.mtu != 1500 {
+			t.Fatalf("round %d: link MTU = %d after the server withdrew it, want the original 1500", round, k.mtu)
+		}
+	}
+	if want := []int{1400, 1500, 1400, 1500}; !reflect.DeepEqual(k.sets, want) {
+		t.Errorf("the kernel saw MTU writes %v, want %v", k.sets, want)
+	}
+}
+
+func TestPropagateMTU_ASteadyLeaseWritesNothing(t *testing.T) {
+	m, _, _ := v6Manager(t)
+	m.opts.PropagateMTU = true
+	k := installKernelMTU(t, m, 1500)
+	m.propagateMTU(false, dhcp.Info{MTU: 1400})
+	out := captureLog(t, func() {
+		for i := 0; i < 3; i++ {
+			m.propagateMTU(false, dhcp.Info{MTU: 1400})
+		}
+	})
+	if !reflect.DeepEqual(k.sets, []int{1400}) {
+		t.Errorf("the kernel saw MTU writes %v over four renewals of one value, want one", k.sets)
+	}
+	if strings.Contains(out, "Applied DHCP-supplied MTU") {
+		t.Errorf("a renewal that changed nothing logged an application:\n%s", out)
+	}
+}
+
+func TestPropagateMTU_ALinkMovedByAnotherActorIsLeftAloneWhenNothingIsSupplied(t *testing.T) {
+	m, _, _ := v6Manager(t)
+	m.opts.PropagateMTU = true
+	k := installKernelMTU(t, m, 1500)
+
+	m.propagateMTU(false, dhcp.Info{})
+	k.mtu = 1280
+	out := captureLog(t, func() {
+		m.propagateMTU(false, dhcp.Info{})
+		m.propagateMTU(false, dhcp.Info{})
+	})
+	if len(k.sets) != 0 || k.mtu != 1280 {
+		t.Errorf("the link another actor moved to 1280 was written %v and now reads %d, want it left alone", k.sets, k.mtu)
+	}
+	if strings.Contains(out, "level=error") {
+		t.Errorf("a renewal that supplied nothing logged an error:\n%s", out)
+	}
+
+	m.propagateMTU(false, dhcp.Info{MTU: 1400})
+	m.propagateMTU(false, dhcp.Info{})
+	k.mtu, k.sets = 1200, nil
+	m.propagateMTU(false, dhcp.Info{})
+	if len(k.sets) != 0 {
+		t.Errorf("after the restore the link was written again: %v", k.sets)
+	}
+}
+
+func TestPropagateMTU_TheLinkGoesBackToTheKernelsValueNotTheCachedOne(t *testing.T) {
+	m, _, _ := v6Manager(t)
+	m.opts.PropagateMTU = true
+	k := installKernelMTU(t, m, 1450)
+	m.ctrLink.Attrs().MTU = 1500
+
+	m.propagateMTU(false, dhcp.Info{MTU: 1400})
+	m.propagateMTU(false, dhcp.Info{})
+	if k.mtu != 1450 {
+		t.Errorf("link MTU = %d after the withdrawal, want the 1450 the kernel held before the first write", k.mtu)
+	}
+}
+
+func TestPropagateMTU_ALinkRestoredByAnotherActorIsNotOursAgain(t *testing.T) {
+	m, _, _ := v6Manager(t)
+	m.opts.PropagateMTU = true
+	k := installKernelMTU(t, m, 1500)
+	m.propagateMTU(false, dhcp.Info{MTU: 1400})
+	k.mtu = 1500
+	m.propagateMTU(false, dhcp.Info{})
+	k.mtu, k.sets = 1200, nil
+	m.propagateMTU(false, dhcp.Info{})
+	if len(k.sets) != 0 {
+		t.Errorf("a link another actor moved after the withdrawal was written %v", k.sets)
+	}
+}
+
+func TestPropagateMTU_TheAppliedLineNamesTheKernelsPreviousValue(t *testing.T) {
+	m, _, _ := v6Manager(t)
+	m.opts.PropagateMTU = true
+	installKernelMTU(t, m, 1500)
+	out := captureLog(t, func() {
+		m.propagateMTU(false, dhcp.Info{MTU: 1400})
+		m.propagateMTU(false, dhcp.Info{})
+	})
+	if !strings.Contains(out, "old_mtu=1500") || !strings.Contains(out, "new_mtu=1400") ||
+		!strings.Contains(out, "old_mtu=1400") || !strings.Contains(out, "new_mtu=1500") {
+		t.Errorf("the Applied lines do not carry the kernel's previous values:\n%s", out)
+	}
+}
+
+func TestPropagateMTU_AFailedKernelReadChangesNothing(t *testing.T) {
+	m, _, _ := v6Manager(t)
+	m.opts.PropagateMTU = true
+	k := installKernelMTU(t, m, 1500)
+	nlLinkByIndex = func(*netlink.Handle, int) (netlink.Link, error) { return nil, errors.New("netlink: dump interrupted") }
+
+	m.propagateMTU(false, dhcp.Info{MTU: 1400})
+	if len(k.sets) != 0 || k.mtu != 1500 {
+		t.Fatalf("a failed kernel read still wrote the link: sets %v, MTU %d", k.sets, k.mtu)
 	}
 }
 
@@ -768,30 +904,22 @@ func TestApplyRouterAdvert_SkipRoutesInstallsNoAdvertisedRoute(t *testing.T) {
 }
 
 func TestPropagateMTU_AWithdrawnMTUStopsVoting(t *testing.T) {
-	newManager := func(t *testing.T) (*dhcpManager, *fakeLink) {
+	newManager := func(t *testing.T) (*dhcpManager, *kernelMTU) {
 		t.Helper()
 		m, _, _ := v6Manager(t)
 		m.opts.PropagateMTU = true
-		link := m.ctrLink.(*fakeLink)
-		link.Attrs().MTU = 1500
-		prev := nlHandleLinkSetMTU
-		nlHandleLinkSetMTU = func(_ *netlink.Handle, l netlink.Link, mtu int) error {
-			l.Attrs().MTU = mtu
-			return nil
-		}
-		t.Cleanup(func() { nlHandleLinkSetMTU = prev })
-		return m, link
+		return m, installKernelMTU(t, m, 1500)
 	}
 
 	t.Run("the other family's value takes over", func(t *testing.T) {
 		m, link := newManager(t)
 		m.propagateMTU(false, dhcp.Info{MTU: 9000})
 		m.propagateMTU(true, dhcp.Info{RouterSeen: true, MTU: 1400})
-		if got := link.Attrs().MTU; got != 1400 {
+		if got := link.mtu; got != 1400 {
 			t.Fatalf("link MTU = %d before the withdrawal, want the smaller of the two", got)
 		}
 		m.propagateMTU(true, dhcp.Info{RouterSeen: true, MTU: 0})
-		if got := link.Attrs().MTU; got != 9000 {
+		if got := link.mtu; got != 9000 {
 			t.Errorf("link MTU = %d after the router dropped its MTU option, want the v4 "+
 				"value 9000. A withdrawn vote that is never cleared keeps the link "+
 				"clamped to a number nothing on the segment asks for", got)
@@ -801,11 +929,11 @@ func TestPropagateMTU_AWithdrawnMTUStopsVoting(t *testing.T) {
 	t.Run("both silent: the link goes back to what Docker gave it", func(t *testing.T) {
 		m, link := newManager(t)
 		m.propagateMTU(true, dhcp.Info{RouterSeen: true, MTU: 1400})
-		if got := link.Attrs().MTU; got != 1400 {
+		if got := link.mtu; got != 1400 {
 			t.Fatalf("link MTU = %d, want 1400", got)
 		}
 		m.propagateMTU(true, dhcp.Info{RouterSeen: true, MTU: 0})
-		if got := link.Attrs().MTU; got != 1500 {
+		if got := link.mtu; got != 1500 {
 			t.Errorf("link MTU = %d with nothing supplying one, want the 1500 the link "+
 				"had before this manager touched it", got)
 		}
@@ -815,7 +943,7 @@ func TestPropagateMTU_AWithdrawnMTUStopsVoting(t *testing.T) {
 		m, link := newManager(t)
 		m.propagateMTU(true, dhcp.Info{RouterSeen: true, MTU: 1400})
 		m.propagateMTU(true, dhcp.Info{RouterSeen: true, MTU: 68})
-		if got := link.Attrs().MTU; got != 1400 {
+		if got := link.mtu; got != 1400 {
 			t.Errorf("link MTU = %d after a refused 68, want the last accepted 1400", got)
 		}
 		if m.plugin.mtuRefused.Load() != 1 {
@@ -830,19 +958,19 @@ func TestPropagateMTU_AWithdrawnMTUStopsVoting(t *testing.T) {
 		m.opts.PropagateMTU = true
 		m.propagateMTU(false, dhcp.Info{MTU: 9000})
 		m.propagateMTU(true, dhcp.Info{RouterSeen: true, MTU: 1400})
-		if got := link.Attrs().MTU; got != 1400 {
+		if got := link.mtu; got != 1400 {
 			t.Fatalf("link MTU = %d, want the smaller 1400", got)
 		}
 
 		m.propagateMTU(true, dhcp.Info{MTU: 0})
-		if got := link.Attrs().MTU; got != 1400 {
+		if got := link.mtu; got != 1400 {
 			t.Errorf("link MTU = %d after an event stamped before the first "+
 				"advertisement, want the advertised 1400 still. The router had not "+
 				"spoken yet; it had not stopped speaking", got)
 		}
 
 		m.propagateMTU(true, dhcp.Info{RouterSeen: true, MTU: 0})
-		if got := link.Attrs().MTU; got != 9000 {
+		if got := link.mtu; got != 9000 {
 			t.Errorf("link MTU = %d after the router advertised without an MTU option, "+
 				"want the v4 value 9000: that one IS a withdrawal", got)
 		}
@@ -853,7 +981,7 @@ func TestPropagateMTU_AWithdrawnMTUStopsVoting(t *testing.T) {
 		m.opts.PropagateMTU = false
 		m.propagateMTU(true, dhcp.Info{RouterSeen: true, MTU: 1400})
 		m.propagateMTU(false, dhcp.Info{MTU: 0})
-		if got := link.Attrs().MTU; got != 1400 {
+		if got := link.mtu; got != 1400 {
 			t.Errorf("link MTU = %d, want 1400: a family gated off by the operator has "+
 				"no vote to cast and none to withdraw", got)
 		}

@@ -12,6 +12,13 @@ The notes below go back to the first release of this project.
 
 ### Fixed
 
+- With `propagate_mtu=true`, a container link whose MTU a DHCP server or
+  router had lowered kept the lowered value after the server stopped
+  sending one, and every renewal logged an application that changed
+  nothing. The plugin compared the supplied MTU with a copy of the link it
+  read when the container started, which its own change never updated. It
+  now reads the link's MTU from the kernel, so a withdrawn value puts back
+  the MTU the link had before the plugin first changed it (#1238).
 - `host_ifname` needs Linux 6.2 or later, and now says so. On an older
   kernel, such as Debian 12 or Unraid 6.12 (both 6.1), the rename of the
   up host-side link is refused with `EBUSY`, every link keeps its generated
