@@ -468,13 +468,13 @@ func (p *Plugin) addIPAMReserveLink(ctx context.Context, name, peer, mode string
 			guard.Unlock()
 			return nil, explainChildLinkAdd(err, mode, opts.linkParent(), parent.Attrs().Index)
 		}
-		if err := netlink.LinkSetUp(link); err != nil {
-			_ = netlink.LinkDel(link)
+		if err := nlLinkSetUp(link); err != nil {
+			_ = nlLinkDel(link)
 			guard.Unlock()
 			return nil, fmt.Errorf("failed to bring the reservation link up: %w", err)
 		}
 		return func() {
-			if err := netlink.LinkDel(link); err != nil {
+			if err := nlLinkDel(link); err != nil {
 				log.WithError(err).WithField("link", name).Warn("Reservation link cleanup failed; remove it with `ip link del`")
 			}
 			guard.Unlock()
@@ -485,32 +485,32 @@ func (p *Plugin) addIPAMReserveLink(ctx context.Context, name, peer, mode string
 	if _, err := p.ensureBridge(ctx, opts, "ipam_reserve"); err != nil {
 		return nil, err
 	}
-	bridge, err := netlink.LinkByName(opts.Bridge)
+	bridge, err := nlEndpointLinkByName(opts.Bridge)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get bridge interface: %w", err)
 	}
 	veth := ipamReserveVeth(name, peer, mac)
-	if err := netlink.LinkAdd(veth); err != nil {
+	if err := nlLinkAdd(veth); err != nil {
 		return nil, fmt.Errorf("failed to create the reservation veth pair: %w", err)
 	}
 	remove := func() {
-		if err := netlink.LinkDel(veth); err != nil {
+		if err := nlLinkDel(veth); err != nil {
 			log.WithError(err).WithField("link", name).Warn("Reservation link cleanup failed; remove it with `ip link del`")
 		}
 	}
-	peerLink, err := netlink.LinkByName(peer)
+	peerLink, err := nlEndpointLinkByName(peer)
 	if err != nil {
 		remove()
 		return nil, fmt.Errorf("failed to find the reservation veth peer: %w", err)
 	}
 	for _, l := range []netlink.Link{veth, peerLink} {
-		if err := netlink.LinkSetUp(l); err != nil {
+		if err := nlLinkSetUp(l); err != nil {
 			remove()
 			return nil, fmt.Errorf("failed to bring the reservation link up: %w", err)
 		}
 	}
 	// The peer is the bridge port, not the link the client runs on.
-	if err := netlink.LinkSetMaster(peerLink, bridge); err != nil {
+	if err := nlLinkSetMaster(peerLink, bridge); err != nil {
 		remove()
 		return nil, fmt.Errorf("failed to attach the reservation link to the bridge: %w", err)
 	}
