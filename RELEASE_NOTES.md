@@ -27,6 +27,10 @@ The notes below go back to the first release of this project.
   creation (#657).
 - The same for the macvlan link a reservation creates when bringing it up
   fails (#657).
+- A restarting container whose endpoint creation fails once, for example
+  on a DHCP timeout, keeps its MAC address and IP address on the retry.
+  Before, the failed attempt used up the record of the old ones, so the
+  retry got new ones (#657).
 
 ## v2.4.0
 

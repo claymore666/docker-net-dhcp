@@ -543,7 +543,8 @@ func TestIPAMReserveLink_MacvlanSetUpFailureWarnsWhenTheDeleteFails(t *testing.T
 	}
 }
 
-// A failed create hands the tombstone back, or the retry after one transient failure gets a new MAC and address.
+// A failed create hands the tombstone back, or the retry after one transient failure gets a new MAC and address;
+// a successful one keeps it consumed (#657).
 func TestCreateEndpoint_FailedCreateKeepsTheTombstone(t *testing.T) {
 	for _, c := range []struct {
 		name string
@@ -559,12 +560,23 @@ func TestCreateEndpoint_FailedCreateKeepsTheTombstone(t *testing.T) {
 			k.fail["add:"+subLinkName(ep)] = errInjected
 		}},
 		{"macvlan, dhcpv4", DHCPNetworkOptions{Mode: ModeMacvlan, Parent: epParent}, func(k *endpointKernel, _ string) { k.v4Err = errInjected }},
+		{"bridge, success", DHCPNetworkOptions{Bridge: epBridge}, nil},
+		{"macvlan, success", DHCPNetworkOptions{Mode: ModeMacvlan, Parent: epParent}, nil},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			k := stubEndpointKernel(t)
 			ep := strings.Repeat("d", 64)
 			p := endpointTestPlugin(t, c.opts, ep)
 			p.addTombstone(epNet, "web657", "02:42:0a:00:06:59", "192.0.2.59", "2001:db8::59")
+			if c.fail == nil {
+				if _, err := createTestEndpoint(p, ep, ""); err != nil {
+					t.Fatalf("CreateEndpoint: %v", err)
+				}
+				if _, _, _, ok := p.tombstones.consume(epNet, "web657"); ok {
+					t.Error("tombstone still there after a successful create; the next restart would inherit it twice")
+				}
+				return
+			}
 			c.fail(k, ep)
 			if _, err := createTestEndpoint(p, ep, ""); err == nil || !strings.Contains(err.Error(), errInjected.Error()) {
 				t.Fatalf("CreateEndpoint error %v, want the injected one", err)

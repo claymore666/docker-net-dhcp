@@ -883,7 +883,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	return res, err
 }
 
-func (p *Plugin) createEndpoint(ctx context.Context, r CreateEndpointRequest) (CreateEndpointResponse, error) {
+func (p *Plugin) createEndpoint(ctx context.Context, r CreateEndpointRequest) (_ CreateEndpointResponse, err error) {
 	// The daemon's deadline on this call comes first; see v6AcquisitionDeadline.
 	callStart := endpointCallStart()
 	log.WithField("options", r.Options).Debug("CreateEndpoint options")
@@ -957,6 +957,12 @@ func (p *Plugin) createEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	requestedV6 := explicitV6
 	if effectiveMAC == "" {
 		if mac, ip, ipv6, ok := p.consumeTombstone(r.NetworkID, hostname); ok {
+			// A failed create hands it back, or the retry leases a new MAC and address (#657).
+			defer func() {
+				if err != nil {
+					p.addTombstone(r.NetworkID, hostname.name, mac, ip, ipv6)
+				}
+			}()
 			effectiveMAC = mac
 			if requestedIP == "" {
 				requestedIP = ip
