@@ -25,14 +25,6 @@ The notes below go back to the first release of this project.
   that restarted onto a held record keeps it out of the release; and a
   network removal running beside the periodic pass releases each address
   once, not twice (#1237).
-- A macvlan or ipvlan child, and the container end of a bridge-mode veth
-  pair, no longer take a router advertisement in the host namespace between
-  `CreateEndpoint` and the move into the container: with IPv6 forwarding off
-  and `accept_ra=1`, the host got a SLAAC address and a default route
-  through a link about to leave. The same holds for the IPAM reservation
-  link and the `validate_dhcp` probe link. IPv6 is switched off on the link
-  before it comes up; networks with IPv6 enabled are unchanged, since their
-  DHCPv6 exchange runs on that link and needs its link-local (#1247).
 
 ## v2.4.0
 
