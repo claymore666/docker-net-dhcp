@@ -12,8 +12,6 @@ import (
 	"testing"
 	"time"
 
-	docker "github.com/docker/docker/client"
-
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
@@ -43,7 +41,7 @@ func sandboxKeyCell(t *testing.T, mode, netName, ctrName, user string) {
 		}
 	})
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}

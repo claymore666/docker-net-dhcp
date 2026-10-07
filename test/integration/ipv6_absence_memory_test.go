@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/claymore666/dhcp-golib/proto"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
-	docker "github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	docker "github.com/moby/moby/client"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
@@ -47,7 +47,7 @@ func testSLAAC_AutoRemembersASilentServer(t *testing.T, at v6Attach) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -117,18 +117,15 @@ func testSLAAC_AutoRemembersASilentServer(t *testing.T, at v6Attach) {
 func startTimedOn(t *testing.T, ctx context.Context, cli *docker.Client, netName, ctrName string) (string, time.Duration) {
 	t.Helper()
 	create, err := cli.ContainerCreate(ctx,
-		&container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}, Hostname: ctrName},
-		harness.HostConfig(),
-		&network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{netName: {}}},
-		nil, ctrName)
+		docker.ContainerCreateOptions{Config: &container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}, Hostname: ctrName}, HostConfig: harness.HostConfig(), NetworkingConfig: &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{netName: {}}}, Name: ctrName})
 	if err != nil {
 		t.Fatalf("ContainerCreate(%s): %v", ctrName, err)
 	}
 	t.Cleanup(func() {
-		_ = cli.ContainerRemove(context.Background(), create.ID, container.RemoveOptions{Force: true})
+		_, _ = cli.ContainerRemove(context.Background(), create.ID, docker.ContainerRemoveOptions{Force: true})
 	})
 	start := time.Now()
-	if err := cli.ContainerStart(ctx, create.ID, container.StartOptions{}); err != nil {
+	if _, err := cli.ContainerStart(ctx, create.ID, docker.ContainerStartOptions{}); err != nil {
 		t.Fatalf("ContainerStart(%s) on an ipv6_mode=auto segment with a silent server and an "+
 			"autonomous prefix: %v", ctrName, err)
 	}

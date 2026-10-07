@@ -14,9 +14,8 @@ import (
 	"time"
 
 	"github.com/claymore666/dhcp-golib/proto"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/network"
-	docker "github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/network"
+	docker "github.com/moby/moby/client"
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
@@ -51,14 +50,14 @@ func createWith(t *testing.T, ctx context.Context, cli *docker.Client, name stri
 	if s.ipam {
 		ipam = &network.IPAM{Driver: harness.DriverName}
 	}
-	req := network.CreateOptions{Driver: harness.DriverName, IPAM: ipam, Options: opts}
+	req := docker.NetworkCreateOptions{Driver: harness.DriverName, IPAM: ipam, Options: opts}
 	if s.enableIPv6 {
 		on := true
 		req.EnableIPv6 = &on
 	}
 	res, err := cli.NetworkCreate(ctx, name, req)
 	if err == nil {
-		if rmErr := cli.NetworkRemove(context.Background(), res.ID); rmErr != nil {
+		if _, rmErr := cli.NetworkRemove(context.Background(), res.ID, docker.NetworkRemoveOptions{}); rmErr != nil {
 			t.Errorf("NetworkRemove(%s) after an accepted create: %v", name, rmErr)
 		}
 	}
@@ -68,12 +67,12 @@ func createWith(t *testing.T, ctx context.Context, cli *docker.Client, name stri
 // networksNamed returns the networks Docker lists under exactly name; the API's name filter matches substrings.
 func networksNamed(t *testing.T, ctx context.Context, cli *docker.Client, name string) []string {
 	t.Helper()
-	list, err := cli.NetworkList(ctx, network.ListOptions{Filters: filters.NewArgs(filters.Arg("name", name))})
+	list, err := cli.NetworkList(ctx, docker.NetworkListOptions{Filters: make(docker.Filters).Add("name", name)})
 	if err != nil {
 		t.Fatalf("NetworkList(name=%s): %v", name, err)
 	}
 	var ids []string
-	for _, n := range list {
+	for _, n := range list.Items {
 		if n.Name == name {
 			ids = append(ids, n.ID)
 		}
@@ -323,7 +322,7 @@ func TestCreateRefusals_EachNamesTheOptionAndTheReasonAndLeavesNoNetwork(t *test
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(shapes)*perCreate)
 	defer cancel()
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -372,7 +371,7 @@ func TestLeaseTimeout_AnEmptyValueIsTheDefaultAndTheContainerLeases(t *testing.T
 	ctx, cancel := context.WithTimeout(context.Background(), 4*defaultTimeout)
 	defer cancel()
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}

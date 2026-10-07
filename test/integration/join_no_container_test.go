@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	docker "github.com/docker/docker/client"
 	"github.com/vishvananda/netlink"
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
@@ -43,7 +42,7 @@ func TestJoinNoContainer_AddressIsHeldUntilItExpires(t *testing.T) {
 
 	netID := harness.CreateNetwork(t, ctx, netName, "macvlan", nil)
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}

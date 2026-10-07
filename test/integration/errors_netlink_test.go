@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
-	docker "github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	docker "github.com/moby/moby/client"
 	"github.com/vishvananda/netlink"
 )
 
@@ -36,14 +36,14 @@ func TestErrors_ParentDown(t *testing.T) {
 		}
 	})
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
 	defer cli.Close()
 
 	netName := "dh-itest-err-parent-down"
-	res, createErr := cli.NetworkCreate(ctx, netName, network.CreateOptions{
+	res, createErr := cli.NetworkCreate(ctx, netName, docker.NetworkCreateOptions{
 		Driver: harness.DriverName,
 		IPAM:   &network.IPAM{Driver: "null"},
 		Options: map[string]string{
@@ -52,7 +52,7 @@ func TestErrors_ParentDown(t *testing.T) {
 		},
 	})
 	if createErr == nil {
-		_ = cli.NetworkRemove(context.Background(), res.ID)
+		_, _ = cli.NetworkRemove(context.Background(), res.ID, docker.NetworkRemoveOptions{})
 		t.Fatalf("expected NetworkCreate to fail with parent-down error, got success")
 	}
 	if !strings.Contains(strings.ToLower(createErr.Error()), "parent interface is down") {
@@ -84,14 +84,14 @@ func TestErrors_ParentIsBridge(t *testing.T) {
 		t.Fatalf("LinkSetUp(%s): %v", brName, err)
 	}
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
 	defer cli.Close()
 
 	netName := "dh-itest-err-parent-bridge"
-	res, createErr := cli.NetworkCreate(ctx, netName, network.CreateOptions{
+	res, createErr := cli.NetworkCreate(ctx, netName, docker.NetworkCreateOptions{
 		Driver: harness.DriverName,
 		IPAM:   &network.IPAM{Driver: "null"},
 		Options: map[string]string{
@@ -100,7 +100,7 @@ func TestErrors_ParentIsBridge(t *testing.T) {
 		},
 	})
 	if createErr == nil {
-		_ = cli.NetworkRemove(context.Background(), res.ID)
+		_, _ = cli.NetworkRemove(context.Background(), res.ID, docker.NetworkRemoveOptions{})
 		t.Fatalf("expected NetworkCreate to fail when parent is a bridge, got success")
 	}
 	if !strings.Contains(strings.ToLower(createErr.Error()), "unsuitable for macvlan") {
@@ -121,35 +121,30 @@ func TestErrors_DriverOptIPMalformed(t *testing.T) {
 	ctrName := "dh-itest-err-droptip-ctr"
 	harness.CreateNetwork(t, ctx, netName, "macvlan", nil)
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
 	defer cli.Close()
 
 	created, createErr := cli.ContainerCreate(ctx,
-		&container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}},
-		harness.HostConfig(),
-		&network.NetworkingConfig{
+		docker.ContainerCreateOptions{Config: &container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}}, HostConfig: harness.HostConfig(), NetworkingConfig: &network.NetworkingConfig{
 			EndpointsConfig: map[string]*network.EndpointSettings{
 				netName: {
 					DriverOpts: map[string]string{"ip": "not-a-valid-ip"},
 				},
 			},
-		},
-		nil,
-		ctrName,
-	)
+		}, Name: ctrName})
 	t.Cleanup(func() {
 		bg := context.Background()
-		_ = cli.ContainerRemove(bg, ctrName, container.RemoveOptions{Force: true})
+		_, _ = cli.ContainerRemove(bg, ctrName, docker.ContainerRemoveOptions{Force: true})
 	})
 
 	// libnetwork may defer CreateEndpoint from ContainerCreate to ContainerStart, so either call can carry the refusal.
 	var failure string
 	if createErr != nil {
 		failure = createErr.Error()
-	} else if startErr := cli.ContainerStart(ctx, created.ID, container.StartOptions{}); startErr != nil {
+	} else if _, startErr := cli.ContainerStart(ctx, created.ID, docker.ContainerStartOptions{}); startErr != nil {
 		failure = startErr.Error()
 	}
 	if failure == "" {

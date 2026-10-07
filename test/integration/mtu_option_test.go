@@ -14,9 +14,9 @@ import (
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
-	docker "github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	docker "github.com/moby/moby/client"
 	"github.com/vishvananda/netlink"
 )
 
@@ -96,7 +96,7 @@ func TestMTUOption_TheContainerLinkCarriesTheOptionInEveryMode(t *testing.T) {
 			if tc.mode != "bridge" {
 				return
 			}
-			cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+			cli, err := harness.NewDockerClient()
 			if err != nil {
 				t.Fatalf("docker client: %v", err)
 			}
@@ -122,7 +122,7 @@ func TestMTUOption_BridgeFollowsASmallerPortOnlyWhileItIsAttached(t *testing.T) 
 	harness.CreateNetwork(t, ctx, netName, "bridge", map[string]string{"mtu": strconv.Itoa(optionMTU)})
 	id, addr, _ := harness.RunContainer(t, ctx, netName, netName+"-ctr")
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestMTUOption_BridgeFollowsASmallerPortOnlyWhileItIsAttached(t *testing.T) 
 			harness.BridgeName, got, optionMTU)
 	}
 
-	if err := cli.ContainerRemove(ctx, id, container.RemoveOptions{Force: true}); err != nil {
+	if _, err := cli.ContainerRemove(ctx, id, docker.ContainerRemoveOptions{Force: true}); err != nil {
 		t.Fatalf("ContainerRemove: %v", err)
 	}
 	var got int
@@ -278,23 +278,20 @@ func startRefusedLeavesNoChild(t *testing.T, ctx context.Context, netName string
 	}
 	before := children()
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
 	defer cli.Close()
 	create, err := cli.ContainerCreate(ctx,
-		&container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}},
-		harness.HostConfig(),
-		&network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{netName: {}}},
-		nil, netName+"-ctr")
+		docker.ContainerCreateOptions{Config: &container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}}, HostConfig: harness.HostConfig(), NetworkingConfig: &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{netName: {}}}, Name: netName + "-ctr"})
 	if err != nil {
 		t.Fatalf("ContainerCreate: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = cli.ContainerRemove(context.Background(), create.ID, container.RemoveOptions{Force: true})
+		_, _ = cli.ContainerRemove(context.Background(), create.ID, docker.ContainerRemoveOptions{Force: true})
 	})
-	startErr := cli.ContainerStart(ctx, create.ID, container.StartOptions{})
+	_, startErr := cli.ContainerStart(ctx, create.ID, docker.ContainerStartOptions{})
 	if startErr == nil {
 		t.Fatalf("the container started with mtu=%d on a parent at %d", optionMTU, optionMTU-50)
 	}

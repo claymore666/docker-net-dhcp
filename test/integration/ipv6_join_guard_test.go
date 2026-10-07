@@ -11,9 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
+	docker "github.com/moby/moby/client"
 )
 
 // forcedRAInterval lands an advertisement between the engine's link-up and its default-route add on every start (#1145).
@@ -111,7 +110,7 @@ func testJoinGuard_ARestartedContainerIsGuardedAgain(t *testing.T, at v6Attach) 
 	assertJoinGuardHolds(t, ctx, id)
 	first := sandboxKeyOf(t, ctx, id)
 
-	if err := cli.ContainerRestart(ctx, id, container.StopOptions{}); err != nil {
+	if _, err := cli.ContainerRestart(ctx, id, docker.ContainerRestartOptions{}); err != nil {
 		t.Fatalf("ContainerRestart: %v. The second start builds a new sandbox and runs Join again, which must "+
 			"write the defaults again or the same collision is open on every restart (#1145)", err)
 	}
@@ -130,12 +129,12 @@ func testJoinGuard_ARestartedContainerIsGuardedAgain(t *testing.T, at v6Attach) 
 func sandboxKeyOf(t *testing.T, ctx context.Context, id string) string {
 	t.Helper()
 	cli := dockerClientFor(t)
-	ins, err := cli.ContainerInspect(ctx, id)
+	ins, err := cli.ContainerInspect(ctx, id, docker.ContainerInspectOptions{})
 	if err != nil {
 		t.Fatalf("ContainerInspect: %v", err)
 	}
-	if ins.NetworkSettings == nil || ins.NetworkSettings.SandboxKey == "" {
+	if ins.Container.NetworkSettings == nil || ins.Container.NetworkSettings.SandboxKey == "" {
 		t.Fatalf("docker inspect reports no sandbox key for %s", id)
 	}
-	return ins.NetworkSettings.SandboxKey
+	return ins.Container.NetworkSettings.SandboxKey
 }

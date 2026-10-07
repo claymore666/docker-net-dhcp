@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
-	docker "github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	docker "github.com/moby/moby/client"
 )
 
 // sameSubnetLeaseBudget bounds the wait for the ACKs, a positive event that exits early, unlike the release absence below.
@@ -30,7 +30,7 @@ func TestMultiNetwork_SameSubnetRefused(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -59,21 +59,19 @@ func TestMultiNetwork_SameSubnetRefused(t *testing.T) {
 	releasesBefore := fixture.CountLogLines("DHCPRELEASE")
 
 	create, err := cli.ContainerCreate(ctx,
-		&container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}},
-		harness.HostConfig(),
-		&network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{
+		docker.ContainerCreateOptions{Config: &container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}}, HostConfig: harness.HostConfig(), NetworkingConfig: &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{
 			netA: {}, netB: {},
-		}}, nil, "dh-itest-samesubnet-ctr")
+		}}, Name: "dh-itest-samesubnet-ctr"})
 	if err != nil {
 		t.Fatalf("ContainerCreate: %v", err)
 	}
 	t.Cleanup(func() {
 		bg := context.Background()
-		_ = cli.ContainerStop(bg, create.ID, container.StopOptions{})
-		_ = cli.ContainerRemove(bg, create.ID, container.RemoveOptions{Force: true})
+		_, _ = cli.ContainerStop(bg, create.ID, docker.ContainerStopOptions{})
+		_, _ = cli.ContainerRemove(bg, create.ID, docker.ContainerRemoveOptions{Force: true})
 	})
 
-	err = cli.ContainerStart(ctx, create.ID, container.StartOptions{})
+	_, err = cli.ContainerStart(ctx, create.ID, docker.ContainerStartOptions{})
 	if err == nil {
 		// Recorded before the evidence, because harness.ExecOutput calls t.Fatalf on an exec error.
 		t.Errorf("two networks on one subnet attached successfully — libnetwork no longer " +

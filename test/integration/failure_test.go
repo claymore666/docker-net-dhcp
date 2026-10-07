@@ -19,8 +19,9 @@ import (
 	"testing"
 	"time"
 
+	docker "github.com/moby/moby/client"
+
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
-	docker "github.com/docker/docker/client"
 )
 
 // Plugin log messages beside the counter bumps in handleEvent, carrying the endpoint field the counters lack (#278).
@@ -135,7 +136,7 @@ func TestFailure_ServerLossDuringRenewal(t *testing.T) {
 		}
 	})
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -244,7 +245,7 @@ func TestFailure_ServerReturnsBeforeExpiry(t *testing.T) {
 		}
 	})
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -333,7 +334,7 @@ func TestFailure_LeaseRefusedOnRenewal(t *testing.T) {
 		}
 	})
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -405,13 +406,13 @@ func TestFailure_LeaseRefusedOnRenewal(t *testing.T) {
 
 	// Inspect keeping the original address is the defined divergence (#104); a failure here means a re-Join landed, and
 	// the reference manual's troubleshooting row changes with it.
-	ins, err := cli.ContainerInspect(ctx, id)
+	ins, err := cli.ContainerInspect(ctx, id, docker.ContainerInspectOptions{})
 	if err != nil {
 		t.Fatalf("ContainerInspect: %v", err)
 	}
 	var nowInspect string
-	for _, epView := range ins.NetworkSettings.Networks {
-		nowInspect = epView.IPAddress
+	for _, epView := range ins.Container.NetworkSettings.Networks {
+		nowInspect = harness.AddrString(epView.IPAddress)
 	}
 	if nowInspect != inspectIP {
 		t.Errorf("docker inspect reports %s; expected the stale original %s (documented degraded mode, #104)", nowInspect, inspectIP)
@@ -434,7 +435,7 @@ func TestFailure_LeaseExpiry(t *testing.T) {
 		}
 	})
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}

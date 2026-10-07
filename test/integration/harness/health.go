@@ -17,7 +17,7 @@ import (
 	"time"
 	"unsafe"
 
-	docker "github.com/docker/docker/client"
+	docker "github.com/moby/moby/client"
 )
 
 // pluginExecRoot is where the daemon exposes managed-plugin sockets. moby hardcodes it on Linux (getPluginExecRoot in
@@ -27,20 +27,20 @@ const pluginExecRoot = "/run/docker/plugins"
 
 // dockerDataRoot asks the daemon for its data-root, since a second daemon on the host has its own.
 func dockerDataRoot(ctx context.Context, cli *docker.Client) string {
-	info, err := cli.Info(ctx)
-	return chooseDataRoot(info.DockerRootDir, err)
+	info, err := cli.Info(ctx, docker.InfoOptions{})
+	return chooseDataRoot(info.Info.DockerRootDir, err)
 }
 
 // PluginSocketPath returns the path of PluginRef's UNIX socket, which needs root to dial.
 func PluginSocketPath(ctx context.Context, cli *docker.Client) (string, error) {
-	p, _, err := cli.PluginInspectWithRaw(ctx, PluginRef)
+	p, err := cli.PluginInspect(ctx, PluginRef, docker.PluginInspectOptions{})
 	if err != nil {
 		return "", fmt.Errorf("PluginInspect: %w", err)
 	}
-	if !p.Enabled {
+	if !p.Plugin.Enabled {
 		return "", fmt.Errorf("plugin %q is not currently enabled — its socket is gone", PluginRef)
 	}
-	return filepath.Join(pluginExecRoot, p.ID, "net-dhcp.sock"), nil
+	return filepath.Join(pluginExecRoot, p.Plugin.ID, "net-dhcp.sock"), nil
 }
 
 // PluginHealth dials the plugin's socket and returns its /Plugin.Health payload.
@@ -227,17 +227,17 @@ func DumpPluginLog(t *testing.T) {
 
 // pluginLogPath is where the plugin's log sits on the host, found through the daemon.
 func pluginLogPath(ctx context.Context) (string, error) {
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := NewDockerClient()
 	if err != nil {
 		return "", fmt.Errorf("docker client: %w", err)
 	}
 	defer cli.Close()
 
-	p, _, err := cli.PluginInspectWithRaw(ctx, PluginRef)
+	p, err := cli.PluginInspect(ctx, PluginRef, docker.PluginInspectOptions{})
 	if err != nil {
 		return "", fmt.Errorf("PluginInspect: %w", err)
 	}
-	return filepath.Join(dockerDataRoot(ctx, cli), "plugins", p.ID, "rootfs/var/log/net-dhcp.log"), nil
+	return filepath.Join(dockerDataRoot(ctx, cli), "plugins", p.Plugin.ID, "rootfs/var/log/net-dhcp.log"), nil
 }
 
 // PluginLog returns the plugin's on-disk log and its path, for TestMain's health floor which has no *testing.T (#385).
@@ -273,8 +273,8 @@ func PluginLogSize(ctx context.Context) int64 {
 func WaitPluginEnabled(ctx context.Context, cli *docker.Client, want bool, budget time.Duration) error {
 	deadline := time.Now().Add(budget)
 	for time.Now().Before(deadline) {
-		p, _, err := cli.PluginInspectWithRaw(ctx, PluginRef)
-		if err == nil && p.Enabled == want {
+		p, err := cli.PluginInspect(ctx, PluginRef, docker.PluginInspectOptions{})
+		if err == nil && p.Plugin.Enabled == want {
 			return nil
 		}
 		select {
@@ -288,7 +288,7 @@ func WaitPluginEnabled(ctx context.Context, cli *docker.Client, want bool, budge
 
 // PluginHealthOrNil returns the health document, or nil on any error, for callers taking a baseline.
 func PluginHealthOrNil(ctx context.Context) *HealthResponse {
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := NewDockerClient()
 	if err != nil {
 		return nil
 	}

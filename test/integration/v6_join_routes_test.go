@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
-	docker "github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	docker "github.com/moby/moby/client"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
@@ -90,18 +90,15 @@ func startWithRoutesAtStart(t *testing.T, ctx context.Context, cli *docker.Clien
 	t.Helper()
 	ctrName := netName + "-ctr"
 	create, err := cli.ContainerCreate(ctx,
-		&container.Config{Image: harness.TestImage, Hostname: ctrName, Cmd: []string{"sh", "-c",
-			"{ ip -6 route show; echo '#end'; } > /tmp/r && mv /tmp/r /tmp/routes-at-start; exec sleep infinity"}},
-		harness.HostConfig(),
-		&network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{netName: {}}},
-		nil, ctrName)
+		docker.ContainerCreateOptions{Config: &container.Config{Image: harness.TestImage, Hostname: ctrName, Cmd: []string{"sh", "-c",
+			"{ ip -6 route show; echo '#end'; } > /tmp/r && mv /tmp/r /tmp/routes-at-start; exec sleep infinity"}}, HostConfig: harness.HostConfig(), NetworkingConfig: &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{netName: {}}}, Name: ctrName})
 	if err != nil {
 		t.Fatalf("ContainerCreate(%s): %v", ctrName, err)
 	}
 	t.Cleanup(func() {
-		_ = cli.ContainerRemove(context.Background(), create.ID, container.RemoveOptions{Force: true})
+		_, _ = cli.ContainerRemove(context.Background(), create.ID, docker.ContainerRemoveOptions{Force: true})
 	})
-	if err := cli.ContainerStart(ctx, create.ID, container.StartOptions{}); err != nil {
+	if _, err := cli.ContainerStart(ctx, create.ID, docker.ContainerStartOptions{}); err != nil {
 		return "", err
 	}
 	deadline := time.Now().Add(10 * time.Second)

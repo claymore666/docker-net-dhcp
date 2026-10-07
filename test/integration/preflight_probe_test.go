@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
-	"github.com/docker/docker/api/types/network"
-	docker "github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/network"
+	docker "github.com/moby/moby/client"
 	"github.com/vishvananda/netlink"
 )
 
@@ -99,7 +99,7 @@ func TestPreflightProbe_FailsWhenServerUnreachable(t *testing.T) {
 		t.Fatalf("LinkSetUp dummy: %v", err)
 	}
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestPreflightProbe_FailsWhenServerUnreachable(t *testing.T) {
 
 	netName := "dh-itest-preflight-fail"
 	start := time.Now()
-	res, createErr := cli.NetworkCreate(ctx, netName, network.CreateOptions{
+	res, createErr := cli.NetworkCreate(ctx, netName, docker.NetworkCreateOptions{
 		Driver: harness.DriverName,
 		IPAM:   &network.IPAM{Driver: "null"},
 		Options: map[string]string{
@@ -118,7 +118,7 @@ func TestPreflightProbe_FailsWhenServerUnreachable(t *testing.T) {
 	})
 	elapsed := time.Since(start)
 	if createErr == nil {
-		_ = cli.NetworkRemove(context.Background(), res.ID)
+		_, _ = cli.NetworkRemove(context.Background(), res.ID, docker.NetworkRemoveOptions{})
 		t.Fatalf("NetworkCreate succeeded against an isolated dummy parent; probe didn't reject")
 	}
 
@@ -139,14 +139,14 @@ func TestPreflightProbe_RejectedInBridgeMode(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
 	defer cli.Close()
 
 	netName := "dh-itest-preflight-bridge-rejected"
-	res, err := cli.NetworkCreate(ctx, netName, network.CreateOptions{
+	res, err := cli.NetworkCreate(ctx, netName, docker.NetworkCreateOptions{
 		Driver: harness.DriverName,
 		IPAM:   &network.IPAM{Driver: "null"},
 		Options: map[string]string{
@@ -156,7 +156,7 @@ func TestPreflightProbe_RejectedInBridgeMode(t *testing.T) {
 		},
 	})
 	if err == nil {
-		_ = cli.NetworkRemove(context.Background(), res.ID)
+		_, _ = cli.NetworkRemove(context.Background(), res.ID, docker.NetworkRemoveOptions{})
 		t.Fatalf("NetworkCreate accepted validate_dhcp=true in bridge mode; should have rejected")
 	}
 	if !strings.Contains(err.Error(), "validate_dhcp") {
