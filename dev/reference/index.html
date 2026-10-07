@@ -3389,6 +3389,15 @@ running or not. The addresses handed back are counted as
 <code>ipam_stranded_records</code>. Before v2.2.2 such an address stayed held until
 the network was removed, and <code>--ip</code> on it, or a container pinned to the
 hardware address that was leasing it, was refused for as long as it did.</p>
+<p>The same applies to a container removed while the plugin was disabled or
+down. Its endpoint is gone from Docker, the removal never reached the
+plugin, and the next plugin process hands its address back the same
+way: kept for a restart for the minute, then released under
+<code>release_lease=on_remove</code>. Here the plugin also checks Docker's list of
+running containers on that network, and leaves the address alone if any
+of them still has that hardware address or the list cannot be read.
+Before v2.5.0 <code>--ip</code> on such an address was refused until the record
+was edited out by hand (#1246).</p>
 <p>The reason the rule is this blunt is that Docker's address request
 carries no hostname and no endpoint id. The only thing in it that
 identifies anything is a hardware address Docker generates fresh for
@@ -4817,7 +4826,7 @@ already parse it were not told to expect a new type.</p>
 <td><code>ipam_stranded_records</code></td>
 <td>no</td>
 <td>warn</td>
-<td><em>(v2.2.2+)</em> Lease records a previous plugin process left behind with no endpoint on them, handed back when this process started so their addresses can be claimed again. <strong>A move is the repair, not the fault.</strong> The producer is a plugin process, or a daemon under it, that ended between Docker asking for an address and the container's endpoint being created. Left alone such a record keeps the address for good: it is not one of the recently-removed endpoints a restart claims from, so the container's next attempt takes a second address; it still answers address lookups, so <code>--ip</code> on that address and a container pinned to its hardware address are both refused; and no network ever hands it back, not even <code>release_lease=on_remove</code>. Not <code>healthy</code>-affecting. Watch it: a steady rise means the plugin or the daemon is restarting while containers start, and that is worth investigating on its own.</td>
+<td><em>(v2.2.2+)</em> Lease records a previous plugin process left behind with no endpoint on them, handed back when this process started so their addresses can be claimed again. <strong>A move is the repair, not the fault.</strong> The producer is a plugin process, or a daemon under it, that ended between Docker asking for an address and the container's endpoint being created. Since v2.5.0 a container removed while the plugin was down is counted here as well (#1246). Left alone such a record keeps the address for good: it is not one of the recently-removed endpoints a restart claims from, so the container's next attempt takes a second address; it still answers address lookups, so <code>--ip</code> on that address and a container pinned to its hardware address are both refused; and no network ever hands it back, not even <code>release_lease=on_remove</code>. Not <code>healthy</code>-affecting. Watch it: a steady rise means the plugin or the daemon is restarting while containers start, and that is worth investigating on its own.</td>
 </tr>
 <tr>
 <td><code>ipam_release_unknown</code></td>
