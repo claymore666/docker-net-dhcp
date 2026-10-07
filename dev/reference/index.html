@@ -3158,7 +3158,7 @@ counter moves.</p>
 <tbody>
 <tr>
 <td><code>ip</code></td>
-<td>Request a specific IPv4 address (bare IP, no CIDR; the netmask comes from DHCP). Equivalent to <code>docker run --ip</code>; setting both to different values is an error. The address is <em>requested</em> from the DHCP server (DHCPREQUEST for it); the server still has final say.</td>
+<td>Request a specific IPv4 address (bare IP, no CIDR; the netmask comes from DHCP). Equivalent to <code>docker run --ip</code>; setting both to different values is an error. The key is matched without regard to case (<code>IP</code> and <code>Ip</code> work); two spellings with different values are refused. An empty value (Compose <code>ip: "${IP}"</code> with <code>IP</code> unset) counts as not set. The address is <em>requested</em> from the DHCP server (DHCPREQUEST for it); the server still has final say.</td>
 </tr>
 <tr>
 <td><code>com.docker.network.endpoint.ifname</code></td>
