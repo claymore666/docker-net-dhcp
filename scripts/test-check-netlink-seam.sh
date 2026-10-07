@@ -148,9 +148,44 @@ d=$(tree handle)
 printf 'package plugin\n\nfunc f(h *netlink.Handle) error { return h.LinkAdd(nil) }\n' > "$d/pkg/plugin/a.go"; track "$d"
 check "BOUND: a method on a handle variable passes" 0 "$d" "PASS"
 
+# --- what the scanner reads as code: strings and comments are blanked, a call may span lines -----
+
+d=$(tree strslash)
+printf 'package plugin\n\nfunc f() { _ = fmt.Sprint("http://x"); _ = netlink.LinkAdd(nil) }\n' > "$d/pkg/plugin/a.go"; track "$d"
+check "a // inside a string literal does not hide the call after it (E1)" 1 "$d" "a.go:3:LinkAdd"
+
+d=$(tree runeslash)
+printf "package plugin\n\nfunc f() { _ = '\"'; _ = '/'; _ = netlink.LinkDel(nil) } // x\n" > "$d/pkg/plugin/a.go"; track "$d"
+check "a rune literal holding a quote or slash does not derail the scan" 1 "$d" "a.go:3:LinkDel"
+
+d=$(tree escquote)
+printf 'package plugin\n\nfunc f() { _ = "a\\"b//"; _ = netlink.LinkAdd(nil) }\n' > "$d/pkg/plugin/a.go"; track "$d"
+check "an escaped quote does not end a string early" 1 "$d" "a.go:3:LinkAdd"
+
 d=$(tree strlit)
 printf 'package plugin\n\nvar s = "netlink.LinkAdd(x)"\n' > "$d/pkg/plugin/a.go"; track "$d"
-check "BOUND: a string literal spelling a call is a loud false positive" 1 "$d" "a.go:3:LinkAdd"
+check "a string literal spelling a call is not a call" 0 "$d" "PASS"
+
+d=$(tree rawstr)
+# shellcheck disable=SC2016  # the backticks are Go source, not a command substitution
+printf 'package plugin\n\nvar s = `\nnetlink.LinkAdd(x) // not code\n`\n\nfunc f() { _ = netlink.LinkDel(nil) }\n' > "$d/pkg/plugin/a.go"; track "$d"
+check "a multi-line raw string is blanked and the call after it is named" 1 "$d" "a.go:7:LinkDel"
+
+d=$(tree blockcmt)
+printf 'package plugin\n\n/* old:\n   netlink.LinkAdd(x)\n*/\nfunc f() { /* netlink.LinkDel(x) */ }\n' > "$d/pkg/plugin/a.go"; track "$d"
+check "a block comment naming a call passes" 0 "$d" "PASS"
+
+d=$(tree afterblock)
+printf 'package plugin\n\nfunc f() { /* x */ _ = netlink.LinkAdd(nil) }\n' > "$d/pkg/plugin/a.go"; track "$d"
+check "a call after a block comment on the same line is named" 1 "$d" "a.go:3:LinkAdd"
+
+d=$(tree splitcall)
+printf 'package plugin\n\nfunc f() {\n\t_ = netlink.\n\t\tLinkAdd(nil)\n}\n' > "$d/pkg/plugin/a.go"; track "$d"
+check "netlink. at the end of a line and the name on the next is named (E2)" 1 "$d" "a.go:4:LinkAdd"
+
+d=$(tree splitpure)
+printf 'package plugin\n\nfunc f() {\n\t_ = netlink.\n\t\tNewLinkAttrs()\n}\n' > "$d/pkg/plugin/a.go"; track "$d"
+check "a pure helper split across lines passes" 0 "$d" "PASS"
 
 # --- the shipped tree, and one routed call turned back ------------------
 

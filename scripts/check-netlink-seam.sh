@@ -18,7 +18,9 @@
 # THE DOMAIN IS DERIVED, NOT LISTED
 #
 # Every tracked or untracked-not-ignored non-test .go file under pkg/plugin/, except netlink_seam.go (gatelib
-# class go-src). A call is `netlink.<Name>(`. Comment text is not code and is cut before the match.
+# class go-src). A call is `netlink.<Name>(`, with whitespace or a newline allowed after the dot. Comments
+# (`//` and `/* */`) and string, raw-string and rune literals are not code and are blanked before the match, so
+# a `//` inside a string does not hide the call after it and a string naming a call is not a call.
 #
 # THE RULE
 #
@@ -32,7 +34,8 @@
 #   * IT DOES NOT SEE METHODS on a *netlink.Handle. m.netHandle is a struct field and is the second seam: a
 #     test builds the manager with its own handle. A handle method called on any other variable passes.
 #   * IT DOES NOT SEE the raw request API in the nl package (nftForwardPolicy), which has its own seam.
-#   * A STRING LITERAL CARRYING `netlink.LinkAdd(` IS READ AS A CALL. That is a false positive, so loud.
+#   * THE LEXER IS AWK, NOT THE GO PARSER. It knows `//`, `/* */`, "...", `...` and '.' and nothing else: a
+#     build-tag-excluded file is still read, and a generated file is read like any other.
 #
 # Usage: check-netlink-seam.sh [<tree>]
 # Exit:  0 clean, 1 a direct call, 2 refuses to judge (no work tree, no seam file, an empty domain).
@@ -56,22 +59,54 @@ gate_subjects gofiles go-src
 mapfile -t gofiles < <(printf '%s\n' "${gofiles[@]}" | grep -E '^pkg/plugin/' | grep -v -x "$SEAM")
 [ "${#gofiles[@]}" -gt 0 ] || gate_refuse "no production Go file under pkg/plugin/; a pass here would have read nothing"
 
-# Cut a `//` comment, then take every `netlink.<Name>(`. awk, not grep -o, so the file:line survives.
+# Blank comments and string, raw-string and rune literals (state carries across lines), then take every
+# `netlink.<Name>(` in the whole file, so a call split after the dot is read too. awk, not grep -o, so the
+# file:line survives.
 hits=$(PURE_RE="^(${PURE})\$" awk '
-    BEGIN { pure = ENVIRON["PURE_RE"]; if (pure == "") exit 3 }
-    {
-        code = $0
-        c = index(code, "//")
-        if (c > 0) code = substr(code, 1, c - 1)
-        rest = code
-        while (match(rest, /(^|[^A-Za-z0-9_.])netlink\.[A-Z][A-Za-z0-9]*\(/)) {
+    function nlcount(t) { return gsub(/\n/, "", t) }
+    function flush(   rest, off, tok, idx, pos) {
+        rest = buf; off = 0
+        while (match(rest, /(^|[^A-Za-z0-9_.])netlink\.[ \t\n]*[A-Z][A-Za-z0-9]*[ \t\n]*\(/)) {
             tok = substr(rest, RSTART, RLENGTH)
-            sub(/^.*netlink\./, "", tok)
-            sub(/\($/, "", tok)
-            if (tok !~ pure) print FILENAME ":" FNR ":" tok
+            idx = index(tok, "netlink.")
+            pos = off + RSTART - 1 + idx
+            sub(/^.*netlink\.[ \t\n]*/, "", tok)
+            sub(/[ \t\n]*\($/, "", tok)
+            if (tok !~ pure) print fname ":" (1 + nlcount(substr(buf, 1, pos - 1))) ":" tok
+            off += RSTART + RLENGTH - 1
             rest = substr(rest, RSTART + RLENGTH)
         }
-    }' "${gofiles[@]}") || gate_refuse "the scan itself failed, so an empty result would mean nothing"
+        buf = ""
+    }
+    BEGIN { pure = ENVIRON["PURE_RE"]; if (pure == "") exit 3 }
+    FNR == 1 { if (NR > 1) flush(); fname = FILENAME; in_block = 0; in_raw = 0 }
+    {
+        line = $0; n = length(line); out = ""; i = 1
+        while (i <= n) {
+            ch = substr(line, i, 1); two = substr(line, i, 2)
+            if (in_block) {
+                if (two == "*/") { in_block = 0; out = out "  "; i += 2 } else { out = out " "; i++ }
+                continue
+            }
+            if (in_raw) { if (ch == "`") in_raw = 0; out = out " "; i++; continue }
+            if (two == "//") break
+            if (two == "/*") { in_block = 1; out = out "  "; i += 2; continue }
+            if (ch == "`") { in_raw = 1; out = out " "; i++; continue }
+            if (ch == "\"" || ch == "\047") {
+                q = ch; out = out " "; i++
+                while (i <= n) {
+                    c = substr(line, i, 1)
+                    if (c == "\\") { out = out "  "; i += 2; continue }
+                    out = out " "; i++
+                    if (c == q) break
+                }
+                continue
+            }
+            out = out ch; i++
+        }
+        buf = buf out "\n"
+    }
+    END { flush() }' "${gofiles[@]}") || gate_refuse "the scan itself failed, so an empty result would mean nothing"
 
 if [ -n "$hits" ]; then
     echo "FAIL  pkg/plugin calls the netlink package directly instead of the seam in $SEAM (#657):" >&2

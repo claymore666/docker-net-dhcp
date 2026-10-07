@@ -1510,7 +1510,7 @@ func joinRouteSource(opts DHCPNetworkOptions) (netlink.Link, error) {
 		}
 		return l, nil
 	}
-	l, err := nlLinkByName(opts.Bridge)
+	l, err := nlEndpointLinkByName(opts.Bridge)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get bridge interface: %w", err)
 	}
