@@ -8,6 +8,17 @@ The notes below go back to the first release of this project.
 
 [predecessor]: https://github.com/devplayer0/docker-net-dhcp
 
+## v2.5.0 (unreleased)
+
+### Fixed
+
+- With `release_lease=on_remove`, the deferred release no longer hands
+  back an address a running container holds. Each held address is checked
+  again just before its release goes out, not once per pass; a container
+  that restarted onto a held record keeps it out of the release; and a
+  network removal running beside the periodic pass releases each address
+  once, not twice (#1237).
+
 ## v2.4.0
 
 The client reads and sends more DHCP options: Rapid Commit on both address
