@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
-	"github.com/docker/docker/api/types/network"
-	docker "github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/network"
+	docker "github.com/moby/moby/client"
 )
 
 // errorCases is TestErrors_NetworkCreateValidation's table; opts is the complete driver-options map and wantSubstr a case-insensitive substring.
@@ -101,7 +101,7 @@ func TestErrors_NetworkCreateValidation(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
-			cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+			cli, err := harness.NewDockerClient()
 			if err != nil {
 				t.Fatalf("docker client: %v", err)
 			}
@@ -113,13 +113,13 @@ func TestErrors_NetworkCreateValidation(t *testing.T) {
 			}
 
 			netName := "dh-itest-err-" + strings.ToLower(tc.name)
-			res, err := cli.NetworkCreate(ctx, netName, network.CreateOptions{
+			res, err := cli.NetworkCreate(ctx, netName, docker.NetworkCreateOptions{
 				Driver:  harness.DriverName,
 				IPAM:    ipam,
 				Options: tc.opts,
 			})
 			if err == nil {
-				_ = cli.NetworkRemove(context.Background(), res.ID)
+				_, _ = cli.NetworkRemove(context.Background(), res.ID, docker.NetworkRemoveOptions{})
 				t.Fatalf("expected NetworkCreate to fail with %q substring, got success", tc.wantSubstr)
 			}
 			msg := err.Error()

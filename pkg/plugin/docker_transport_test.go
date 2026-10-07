@@ -179,6 +179,8 @@ func TestDockerClient_InterfaceNamesOnlyReadMethods(t *testing.T) {
 		"NetworkList":      true,
 		"NetworkInspect":   true,
 		"ContainerInspect": true,
+		// GET /v1.*/containers/json, the stranded-record rule's second source (#1246).
+		"ContainerList": true,
 		// The engine probe (#670): Ping is GET or HEAD /_ping and ServerVersion is GET /v1.*/version.
 		"Ping":          true,
 		"ServerVersion": true,

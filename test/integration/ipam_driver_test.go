@@ -11,15 +11,16 @@ package integration
 import (
 	"context"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
-	docker "github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	docker "github.com/moby/moby/client"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
@@ -36,7 +37,7 @@ func ipamDumpOnFailure(t *testing.T) {
 
 func ipamDockerClient(t *testing.T) *docker.Client {
 	t.Helper()
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -52,12 +53,12 @@ func ipamNetworkAddress(t *testing.T, ctx context.Context, cli *docker.Client, c
 	t.Helper()
 	deadline := time.Now().Add(harness.IPAcquisitionBudget)
 	for time.Now().Before(deadline) {
-		ins, err := cli.ContainerInspect(ctx, containerID)
+		ins, err := cli.ContainerInspect(ctx, containerID, docker.ContainerInspectOptions{})
 		if err != nil {
 			t.Fatalf("ContainerInspect(%s): %v", containerID, err)
 		}
-		if ep, ok := ins.NetworkSettings.Networks[netName]; ok && ep.IPAddress != "" {
-			return ep.IPAddress, ep.MacAddress
+		if ep, ok := ins.Container.NetworkSettings.Networks[netName]; ok && ep.IPAddress.IsValid() {
+			return harness.AddrString(ep.IPAddress), ep.MacAddress.String()
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -72,34 +73,32 @@ func ipamRunContainerErr(t *testing.T, ctx context.Context, cli *docker.Client, 
 		ep = &network.EndpointSettings{}
 	}
 	create, err := cli.ContainerCreate(ctx,
-		&container.Config{
+		docker.ContainerCreateOptions{Config: &container.Config{
 			Image:    harness.TestImage,
 			Cmd:      []string{"sleep", "infinity"},
 			Hostname: ctrName,
-		},
-		harness.HostConfig(),
-		&network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{netName: ep}},
-		nil, ctrName)
+		}, HostConfig: harness.HostConfig(), NetworkingConfig: &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{netName: ep}}, Name: ctrName})
 	if err != nil {
 		// The daemon refuses at create time an address no pool on the network contains.
 		return err
 	}
 	t.Cleanup(func() {
 		bg := context.Background()
-		_ = cli.ContainerStop(bg, create.ID, container.StopOptions{})
-		_ = cli.ContainerRemove(bg, create.ID, container.RemoveOptions{Force: true})
+		_, _ = cli.ContainerStop(bg, create.ID, docker.ContainerStopOptions{})
+		_, _ = cli.ContainerRemove(bg, create.ID, docker.ContainerRemoveOptions{Force: true})
 	})
-	return cli.ContainerStart(ctx, create.ID, container.StartOptions{})
+	_, startErr := cli.ContainerStart(ctx, create.ID, docker.ContainerStartOptions{})
+	return startErr
 }
 
 // ipamNetworkInspect returns `docker network inspect` for name.
 func ipamNetworkInspect(t *testing.T, ctx context.Context, cli *docker.Client, name string) network.Inspect {
 	t.Helper()
-	insp, err := cli.NetworkInspect(ctx, name, network.InspectOptions{})
+	insp, err := cli.NetworkInspect(ctx, name, docker.NetworkInspectOptions{})
 	if err != nil {
 		t.Fatalf("NetworkInspect(%s): %v", name, err)
 	}
-	return insp
+	return insp.Network
 }
 
 // Null mode also publishes an address at CreateEndpoint, so the evidence is the network's record, the driver's pool
@@ -138,7 +137,7 @@ func TestIPAM_AddressIsTheServersACK(t *testing.T) {
 	}
 	found := false
 	for _, c := range insp.Containers {
-		if strings.HasPrefix(c.IPv4Address, ipv4+"/") {
+		if strings.HasPrefix(harness.PrefixString(c.IPv4Address), ipv4+"/") {
 			found = true
 		}
 	}
@@ -147,7 +146,7 @@ func TestIPAM_AddressIsTheServersACK(t *testing.T) {
 			ipv4, insp.Containers)
 	}
 	// In null mode the IPAM block does not exist; `--ip`, compose's ipv4_address and inspect tools read it (#110).
-	if len(insp.IPAM.Config) != 1 || insp.IPAM.Config[0].Subnet != harness.SubnetCIDR {
+	if len(insp.IPAM.Config) != 1 || harness.PrefixString(insp.IPAM.Config[0].Subnet) != harness.SubnetCIDR {
 		t.Errorf("the IPAM block is %v, want the one --subnet that was typed (%s)",
 			insp.IPAM.Config, harness.SubnetCIDR)
 	}
@@ -181,7 +180,7 @@ func TestIPAM_NoSubnetAnswersTheAnyPool(t *testing.T) {
 	harness.CreateNetworkIPAM(t, ctx, netName, "bridge", "", nil, nil)
 
 	insp := ipamNetworkInspect(t, ctx, cli, netName)
-	if len(insp.IPAM.Config) != 1 || insp.IPAM.Config[0].Subnet != "0.0.0.0/0" {
+	if len(insp.IPAM.Config) != 1 || insp.IPAM.Config[0].Subnet != netip.MustParsePrefix("0.0.0.0/0") {
 		t.Fatalf("the IPAM block for a network with no --subnet is %v, want the single pool "+
 			"0.0.0.0/0. Any other answer is one libnetwork's allocator would reject and ask "+
 			"again for, which is a `docker network create` that never returns.", insp.IPAM.Config)
@@ -223,7 +222,7 @@ func TestIPAM_SingleRestartKeepsTheAddress(t *testing.T) {
 	netID := harness.CreateNetworkIPAM(t, ctx, netName, "macvlan", harness.SubnetCIDR, nil, nil)
 	id, before, beforeMAC := harness.RunContainer(t, ctx, netName, ctrName)
 
-	if err := cli.ContainerRestart(ctx, id, container.StopOptions{}); err != nil {
+	if _, err := cli.ContainerRestart(ctx, id, docker.ContainerRestartOptions{}); err != nil {
 		t.Fatalf("ContainerRestart: %v", err)
 	}
 	after, afterMAC := ipamNetworkAddress(t, ctx, cli, id, netName)
@@ -295,12 +294,12 @@ func TestIPAM_RestartedTogetherIsTheDocumentedLimit(t *testing.T) {
 
 	// Both down, so two retained records are live at once, then both up.
 	for _, id := range []string{idA, idB} {
-		if err := cli.ContainerStop(ctx, id, container.StopOptions{}); err != nil {
+		if _, err := cli.ContainerStop(ctx, id, docker.ContainerStopOptions{}); err != nil {
 			t.Fatalf("ContainerStop: %v", err)
 		}
 	}
 	for _, id := range []string{idA, idB} {
-		if err := cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
+		if _, err := cli.ContainerStart(ctx, id, docker.ContainerStartOptions{}); err != nil {
 			t.Fatalf("ContainerStart: %v", err)
 		}
 	}
@@ -354,13 +353,13 @@ func TestIPAM_ARemovedNeighbourMakesTheRebindAmbiguous(t *testing.T) {
 
 	w := harness.BeginCounterWindow(t, ctx, cli, "ipam_rebind_ambiguous")
 
-	if err := cli.ContainerStop(ctx, idA, container.StopOptions{}); err != nil {
+	if _, err := cli.ContainerStop(ctx, idA, docker.ContainerStopOptions{}); err != nil {
 		t.Fatalf("ContainerStop(a): %v", err)
 	}
-	if err := cli.ContainerRemove(ctx, idB, container.RemoveOptions{Force: true}); err != nil {
+	if _, err := cli.ContainerRemove(ctx, idB, docker.ContainerRemoveOptions{Force: true}); err != nil {
 		t.Fatalf("ContainerRemove(b): %v", err)
 	}
-	if err := cli.ContainerStart(ctx, idA, container.StartOptions{}); err != nil {
+	if _, err := cli.ContainerStart(ctx, idA, docker.ContainerStartOptions{}); err != nil {
 		t.Fatalf("ContainerStart(a): %v", err)
 	}
 	addr, _ := ipamNetworkAddress(t, ctx, cli, idA, netName)
@@ -398,25 +397,22 @@ func TestIPAM_StaticIPIsHonouredWithASubnet(t *testing.T) {
 	t.Run("an --ip the server will not grant is refused, never substituted", func(t *testing.T) {
 		const otherName = "dh-itest-ipam-static-other"
 		other, err := cli.ContainerCreate(ctx,
-			&container.Config{
+			docker.ContainerCreateOptions{Config: &container.Config{
 				Image:    harness.TestImage,
 				Cmd:      []string{"sleep", "infinity"},
 				Hostname: otherName,
-			},
-			harness.HostConfig(),
-			&network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{
-				netName: {IPAMConfig: &network.EndpointIPAMConfig{IPv4Address: harness.StaticTestIP}},
-			}},
-			nil, otherName)
+			}, HostConfig: harness.HostConfig(), NetworkingConfig: &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{
+				netName: {IPAMConfig: &network.EndpointIPAMConfig{IPv4Address: netip.MustParseAddr(harness.StaticTestIP)}},
+			}}, Name: otherName})
 		if err != nil {
 			t.Fatalf("ContainerCreate: %v", err)
 		}
 		t.Cleanup(func() {
 			bg := context.Background()
-			_ = cli.ContainerStop(bg, other.ID, container.StopOptions{})
-			_ = cli.ContainerRemove(bg, other.ID, container.RemoveOptions{Force: true})
+			_, _ = cli.ContainerStop(bg, other.ID, docker.ContainerStopOptions{})
+			_, _ = cli.ContainerRemove(bg, other.ID, docker.ContainerRemoveOptions{Force: true})
 		})
-		if err := cli.ContainerStart(ctx, other.ID, container.StartOptions{}); err != nil {
+		if _, err := cli.ContainerStart(ctx, other.ID, docker.ContainerStartOptions{}); err != nil {
 			t.Logf("refused, which is the expected branch: %v", err)
 			return
 		}
@@ -430,28 +426,25 @@ func TestIPAM_StaticIPIsHonouredWithASubnet(t *testing.T) {
 	})
 
 	create, err := cli.ContainerCreate(ctx,
-		&container.Config{
+		docker.ContainerCreateOptions{Config: &container.Config{
 			Image:    harness.TestImage,
 			Cmd:      []string{"sleep", "infinity"},
 			Hostname: ctrName,
-		},
-		harness.HostConfig(),
-		&network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{
+		}, HostConfig: harness.HostConfig(), NetworkingConfig: &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{
 			netName: {
-				IPAMConfig: &network.EndpointIPAMConfig{IPv4Address: harness.StaticTestIP},
-				MacAddress: harness.StaticTestMAC,
+				IPAMConfig: &network.EndpointIPAMConfig{IPv4Address: netip.MustParseAddr(harness.StaticTestIP)},
+				MacAddress: harness.MustMAC(harness.StaticTestMAC),
 			},
-		}},
-		nil, ctrName)
+		}}, Name: ctrName})
 	if err != nil {
 		t.Fatalf("ContainerCreate with --ip %s: %v", harness.StaticTestIP, err)
 	}
 	t.Cleanup(func() {
 		bg := context.Background()
-		_ = cli.ContainerStop(bg, create.ID, container.StopOptions{})
-		_ = cli.ContainerRemove(bg, create.ID, container.RemoveOptions{Force: true})
+		_, _ = cli.ContainerStop(bg, create.ID, docker.ContainerStopOptions{})
+		_, _ = cli.ContainerRemove(bg, create.ID, docker.ContainerRemoveOptions{Force: true})
 	})
-	if err := cli.ContainerStart(ctx, create.ID, container.StartOptions{}); err != nil {
+	if _, err := cli.ContainerStart(ctx, create.ID, docker.ContainerStartOptions{}); err != nil {
 		t.Fatalf("ContainerStart with --ip %s: %v", harness.StaticTestIP, err)
 	}
 
@@ -489,7 +482,7 @@ func TestIPAM_StaticIPWithoutASubnetIsStillTheAddressAsked(t *testing.T) {
 	harness.CreateNetworkIPAM(t, ctx, netName, "macvlan", "", nil, nil)
 
 	err := ipamRunContainerErr(t, ctx, cli, netName, ctrName,
-		&network.EndpointSettings{IPAMConfig: &network.EndpointIPAMConfig{IPv4Address: wantIP}})
+		&network.EndpointSettings{IPAMConfig: &network.EndpointIPAMConfig{IPv4Address: netip.MustParseAddr(wantIP)}})
 	if err != nil {
 		t.Logf("refused rather than substituted, which is the other legal branch: %v", err)
 		return
@@ -553,14 +546,14 @@ func TestIPAM_GatewayAndAuxNeverLease(t *testing.T) {
 		}
 	})
 
-	res, err := cli.NetworkCreate(ctx, netName, network.CreateOptions{
+	res, err := cli.NetworkCreate(ctx, netName, docker.NetworkCreateOptions{
 		Driver: harness.DriverName,
 		IPAM: &network.IPAM{
 			Driver: harness.DriverName,
 			Config: []network.IPAMConfig{{
-				Subnet:     harness.SubnetCIDR,
-				Gateway:    gw,
-				AuxAddress: map[string]string{"reserved": aux},
+				Subnet:     netip.MustParsePrefix(harness.SubnetCIDR),
+				Gateway:    netip.MustParseAddr(gw),
+				AuxAddress: map[string]netip.Addr{"reserved": netip.MustParseAddr(aux)},
 			}},
 		},
 		Options: map[string]string{"mode": "macvlan", "parent": harness.HostVeth},
@@ -568,7 +561,7 @@ func TestIPAM_GatewayAndAuxNeverLease(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NetworkCreate with --gateway and --aux-address: %v", err)
 	}
-	t.Cleanup(func() { _ = cli.NetworkRemove(context.Background(), res.ID) })
+	t.Cleanup(func() { _, _ = cli.NetworkRemove(context.Background(), res.ID, docker.NetworkRemoveOptions{}) })
 
 	// A DHCP exchange is synchronous inside the create, which has returned.
 	time.Sleep(2 * time.Second)
@@ -591,10 +584,10 @@ func TestIPAM_GatewayAndAuxNeverLease(t *testing.T) {
 	if len(insp.IPAM.Config) != 1 {
 		t.Fatalf("the IPAM block is %v, want one entry", insp.IPAM.Config)
 	}
-	if insp.IPAM.Config[0].Gateway != gw {
+	if harness.AddrString(insp.IPAM.Config[0].Gateway) != gw {
 		t.Errorf("gateway = %q, want %q", insp.IPAM.Config[0].Gateway, gw)
 	}
-	if got := insp.IPAM.Config[0].AuxAddress["reserved"]; got != aux {
+	if got := insp.IPAM.Config[0].AuxAddress["reserved"]; harness.AddrString(got) != aux {
 		t.Errorf("aux address = %q, want %q", got, aux)
 	}
 }
@@ -749,10 +742,7 @@ func testIPAMReplayAfterDaemonRestart(t *testing.T, netName string, opts map[str
 	hostCfg := harness.HostConfig()
 	hostCfg.RestartPolicy = container.RestartPolicy{Name: container.RestartPolicyAlways}
 	create, err := cli.ContainerCreate(ctx,
-		&container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}, Hostname: ctrName},
-		hostCfg,
-		&network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{netName: {}}},
-		nil, ctrName)
+		docker.ContainerCreateOptions{Config: &container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}, Hostname: ctrName}, HostConfig: hostCfg, NetworkingConfig: &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{netName: {}}}, Name: ctrName})
 	if err != nil {
 		t.Fatalf("ContainerCreate: %v", err)
 	}
@@ -761,21 +751,21 @@ func testIPAMReplayAfterDaemonRestart(t *testing.T, netName string, opts map[str
 		bg, bgCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer bgCancel()
 		// The restart policy comes off before the stop, or the container comes straight back.
-		bgCli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+		bgCli, err := harness.NewDockerClient()
 		if err != nil {
 			return
 		}
 		defer bgCli.Close()
-		_, _ = bgCli.ContainerUpdate(bg, id, container.UpdateConfig{
-			RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyDisabled},
+		_, _ = bgCli.ContainerUpdate(bg, id, docker.ContainerUpdateOptions{
+			RestartPolicy: &container.RestartPolicy{Name: container.RestartPolicyDisabled},
 		})
-		_ = bgCli.ContainerStop(bg, id, container.StopOptions{})
-		_ = bgCli.ContainerRemove(bg, id, container.RemoveOptions{Force: true})
+		_, _ = bgCli.ContainerStop(bg, id, docker.ContainerStopOptions{})
+		_, _ = bgCli.ContainerRemove(bg, id, docker.ContainerRemoveOptions{Force: true})
 	})
 	// The address appears at CreateEndpoint before Join starts the persistent client, so wait for the bind first; the
 	// window opens before the start, since the bind can land before the address is read (#386, #1016).
 	bindW := harness.BeginCounterWindow(t, ctx, cli, "leases_obtained")
-	if err := cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
+	if _, err := cli.ContainerStart(ctx, id, docker.ContainerStartOptions{}); err != nil {
 		t.Fatalf("ContainerStart: %v", err)
 	}
 
@@ -909,7 +899,7 @@ func TestIPAM_TwoEndpointsCannotShareOneHardwareAddress(t *testing.T) {
 	harness.CreateNetworkIPAM(t, ctx, netName, "macvlan", harness.SubnetCIDR, nil, nil)
 
 	if err := ipamRunContainerErr(t, ctx, cli, netName, firstName,
-		&network.EndpointSettings{MacAddress: sharedMAC}); err != nil {
+		&network.EndpointSettings{MacAddress: harness.MustMAC(sharedMAC)}); err != nil {
 		t.Fatalf("the first container pinned to %s did not start: %v", sharedMAC, err)
 	}
 	firstAddr, firstMAC := ipamNetworkAddress(t, ctx, cli, firstName, netName)
@@ -920,7 +910,7 @@ func TestIPAM_TwoEndpointsCannotShareOneHardwareAddress(t *testing.T) {
 	t.Logf("first container: %s on %s", firstAddr, firstMAC)
 
 	err := ipamRunContainerErr(t, ctx, cli, netName, secondName,
-		&network.EndpointSettings{MacAddress: sharedMAC})
+		&network.EndpointSettings{MacAddress: harness.MustMAC(sharedMAC)})
 	if err == nil {
 		second, _ := ipamNetworkAddress(t, ctx, cli, secondName, netName)
 		t.Fatalf("a second container pinned to %s started on %s while the first holds %s. "+
@@ -968,7 +958,7 @@ func TestIPAM_AContainerStartedInsideTheWindowTakesTheTombstone(t *testing.T) {
 
 	w := harness.BeginCounterWindow(t, ctx, cli, "ipam_rebind_ambiguous")
 
-	if err := cli.ContainerStop(ctx, idA, container.StopOptions{}); err != nil {
+	if _, err := cli.ContainerStop(ctx, idA, docker.ContainerStopOptions{}); err != nil {
 		t.Fatalf("ContainerStop(a): %v", err)
 	}
 	// The tombstone is laid inside the stop, so this instant is at or after it.
@@ -989,7 +979,7 @@ func TestIPAM_AContainerStartedInsideTheWindowTakesTheTombstone(t *testing.T) {
 			addrB, addrA, claimed.Round(time.Second), retentionWindow)
 	}
 
-	if err := cli.ContainerStart(ctx, idA, container.StartOptions{}); err != nil {
+	if _, err := cli.ContainerStart(ctx, idA, docker.ContainerStartOptions{}); err != nil {
 		t.Fatalf("ContainerStart(a): %v", err)
 	}
 	addrA2, _ := ipamNetworkAddress(t, ctx, cli, idA, netName)
@@ -1072,7 +1062,7 @@ func TestIPAM_RequireMACKeepsEachPinnedContainersOwnIdentityInsideTheWindow(t *t
 	harness.CreateNetworkIPAM(t, ctx, netName, "macvlan", harness.SubnetCIDR, nil,
 		map[string]string{"require_mac": "true"})
 
-	if err := ipamRunContainerErr(t, ctx, cli, netName, nameA, &network.EndpointSettings{MacAddress: macA}); err != nil {
+	if err := ipamRunContainerErr(t, ctx, cli, netName, nameA, &network.EndpointSettings{MacAddress: harness.MustMAC(macA)}); err != nil {
 		t.Fatalf("a with --mac-address %s did not start: %v", macA, err)
 	}
 	addrA, gotA := ipamNetworkAddress(t, ctx, cli, nameA, netName)
@@ -1083,13 +1073,13 @@ func TestIPAM_RequireMACKeepsEachPinnedContainersOwnIdentityInsideTheWindow(t *t
 	t.Logf("a started on %s, lease %v", addrA, leaseA)
 
 	w := harness.BeginCounterWindow(t, ctx, cli, "ipam_rebind_ambiguous")
-	if err := cli.ContainerStop(ctx, nameA, container.StopOptions{Timeout: &kill}); err != nil {
+	if _, err := cli.ContainerStop(ctx, nameA, docker.ContainerStopOptions{Timeout: &kill}); err != nil {
 		t.Fatalf("ContainerStop(a): %v", err)
 	}
 	stoppedA := time.Now()
 	logMark := fileSize(t, fixture.DnsmasqLog())
 
-	if err := ipamRunContainerErr(t, ctx, cli, netName, nameB, &network.EndpointSettings{MacAddress: macB}); err != nil {
+	if err := ipamRunContainerErr(t, ctx, cli, netName, nameB, &network.EndpointSettings{MacAddress: harness.MustMAC(macB)}); err != nil {
 		t.Fatalf("b with --mac-address %s did not start: %v", macB, err)
 	}
 	addrB, _ := ipamNetworkAddress(t, ctx, cli, nameB, netName)
@@ -1115,10 +1105,10 @@ func TestIPAM_RequireMACKeepsEachPinnedContainersOwnIdentityInsideTheWindow(t *t
 		t.Errorf("the server ACKed %s, the stopped neighbour's address, while b started", addrA)
 	}
 
-	if err := cli.ContainerStop(ctx, nameB, container.StopOptions{Timeout: &kill}); err != nil {
+	if _, err := cli.ContainerStop(ctx, nameB, docker.ContainerStopOptions{Timeout: &kill}); err != nil {
 		t.Fatalf("ContainerStop(b): %v", err)
 	}
-	if err := cli.ContainerStart(ctx, nameA, container.StartOptions{}); err != nil {
+	if _, err := cli.ContainerStart(ctx, nameA, docker.ContainerStartOptions{}); err != nil {
 		t.Fatalf("ContainerStart(a): %v", err)
 	}
 	addrA2, _ := ipamNetworkAddress(t, ctx, cli, nameA, netName)
@@ -1166,7 +1156,7 @@ func TestIPAM_SingleRestartNeedsAServerThatKeepsClientIDBindings(t *testing.T) {
 
 		// Past the fixture's lease the address changes whatever the server keys on, so the restart's duration is checked.
 		started := time.Now()
-		if err := cli.ContainerRestart(ctx, id, container.StopOptions{}); err != nil {
+		if _, err := cli.ContainerRestart(ctx, id, docker.ContainerRestartOptions{}); err != nil {
 			t.Fatalf("ContainerRestart: %v", err)
 		}
 		after, _ = ipamNetworkAddress(t, ctx, cli, id, netName)

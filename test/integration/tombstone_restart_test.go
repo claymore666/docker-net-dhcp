@@ -11,8 +11,7 @@ import (
 	"time"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
-	"github.com/docker/docker/api/types/container"
-	docker "github.com/docker/docker/client"
+	docker "github.com/moby/moby/client"
 )
 
 // The Leave tombstone keeps the MAC and IP for tombstoneTTL, 60 s since v0.6.1, and the restart reuses the endpoint ID (#55).
@@ -37,13 +36,13 @@ func TestTombstoneRestart_PreservesMACAndIP(t *testing.T) {
 	id, ipBefore, macBefore := harness.RunContainer(t, ctx, netName, ctrName)
 	t.Logf("before restart: ip=%s mac=%s", ipBefore, macBefore)
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
 	defer cli.Close()
 
-	if err := cli.ContainerRestart(ctx, id, container.StopOptions{}); err != nil {
+	if _, err := cli.ContainerRestart(ctx, id, docker.ContainerRestartOptions{}); err != nil {
 		t.Fatalf("ContainerRestart: %v", err)
 	}
 
@@ -51,14 +50,14 @@ func TestTombstoneRestart_PreservesMACAndIP(t *testing.T) {
 	deadline := time.Now().Add(harness.IPAcquisitionBudget)
 	var ipAfter, macAfter string
 	for time.Now().Before(deadline) {
-		ins, err := cli.ContainerInspect(ctx, id)
+		ins, err := cli.ContainerInspect(ctx, id, docker.ContainerInspectOptions{})
 		if err != nil {
 			t.Fatalf("ContainerInspect: %v", err)
 		}
-		for _, ep := range ins.NetworkSettings.Networks {
-			if ep.IPAddress != "" {
-				ipAfter = ep.IPAddress
-				macAfter = ep.MacAddress
+		for _, ep := range ins.Container.NetworkSettings.Networks {
+			if ep.IPAddress.IsValid() {
+				ipAfter = harness.AddrString(ep.IPAddress)
+				macAfter = ep.MacAddress.String()
 			}
 		}
 		if ipAfter != "" {

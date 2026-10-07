@@ -16,11 +16,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/api/types/network"
-	docker "github.com/docker/docker/client"
-	"github.com/docker/docker/pkg/stdcopy"
+	"github.com/moby/moby/api/pkg/stdcopy"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	docker "github.com/moby/moby/client"
 )
 
 const (
@@ -45,7 +44,7 @@ func HostConfig() *container.HostConfig {
 
 // EnsureImage pulls TestImage if it is not present locally.
 func EnsureImage(ctx context.Context) error {
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := NewDockerClient()
 	if err != nil {
 		return fmt.Errorf("docker client: %w", err)
 	}
@@ -53,7 +52,7 @@ func EnsureImage(ctx context.Context) error {
 	if _, err := cli.ImageInspect(ctx, TestImage); err == nil {
 		return nil
 	}
-	rc, err := cli.ImagePull(ctx, TestImage, image.PullOptions{})
+	rc, err := cli.ImagePull(ctx, TestImage, docker.ImagePullOptions{})
 	if err != nil {
 		return fmt.Errorf("ImagePull: %w", err)
 	}
@@ -97,7 +96,7 @@ func RunContainerUser(t *testing.T, ctx context.Context, networkName, containerN
 
 func runContainer(t *testing.T, ctx context.Context, networkName, containerName, user string, hostCfg *container.HostConfig) (id, ipv4, mac string) {
 	t.Helper()
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -105,21 +104,16 @@ func runContainer(t *testing.T, ctx context.Context, networkName, containerName,
 
 	createStart := time.Now()
 	create, err := cli.ContainerCreate(ctx,
-		&container.Config{
+		docker.ContainerCreateOptions{Config: &container.Config{
 			Image:    TestImage,
 			Cmd:      []string{"sleep", "infinity"},
 			Hostname: containerName,
 			User:     user,
-		},
-		hostCfg,
-		&network.NetworkingConfig{
+		}, HostConfig: hostCfg, NetworkingConfig: &network.NetworkingConfig{
 			EndpointsConfig: map[string]*network.EndpointSettings{
 				networkName: {},
 			},
-		},
-		nil,
-		containerName,
-	)
+		}, Name: containerName})
 	EndPhase(t, PhaseContainerCreate, createStart)
 	if err != nil {
 		t.Fatalf("ContainerCreate(%s): %v", containerName, err)
@@ -129,11 +123,11 @@ func runContainer(t *testing.T, ctx context.Context, networkName, containerName,
 		// Stop and remove are timed separately (#368): stop is the signal round-trip #367 collapsed, remove is disk work.
 		bg := context.Background()
 		stopStart := time.Now()
-		_ = cli.ContainerStop(bg, id, container.StopOptions{})
+		_, _ = cli.ContainerStop(bg, id, docker.ContainerStopOptions{})
 		EndPhase(t, PhaseContainerStop, stopStart)
 
 		removeStart := time.Now()
-		err := cli.ContainerRemove(bg, id, container.RemoveOptions{Force: true})
+		_, err := cli.ContainerRemove(bg, id, docker.ContainerRemoveOptions{Force: true})
 		EndPhase(t, PhaseContainerRemove, removeStart)
 		if err != nil && !isNotFound(err) {
 			t.Logf("WARN: ContainerRemove(%s): %v", id, err)
@@ -141,7 +135,7 @@ func runContainer(t *testing.T, ctx context.Context, networkName, containerName,
 	})
 
 	startStart := time.Now()
-	err = cli.ContainerStart(ctx, id, container.StartOptions{})
+	_, err = cli.ContainerStart(ctx, id, docker.ContainerStartOptions{})
 	EndPhase(t, PhaseContainerStart, startStart)
 	if err != nil {
 		t.Fatalf("ContainerStart(%s): %v", id, err)
@@ -150,14 +144,14 @@ func runContainer(t *testing.T, ctx context.Context, networkName, containerName,
 	acquireStart := time.Now()
 	deadline := time.Now().Add(IPAcquisitionBudget)
 	for time.Now().Before(deadline) {
-		ins, err := cli.ContainerInspect(ctx, id)
+		ins, err := cli.ContainerInspect(ctx, id, docker.ContainerInspectOptions{})
 		if err != nil {
 			t.Fatalf("ContainerInspect(%s): %v", id, err)
 		}
-		for _, ep := range ins.NetworkSettings.Networks {
-			if ep.IPAddress != "" {
+		for _, ep := range ins.Container.NetworkSettings.Networks {
+			if ep.IPAddress.IsValid() {
 				EndPhase(t, PhaseIPAcquisition, acquireStart)
-				return id, ep.IPAddress, ep.MacAddress
+				return id, ep.IPAddress.String(), ep.MacAddress.String()
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -171,11 +165,11 @@ func runContainer(t *testing.T, ctx context.Context, networkName, containerName,
 // EndpointShortID returns the 12-character endpoint id the plugin logs as `endpoint=` (#278).
 func EndpointShortID(t *testing.T, ctx context.Context, cli *docker.Client, containerID, networkName string) string {
 	t.Helper()
-	ins, err := cli.ContainerInspect(ctx, containerID)
+	ins, err := cli.ContainerInspect(ctx, containerID, docker.ContainerInspectOptions{})
 	if err != nil {
 		t.Fatalf("ContainerInspect(%s): %v", containerID, err)
 	}
-	ep, ok := ins.NetworkSettings.Networks[networkName]
+	ep, ok := ins.Container.NetworkSettings.Networks[networkName]
 	if !ok {
 		t.Fatalf("container %s is not attached to network %q", containerID, networkName)
 	}
@@ -191,13 +185,13 @@ func EndpointShortID(t *testing.T, ctx context.Context, cli *docker.Client, cont
 // ExecOutput runs `docker exec` and returns combined stdout and stderr.
 func ExecOutput(t *testing.T, ctx context.Context, containerID string, cmd ...string) string {
 	t.Helper()
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
 	defer cli.Close()
 
-	exec, err := cli.ContainerExecCreate(ctx, containerID, container.ExecOptions{
+	exec, err := cli.ExecCreate(ctx, containerID, docker.ExecCreateOptions{
 		Cmd:          cmd,
 		AttachStdout: true,
 		AttachStderr: true,
@@ -205,7 +199,7 @@ func ExecOutput(t *testing.T, ctx context.Context, containerID string, cmd ...st
 	if err != nil {
 		t.Fatalf("ExecCreate: %v", err)
 	}
-	att, err := cli.ContainerExecAttach(ctx, exec.ID, container.ExecStartOptions{})
+	att, err := cli.ExecAttach(ctx, exec.ID, docker.ExecAttachOptions{})
 	if err != nil {
 		t.Fatalf("ExecAttach: %v", err)
 	}

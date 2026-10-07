@@ -12,9 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
-	docker "github.com/docker/docker/client"
+	docker "github.com/moby/moby/client"
 	"github.com/vishvananda/netlink"
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
@@ -84,7 +82,7 @@ func TestHostIfname_TheHostLinkTakesTheContainersName(t *testing.T) {
 		}
 	})
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -142,7 +140,7 @@ func TestHostIfname_TheHostLinkTakesTheContainersName(t *testing.T) {
 
 	// DeleteEndpoint looks the link up by the generated name and treats a miss as a normal forced teardown, so a broken
 	// lookup would leave the link behind silently (#978).
-	if err := cli.ContainerRemove(ctx, id, container.RemoveOptions{Force: true}); err != nil {
+	if _, err := cli.ContainerRemove(ctx, id, docker.ContainerRemoveOptions{Force: true}); err != nil {
 		t.Fatalf("ContainerRemove: %v", err)
 	}
 	deadline := time.Now().Add(30 * time.Second)
@@ -174,7 +172,7 @@ func TestHostIfname_ALongNameIsTruncatedAndATakenOneIsRefused(t *testing.T) {
 		}
 	})
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -270,7 +268,7 @@ func TestHostIfname_IsRederivedOnRestart(t *testing.T) {
 		}
 	})
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -285,7 +283,7 @@ func TestHostIfname_IsRederivedOnRestart(t *testing.T) {
 	epBefore := endpointIDOf(t, ctx, cli, id, netName)
 	waitHostLinkName(t, epBefore, ctrName, 30*time.Second)
 
-	if err := cli.ContainerRestart(ctx, id, container.StopOptions{}); err != nil {
+	if _, err := cli.ContainerRestart(ctx, id, docker.ContainerRestartOptions{}); err != nil {
 		t.Fatalf("ContainerRestart: %v", err)
 	}
 
@@ -332,7 +330,7 @@ func TestHostIfname_APluginRecycleLeavesTheNamedLinkAlone(t *testing.T) {
 		}
 	})
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -342,7 +340,7 @@ func TestHostIfname_APluginRecycleLeavesTheNamedLinkAlone(t *testing.T) {
 	t.Cleanup(func() {
 		bg, bgCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer bgCancel()
-		if err := cli.PluginEnable(bg, harness.PluginRef, types.PluginEnableOptions{Timeout: 30}); err != nil {
+		if _, err := cli.PluginEnable(bg, harness.PluginRef, docker.PluginEnableOptions{Timeout: 30}); err != nil {
 			if !strings.Contains(err.Error(), "already enabled") {
 				t.Logf("WARN: cleanup PluginEnable: %v", err)
 			}
@@ -361,7 +359,7 @@ func TestHostIfname_APluginRecycleLeavesTheNamedLinkAlone(t *testing.T) {
 
 	// The rename makes the second pass one where the wanted name moved while the old one is still an altname, so the
 	// rename path runs and meets EEXIST (#978); Docker's cleanup is keyed on the container ID.
-	if err := cli.ContainerRename(ctx, id, renamedTo); err != nil {
+	if _, err := cli.ContainerRename(ctx, id, docker.ContainerRenameOptions{NewName: renamedTo}); err != nil {
 		t.Fatalf("ContainerRename(%s -> %s): %v", ctrName, renamedTo, err)
 	}
 
@@ -376,13 +374,13 @@ func TestHostIfname_APluginRecycleLeavesTheNamedLinkAlone(t *testing.T) {
 	logMark := harness.MarkPluginLog(t, ctx)
 	harness.DumpPluginLogOnFailure(t, ctx, logMark, "the plugin was disabled")
 
-	if err := cli.PluginDisable(ctx, harness.PluginRef, types.PluginDisableOptions{Force: true}); err != nil {
+	if _, err := cli.PluginDisable(ctx, harness.PluginRef, docker.PluginDisableOptions{Force: true}); err != nil {
 		t.Fatalf("PluginDisable: %v", err)
 	}
 	if err := harness.WaitPluginEnabled(ctx, cli, false, 15*time.Second); err != nil {
 		t.Fatalf("plugin did not reach disabled state: %v", err)
 	}
-	if err := cli.PluginEnable(ctx, harness.PluginRef, types.PluginEnableOptions{Timeout: 30}); err != nil {
+	if _, err := cli.PluginEnable(ctx, harness.PluginRef, docker.PluginEnableOptions{Timeout: 30}); err != nil {
 		t.Fatalf("PluginEnable: %v", err)
 	}
 	if err := harness.WaitPluginEnabled(ctx, cli, true, 30*time.Second); err != nil {
@@ -477,11 +475,11 @@ func waitEndpointID(t *testing.T, ctx context.Context, cli *docker.Client, ctrID
 	t.Helper()
 	deadline := time.Now().Add(budget)
 	for {
-		ins, err := cli.ContainerInspect(ctx, ctrID)
+		ins, err := cli.ContainerInspect(ctx, ctrID, docker.ContainerInspectOptions{})
 		if err != nil {
 			t.Fatalf("ContainerInspect: %v", err)
 		}
-		if ep, ok := ins.NetworkSettings.Networks[netName]; ok && ep.EndpointID != "" {
+		if ep, ok := ins.Container.NetworkSettings.Networks[netName]; ok && ep.EndpointID != "" {
 			return ep.EndpointID
 		}
 		if !time.Now().Before(deadline) {

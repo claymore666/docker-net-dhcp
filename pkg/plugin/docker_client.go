@@ -23,6 +23,7 @@ type dockerClient interface {
 	NetworkList(ctx context.Context, options docker.NetworkListOptions) (docker.NetworkListResult, error)
 	NetworkInspect(ctx context.Context, networkID string, options docker.NetworkInspectOptions) (docker.NetworkInspectResult, error)
 	ContainerInspect(ctx context.Context, containerID string, options docker.ContainerInspectOptions) (docker.ContainerInspectResult, error)
+	ContainerList(ctx context.Context, options docker.ContainerListOptions) (docker.ContainerListResult, error)
 	Close() error
 }
 

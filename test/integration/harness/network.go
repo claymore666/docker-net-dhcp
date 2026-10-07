@@ -7,12 +7,14 @@ package harness
 
 import (
 	"context"
+	"fmt"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/network"
-	docker "github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/network"
+	docker "github.com/moby/moby/client"
 	"github.com/vishvananda/netlink"
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
@@ -21,7 +23,7 @@ import (
 // CreateNetwork creates a plugin network of mode bridge, macvlan or ipvlan on the harness's parent for that mode (#556), with cleanup, and returns its ID.
 func CreateNetwork(t *testing.T, ctx context.Context, name, mode string, extraOpts map[string]string) string {
 	t.Helper()
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -45,7 +47,7 @@ func CreateNetwork(t *testing.T, ctx context.Context, name, mode string, extraOp
 
 	// The span includes the plugin's preflight DHCP probe, an 8 s budget that returns on the first OFFER (#368).
 	createStart := time.Now()
-	res, err := cli.NetworkCreate(ctx, name, network.CreateOptions{
+	res, err := cli.NetworkCreate(ctx, name, docker.NetworkCreateOptions{
 		Driver:  DriverName,
 		IPAM:    &network.IPAM{Driver: "null"},
 		Options: opts,
@@ -56,7 +58,7 @@ func CreateNetwork(t *testing.T, ctx context.Context, name, mode string, extraOp
 	}
 	t.Cleanup(func() {
 		removeStart := time.Now()
-		err := cli.NetworkRemove(context.Background(), res.ID)
+		_, err := cli.NetworkRemove(context.Background(), res.ID, docker.NetworkRemoveOptions{})
 		EndPhase(t, PhaseNetworkRemove, removeStart)
 		if err != nil && !isNotFound(err) {
 			t.Logf("WARN: NetworkRemove(%s): %v", res.ID, err)
@@ -104,7 +106,7 @@ func AssertParentFreeOfOtherKind(t *testing.T, parent, mode string) {
 // the `--ipam-driver null` shape does not change (D19); an empty subnet is the untyped case the driver answers with 0.0.0.0/0.
 func CreateNetworkIPAM(t *testing.T, ctx context.Context, name, mode, subnet string, ipamOpts map[string]string, extraOpts map[string]string) string {
 	t.Helper()
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -128,11 +130,15 @@ func CreateNetworkIPAM(t *testing.T, ctx context.Context, name, mode, subnet str
 
 	ipam := &network.IPAM{Driver: DriverName, Options: ipamOpts}
 	if subnet != "" {
-		ipam.Config = []network.IPAMConfig{{Subnet: subnet}}
+		pfx, perr := netip.ParsePrefix(subnet)
+		if perr != nil {
+			t.Fatalf("subnet %q: %v", subnet, perr)
+		}
+		ipam.Config = []network.IPAMConfig{{Subnet: pfx}}
 	}
 
 	createStart := time.Now()
-	res, err := cli.NetworkCreate(ctx, name, network.CreateOptions{
+	res, err := cli.NetworkCreate(ctx, name, docker.NetworkCreateOptions{
 		Driver:  DriverName,
 		IPAM:    ipam,
 		Options: opts,
@@ -144,7 +150,7 @@ func CreateNetworkIPAM(t *testing.T, ctx context.Context, name, mode, subnet str
 	}
 	t.Cleanup(func() {
 		removeStart := time.Now()
-		err := cli.NetworkRemove(context.Background(), res.ID)
+		_, err := cli.NetworkRemove(context.Background(), res.ID, docker.NetworkRemoveOptions{})
 		EndPhase(t, PhaseNetworkRemove, removeStart)
 		if err != nil && !isNotFound(err) {
 			t.Logf("WARN: NetworkRemove(%s): %v", res.ID, err)
@@ -155,7 +161,7 @@ func CreateNetworkIPAM(t *testing.T, ctx context.Context, name, mode, subnet str
 
 // CreateNetworkIPAMErr returns the daemon's error for a create that must be refused, and registers no cleanup (#110).
 func CreateNetworkIPAMErr(ctx context.Context, name, mode, subnet string, ipamOpts, extraOpts map[string]string) error {
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := NewDockerClient()
 	if err != nil {
 		return err
 	}
@@ -175,15 +181,19 @@ func CreateNetworkIPAMErr(ctx context.Context, name, mode, subnet string, ipamOp
 	}
 	ipam := &network.IPAM{Driver: DriverName, Options: ipamOpts}
 	if subnet != "" {
-		ipam.Config = []network.IPAMConfig{{Subnet: subnet}}
+		pfx, perr := netip.ParsePrefix(subnet)
+		if perr != nil {
+			return fmt.Errorf("subnet %q: %w", subnet, perr)
+		}
+		ipam.Config = []network.IPAMConfig{{Subnet: pfx}}
 	}
-	res, err := cli.NetworkCreate(ctx, name, network.CreateOptions{
+	res, err := cli.NetworkCreate(ctx, name, docker.NetworkCreateOptions{
 		Driver:  DriverName,
 		IPAM:    ipam,
 		Options: opts,
 	})
 	if err == nil {
-		_ = cli.NetworkRemove(context.Background(), res.ID)
+		_, _ = cli.NetworkRemove(context.Background(), res.ID, docker.NetworkRemoveOptions{})
 		return nil
 	}
 	return err

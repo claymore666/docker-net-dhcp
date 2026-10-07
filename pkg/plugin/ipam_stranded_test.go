@@ -765,7 +765,7 @@ func TestIPAMStrandedRecords_TheRuleKeysOnTheWriterAndTheEngineList(t *testing.T
 	now := time.Now()
 	inflightID := f0Created(t, p, inflightMAC, "192.168.99.12/24")
 
-	if n := p.giveUpStrandedIPAMRecords(ipamTestNetwork, []net.HardwareAddr{running}, now); n != 1 {
+	if n := p.giveUpStrandedIPAMRecords(context.Background(), ipamTestNetwork, []net.HardwareAddr{running}, now); n != 1 {
 		t.Fatalf("the rule gave up %d records, want 1", n)
 	}
 	if got := f0Rec(t, p, runningID).Phase; got != lease.PhaseCreated {
@@ -800,7 +800,7 @@ func TestIPAMStrandedRecords_TheRunningEndpointStillHeals(t *testing.T) {
 	f0Reopen(t, p, journal, "proc-2")
 	now := time.Now()
 
-	if n := p.giveUpStrandedIPAMRecords(ipamTestNetwork, []net.HardwareAddr{running}, now); n != 0 {
+	if n := p.giveUpStrandedIPAMRecords(context.Background(), ipamTestNetwork, []net.HardwareAddr{running}, now); n != 0 {
 		t.Fatalf("the rule gave up %d records, want 0", n)
 	}
 	rid, res := p.recordResume(ipamTestNetwork, running)
@@ -823,7 +823,7 @@ func TestIPAMStrandedRecords_ARecordHoldingNothingIsClosed(t *testing.T) {
 	f0Reopen(t, p, journal, "proc-2")
 	now := time.Now()
 
-	if n := p.giveUpStrandedIPAMRecords(ipamTestNetwork, nil, now); n != 1 {
+	if n := p.giveUpStrandedIPAMRecords(context.Background(), ipamTestNetwork, nil, now); n != 1 {
 		t.Fatalf("the rule gave up %d records, want 1", n)
 	}
 	if got := f0Rec(t, p, id).Phase; got != lease.PhaseClosed {
@@ -843,11 +843,11 @@ func TestIPAMStrandedRecords_RunTwiceWritesOnce(t *testing.T) {
 	f0Reopen(t, p, journal, "proc-2")
 	now := time.Now()
 
-	if n := p.giveUpStrandedIPAMRecords(ipamTestNetwork, nil, now); n != 1 {
+	if n := p.giveUpStrandedIPAMRecords(context.Background(), ipamTestNetwork, nil, now); n != 1 {
 		t.Fatalf("first pass gave up %d records, want 1", n)
 	}
 	deadline := f0Rec(t, p, id).Deadline
-	if n := p.giveUpStrandedIPAMRecords(ipamTestNetwork, nil, now.Add(30*time.Second)); n != 0 {
+	if n := p.giveUpStrandedIPAMRecords(context.Background(), ipamTestNetwork, nil, now.Add(30*time.Second)); n != 0 {
 		t.Fatalf("second pass gave up %d records, want 0", n)
 	}
 	if got := f0Rec(t, p, id).Deadline; !got.Equal(deadline) {
@@ -867,7 +867,7 @@ func TestIPAMStrandedRecords_AnotherNetworkIsNotTouched(t *testing.T) {
 	}
 	f0Reopen(t, p, journal, "proc-2")
 
-	if n := p.giveUpStrandedIPAMRecords(ipamTestNetwork, nil, time.Now()); n != 0 {
+	if n := p.giveUpStrandedIPAMRecords(context.Background(), ipamTestNetwork, nil, time.Now()); n != 0 {
 		t.Fatalf("the rule gave up %d records on a network it was not asked about", n)
 	}
 	if got := f0Rec(t, p, other).Phase; got != lease.PhaseCreated {
@@ -967,7 +967,7 @@ func TestIPAMStranded_DocumentedLimits(t *testing.T) {
 		id := f0Created(t, p, running, f0Addr)
 		f0Reopen(t, p, journal, "proc-2")
 
-		if n := p.giveUpStrandedIPAMRecords(ipamTestNetwork, []net.HardwareAddr{}, time.Now()); n != 1 {
+		if n := p.giveUpStrandedIPAMRecords(context.Background(), ipamTestNetwork, []net.HardwareAddr{}, time.Now()); n != 1 {
 			t.Fatalf("gave up %d records, want 1", n)
 		}
 		if got := f0Rec(t, p, id).Phase; got != lease.PhaseRetained {
@@ -987,7 +987,7 @@ func TestIPAMStranded_DocumentedLimits(t *testing.T) {
 		id := f0Rebind(t, p, restarted, "192.168.99.10")
 		f0Reopen(t, p, journal, "proc-2")
 
-		if n := p.giveUpStrandedIPAMRecords(ipamTestNetwork, []net.HardwareAddr{restarted}, time.Now()); n != 0 {
+		if n := p.giveUpStrandedIPAMRecords(context.Background(), ipamTestNetwork, []net.HardwareAddr{restarted}, time.Now()); n != 0 {
 			t.Fatalf("the rule gave up %d listed records, want 0", n)
 		}
 		if got := f0Rec(t, p, id).Phase; got != lease.PhaseCreated {

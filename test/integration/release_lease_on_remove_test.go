@@ -17,9 +17,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
-	docker "github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/network"
+	docker "github.com/moby/moby/client"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
@@ -56,13 +55,13 @@ func containerAddress(t *testing.T, ctx context.Context, cli *docker.Client, id 
 	t.Helper()
 	deadline := time.Now().Add(harness.IPAcquisitionBudget)
 	for time.Now().Before(deadline) {
-		ins, err := cli.ContainerInspect(ctx, id)
+		ins, err := cli.ContainerInspect(ctx, id, docker.ContainerInspectOptions{})
 		if err != nil {
 			t.Fatalf("ContainerInspect: %v", err)
 		}
-		for _, ep := range ins.NetworkSettings.Networks {
-			if ep.IPAddress != "" {
-				return ep.IPAddress, ep.MacAddress
+		for _, ep := range ins.Container.NetworkSettings.Networks {
+			if ep.IPAddress.IsValid() {
+				return harness.AddrString(ep.IPAddress), ep.MacAddress.String()
 			}
 		}
 		time.Sleep(250 * time.Millisecond)
@@ -93,7 +92,7 @@ func TestReleaseLease_OnRemoveHoldsTheAddressThenHandsItBack(t *testing.T) {
 
 	harness.CreateNetwork(t, ctx, netName, "macvlan", map[string]string{"release_lease": "on_remove"})
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -111,7 +110,7 @@ func TestReleaseLease_OnRemoveHoldsTheAddressThenHandsItBack(t *testing.T) {
 	releasesBefore := fixture.CountLogLines("DHCPRELEASE", ip)
 
 	stopped := time.Now()
-	if err := cli.ContainerStop(ctx, id, container.StopOptions{}); err != nil {
+	if _, err := cli.ContainerStop(ctx, id, docker.ContainerStopOptions{}); err != nil {
 		t.Fatalf("ContainerStop: %v", err)
 	}
 
@@ -189,7 +188,7 @@ func TestReleaseLease_OnRemoveKeepsTheAddressForARestartInsideTheWindow(t *testi
 
 	harness.CreateNetwork(t, ctx, netName, "macvlan", map[string]string{"release_lease": "on_remove"})
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -206,10 +205,10 @@ func TestReleaseLease_OnRemoveKeepsTheAddressForARestartInsideTheWindow(t *testi
 	releasesBefore := fixture.CountLogLines("DHCPRELEASE", ip)
 
 	stopped := time.Now()
-	if err := cli.ContainerStop(ctx, id, container.StopOptions{}); err != nil {
+	if _, err := cli.ContainerStop(ctx, id, docker.ContainerStopOptions{}); err != nil {
 		t.Fatalf("ContainerStop: %v", err)
 	}
-	if err := cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
+	if _, err := cli.ContainerStart(ctx, id, docker.ContainerStartOptions{}); err != nil {
 		t.Fatalf("ContainerStart: %v", err)
 	}
 	ipAfter, macAfter := containerAddress(t, ctx, cli, id)
@@ -278,7 +277,7 @@ func TestReleaseLease_OnRemoveHandsTheV6AddressBackToo(t *testing.T) {
 		"ipv6":          "true",
 	})
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -301,7 +300,7 @@ func TestReleaseLease_OnRemoveHandsTheV6AddressBackToo(t *testing.T) {
 	w := harness.BeginCounterWindow(t, ctx, cli, "releases_sent_v6", "release_failures")
 
 	stopped := time.Now()
-	if err := cli.ContainerStop(ctx, id, container.StopOptions{}); err != nil {
+	if _, err := cli.ContainerStop(ctx, id, docker.ContainerStopOptions{}); err != nil {
 		t.Fatalf("ContainerStop: %v", err)
 	}
 
@@ -367,7 +366,7 @@ func TestReleaseLease_OnRemoveHandsAnIPAMAddressBackToo(t *testing.T) {
 	releasesBefore := fixture.CountLogLines("DHCPRELEASE", ip)
 
 	stopped := time.Now()
-	if err := cli.ContainerStop(ctx, ctrName, container.StopOptions{}); err != nil {
+	if _, err := cli.ContainerStop(ctx, ctrName, docker.ContainerStopOptions{}); err != nil {
 		t.Fatalf("ContainerStop: %v", err)
 	}
 

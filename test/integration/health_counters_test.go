@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
-	docker "github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	docker "github.com/moby/moby/client"
 )
 
 // TestHealthCounters_ObtainedAndReleased checks that a clean lifecycle raises leases_obtained and leaves client_stop_failures alone.
@@ -31,7 +31,7 @@ func TestHealthCounters_ObtainedAndReleased(t *testing.T) {
 		}
 	})
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -45,28 +45,23 @@ func TestHealthCounters_ObtainedAndReleased(t *testing.T) {
 	harness.CreateNetwork(t, ctx, netName, "macvlan", nil)
 
 	create, err := cli.ContainerCreate(ctx,
-		&container.Config{
+		docker.ContainerCreateOptions{Config: &container.Config{
 			Image:    harness.TestImage,
 			Cmd:      []string{"sleep", "infinity"},
 			Hostname: ctrName,
-		},
-		harness.HostConfig(),
-		&network.NetworkingConfig{
+		}, HostConfig: harness.HostConfig(), NetworkingConfig: &network.NetworkingConfig{
 			EndpointsConfig: map[string]*network.EndpointSettings{netName: {}},
-		},
-		nil,
-		ctrName,
-	)
+		}, Name: ctrName})
 	if err != nil {
 		t.Fatalf("ContainerCreate: %v", err)
 	}
 	id := create.ID
 	t.Cleanup(func() {
 		bg := context.Background()
-		_ = cli.ContainerRemove(bg, id, container.RemoveOptions{Force: true})
+		_, _ = cli.ContainerRemove(bg, id, docker.ContainerRemoveOptions{Force: true})
 	})
 
-	if err := cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
+	if _, err := cli.ContainerStart(ctx, id, docker.ContainerStartOptions{}); err != nil {
 		t.Fatalf("ContainerStart: %v", err)
 	}
 
@@ -84,10 +79,10 @@ func TestHealthCounters_ObtainedAndReleased(t *testing.T) {
 
 	// With no release_lease the default `never` sends no release since #800, so a clean stop moves only the client's
 	// counter; an `on_stop` release is counted in releases_sent (#962).
-	if err := cli.ContainerStop(ctx, id, container.StopOptions{}); err != nil {
+	if _, err := cli.ContainerStop(ctx, id, docker.ContainerStopOptions{}); err != nil {
 		t.Fatalf("ContainerStop: %v", err)
 	}
-	if err := cli.ContainerRemove(ctx, id, container.RemoveOptions{Force: false}); err != nil {
+	if _, err := cli.ContainerRemove(ctx, id, docker.ContainerRemoveOptions{Force: false}); err != nil {
 		t.Fatalf("ContainerRemove: %v", err)
 	}
 

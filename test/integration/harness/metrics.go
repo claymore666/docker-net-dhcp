@@ -13,7 +13,7 @@ import (
 	"net/http"
 	"time"
 
-	docker "github.com/docker/docker/client"
+	docker "github.com/moby/moby/client"
 )
 
 // PluginMetrics returns the raw /metrics body and Content-Type from the shipped plugin's socket, unparsed so the check is not against our model of it (#644).
