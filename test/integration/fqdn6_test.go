@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	docker "github.com/docker/docker/client"
+	docker "github.com/moby/moby/client"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
@@ -26,7 +26,7 @@ const fqdn6Budget = 30 * time.Second
 // messages, and returns the capture, the container's v4 and v6 addresses and its name (#1029).
 func fqdn6Start(t *testing.T, ctx context.Context, at v6Attach, netName string, extra map[string]string) (*harness.V6Fixture, *harness.DHCPv6Capture, string, string, string) {
 	t.Helper()
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -50,18 +50,18 @@ func fqdn6Start(t *testing.T, ctx context.Context, at v6Attach, netName string, 
 	if err != nil {
 		t.Fatalf("ContainerStart on %s: %v", netName, err)
 	}
-	ins, err := cli.ContainerInspect(ctx, id)
+	ins, err := cli.ContainerInspect(ctx, id, docker.ContainerInspectOptions{})
 	if err != nil {
 		t.Fatalf("ContainerInspect: %v", err)
 	}
-	ep := ins.NetworkSettings.Networks[netName]
-	if ep == nil || ep.IPAddress == "" || ep.GlobalIPv6Address == "" {
+	ep := ins.Container.NetworkSettings.Networks[netName]
+	if ep == nil || !ep.IPAddress.IsValid() || !ep.GlobalIPv6Address.IsValid() {
 		t.Fatalf("container on %s is not dual-stack: endpoint %+v", netName, ep)
 	}
-	if ip := net.ParseIP(ep.GlobalIPv6Address); ip == nil || !(&net.IPNet{IP: net.ParseIP(harness.V6Prefix), Mask: net.CIDRMask(64, 128)}).Contains(ip) {
+	if ip := net.ParseIP(harness.AddrString(ep.GlobalIPv6Address)); ip == nil || !(&net.IPNet{IP: net.ParseIP(harness.V6Prefix), Mask: net.CIDRMask(64, 128)}).Contains(ip) {
 		t.Fatalf("GlobalIPv6Address %q is not in the fixture's pool %s/64", ep.GlobalIPv6Address, harness.V6Prefix)
 	}
-	return f, cap6, ep.IPAddress, ep.GlobalIPv6Address, netName + "-ctr"
+	return f, cap6, harness.AddrString(ep.IPAddress), harness.AddrString(ep.GlobalIPv6Address), netName + "-ctr"
 }
 
 // fqdn6Resolver asks the fixture's own dnsmasq, which builds its A and AAAA records from its leases.

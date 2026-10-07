@@ -184,7 +184,7 @@ it is recorded rather than assumed.
 
 ### Pointing the plugin at a read-only Docker socket proxy
 
-The plugin's whole use of the Docker API is four read calls plus the
+The plugin's whole use of the Docker API is five read calls plus the
 client library's version ping. `DOCKER_HOST` (empty by default, which
 keeps the mounted socket) lets an operator put a proxy in front of it,
 so a compromise of the plugin cannot reach the API calls that start a
@@ -198,6 +198,7 @@ GET  /v1.*/version
 GET  /v1.*/networks
 GET  /v1.*/networks/{id}
 GET  /v1.*/containers/{id}/json
+GET  /v1.*/containers/json
 ```
 
 `GET /v1.*/version` is the fourth call. The plugin reads the engine
@@ -205,6 +206,13 @@ version once at startup, refuses to start below the minimum supported
 engine, and publishes what it saw as `engine_version` on
 `/Plugin.Health`. A proxy that blocks it leaves that field `unknown` and
 the minimum unchecked. The plugin still starts.
+
+`GET /v1.*/containers/json` is the fifth. At startup, on a network
+where this plugin allocates the addresses, the plugin lists the running
+containers on that network before it gives up the lease record of an
+endpoint that was removed while the plugin was down. A proxy that blocks
+it leaves those records in place, and their addresses stay refused to
+`--ip` until they are edited out by hand (#1246).
 
 A worked example. The proxy listens on a **TCP endpoint on the host's
 loopback**, which the plugin reaches because it runs with host

@@ -12,8 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types"
-	docker "github.com/docker/docker/client"
+	docker "github.com/moby/moby/client"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
@@ -184,7 +183,7 @@ func testSLAAC_AnAdvertisedPrefixReachesTheContainer(t *testing.T, at v6Attach) 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -287,7 +286,7 @@ func testSLAAC_ADeprecatedPrefixArrivesDeprecated(t *testing.T, at v6Attach) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -378,7 +377,7 @@ func testSLAAC_AutoFallsBackOntoTheAdvertisedPrefix(t *testing.T, at v6Attach) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -454,7 +453,7 @@ func testSLAAC_ASegmentWithNoRouterEndsAFormingEndpoint(t *testing.T, at v6Attac
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -521,7 +520,7 @@ func testSLAAC_TheAddressComesBackAfterAPluginRestart(t *testing.T, at v6Attach)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -555,20 +554,20 @@ func testSLAAC_TheAddressComesBackAfterAPluginRestart(t *testing.T, at v6Attach)
 	t.Cleanup(func() {
 		bg, bgCancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer bgCancel()
-		if err := cli.PluginEnable(bg, harness.PluginRef, types.PluginEnableOptions{Timeout: 30}); err != nil {
+		if _, err := cli.PluginEnable(bg, harness.PluginRef, docker.PluginEnableOptions{Timeout: 30}); err != nil {
 			if !strings.Contains(err.Error(), "already enabled") {
 				t.Logf("WARN: cleanup PluginEnable: %v", err)
 			}
 		}
 	})
 
-	if err := cli.PluginDisable(ctx, harness.PluginRef, types.PluginDisableOptions{Force: true}); err != nil {
+	if _, err := cli.PluginDisable(ctx, harness.PluginRef, docker.PluginDisableOptions{Force: true}); err != nil {
 		t.Fatalf("PluginDisable: %v", err)
 	}
 	if err := harness.WaitPluginEnabled(ctx, cli, false, 15*time.Second); err != nil {
 		t.Fatalf("plugin did not reach disabled state: %v", err)
 	}
-	if err := cli.PluginEnable(ctx, harness.PluginRef, types.PluginEnableOptions{Timeout: 30}); err != nil {
+	if _, err := cli.PluginEnable(ctx, harness.PluginRef, docker.PluginEnableOptions{Timeout: 30}); err != nil {
 		t.Fatalf("PluginEnable: %v", err)
 	}
 	if err := harness.WaitPluginEnabled(ctx, cli, true, 30*time.Second); err != nil {

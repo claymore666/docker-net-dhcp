@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	docker "github.com/docker/docker/client"
+	docker "github.com/moby/moby/client"
 )
 
 // DriverClient speaks libnetwork's remote-driver protocol to the plugin socket, to build states that need a call order
@@ -184,11 +184,11 @@ func NewEndpointID(t *testing.T) string {
 func LiveSandboxKey(t *testing.T, ctx context.Context, cli *docker.Client, containerID string) string {
 	t.Helper()
 
-	info, err := cli.ContainerInspect(ctx, containerID)
+	info, err := cli.ContainerInspect(ctx, containerID, docker.ContainerInspectOptions{})
 	if err != nil {
 		t.Fatalf("ContainerInspect(%s): %v", containerID[:12], err)
 	}
-	key := info.NetworkSettings.SandboxKey
+	key := info.Container.NetworkSettings.SandboxKey
 	if key == "" {
 		t.Fatalf("container %s reports no sandbox key; it must be running for its "+
 			"netns to exist, or this construction gives the plugin the wrong answer "+

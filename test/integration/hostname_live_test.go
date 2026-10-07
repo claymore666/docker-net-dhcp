@@ -12,8 +12,6 @@ import (
 	"testing"
 	"time"
 
-	docker "github.com/docker/docker/client"
-
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
@@ -38,7 +36,7 @@ func TestHostname_ReachesTheServersTableAfterTheClientStarts(t *testing.T) {
 		}
 	})
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
