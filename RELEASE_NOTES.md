@@ -8,6 +8,18 @@ The notes below go back to the first release of this project.
 
 [predecessor]: https://github.com/devplayer0/docker-net-dhcp
 
+## v2.5.0 (unreleased)
+
+### Fixed
+
+- `host_ifname` needs Linux 6.2 or later, and now says so. On an older
+  kernel, such as Debian 12 or Unraid 6.12 (both 6.1), the rename of the
+  up host-side link is refused with `EBUSY`, every link keeps its generated
+  name and `host_ifname_failures` rises; the reference names the minimum
+  and the plugin log names the reason. The `conflict_check` row no longer
+  says `validate_dhcp`'s probe address is released at once: its lease is
+  left to expire (#1248).
+
 ## v2.4.0
 
 The client reads and sends more DHCP options: Rapid Commit on both address
