@@ -23,7 +23,12 @@
 #                   passed integration (the PR's merge-ref run, when the
 #                   base didn't move in between). A tree that differs —
 #                   the semantic-conflict case dev-push runs exist for —
-#                   always runs.
+#                   always runs. "Already passed" means a run whose
+#                   suite jobs (`*-suite`) all concluded success: a run
+#                   that skipped its own suites also concludes success
+#                   and proves nothing (#747). The jobs lookup is one
+#                   extra call per tree-matching run, at most 15; any
+#                   lookup error leaves that run uncounted.
 #
 # Expires-when: the integration suite is cheap enough to run on every event,
 #   so skipping docs-only and duplicate trees saves nothing (#311, #312).
@@ -117,16 +122,25 @@ case "$MODE" in
         TREE="${2:-}"
         [ -n "$TREE" ] && [ -n "${GATE_REPO:-}" ] || { echo run; exit 0; }
         have_deps || { echo run; exit 0; }
-        shas=$(api_get "repos/${GATE_REPO}/actions/workflows/integration.yml/runs?status=success&per_page=15" \
-                | jq -r '.workflow_runs[].head_sha') || { echo run; exit 0; }
-        for sha in $shas; do
+        runs=$(api_get "repos/${GATE_REPO}/actions/workflows/integration.yml/runs?status=success&per_page=15" \
+                | jq -r '.workflow_runs[] | "\(.id) \(.head_sha)"') || { echo run; exit 0; }
+        while read -r id sha; do
+            [ -n "$id" ] || continue
             t=$(api_get "repos/${GATE_REPO}/commits/${sha}" | jq -r '.commit.tree.sha') || continue
-            if [ "$t" = "$TREE" ]; then
-                echo "tree ${TREE} already passed integration at ${sha} — duplicate skipped (#312)" >&2
+            [ "$t" = "$TREE" ] || continue
+            # A run whose own gate skipped also concludes success, with
+            # every suite job skipped. Only a run whose suite jobs all
+            # succeeded is evidence (#747).
+            ran=$(api_get "repos/${GATE_REPO}/actions/runs/${id}/jobs?per_page=100" \
+                  | jq -r '.total_count == (.jobs | length)
+                           and ([.jobs[] | select(.name | endswith("-suite"))]
+                                | length > 0 and all(.conclusion == "success"))') || continue
+            if [ "$ran" = "true" ]; then
+                echo "tree ${TREE} already passed integration at ${sha} (run ${id}) — duplicate skipped (#312)" >&2
                 echo skip
                 exit 0
             fi
-        done
+        done <<< "$runs"
         echo run
         ;;
     *)

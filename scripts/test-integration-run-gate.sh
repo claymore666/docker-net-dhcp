@@ -93,10 +93,19 @@ esac'
 got=$(PATH="$STUB_DIR:$PATH" bash "$GATE" pr 99 2>/dev/null)
 check "pr mode still skips a paginated all-md diff" skip "$got"
 
-# push mode: one prior run whose commit has a MATCHING tree -> skip
+# push mode: a candidate counts only when its suite jobs ran and passed
+# (#747). A run whose own gate skipped also concludes success, with the
+# real skipped matrix job named literally "${{ matrix.suite }}-suite"
+# (measured on a gate-skipped run), so a skipped run must not count.
+RAN_JOBS='{"total_count":3,"jobs":[{"name":"build","conclusion":"success"},{"name":"main-1-suite","conclusion":"success"},{"name":"failure-1-suite","conclusion":"success"}]}'
+# shellcheck disable=SC2016  # the literal template text is the measured job name
+SKIPPED_JOBS='{"total_count":3,"jobs":[{"name":"gate","conclusion":"success"},{"name":"${{ matrix.suite }}-suite","conclusion":"skipped"},{"name":"integration","conclusion":"success"}]}'
+
+# push mode: one prior run whose commit has a MATCHING tree, suites ran -> skip
 make_curl 'case "$*" in
-  *actions/workflows*) printf "{\"workflow_runs\":[{\"head_sha\":\"cafe1234\"}]}" ;;
+  *actions/workflows*) printf "{\"workflow_runs\":[{\"id\":11,\"head_sha\":\"cafe1234\"}]}" ;;
   *commits/cafe1234*) printf "{\"commit\":{\"tree\":{\"sha\":\"deadbeeftree\"}}}" ;;
+  *actions/runs/11/jobs*) printf '"'$RAN_JOBS'"' ;;
   *) exit 22 ;;
 esac'
 got=$(PATH="$STUB_DIR:$PATH" bash "$GATE" push deadbeeftree 2>/dev/null)
@@ -106,6 +115,67 @@ check "push mode skips an already-passed tree" skip "$got"
 got=$(PATH="$STUB_DIR:$PATH" bash "$GATE" push othertree000 2>/dev/null)
 check "push mode runs a novel tree" run "$got"
 
+# push mode: matching tree but the run's suite jobs were skipped -> run
+make_curl 'case "$*" in
+  *actions/workflows*) printf "{\"workflow_runs\":[{\"id\":11,\"head_sha\":\"cafe1234\"}]}" ;;
+  *commits/cafe1234*) printf "{\"commit\":{\"tree\":{\"sha\":\"deadbeeftree\"}}}" ;;
+  *actions/runs/11/jobs*) printf '"'$SKIPPED_JOBS'"' ;;
+  *) exit 22 ;;
+esac'
+got=$(PATH="$STUB_DIR:$PATH" bash "$GATE" push deadbeeftree 2>/dev/null)
+check "push mode runs when the matching run skipped its suites" run "$got"
+
+# push mode: one suite leg skipped among successes is not "the suite ran"
+make_curl 'case "$*" in
+  *actions/workflows*) printf "{\"workflow_runs\":[{\"id\":11,\"head_sha\":\"cafe1234\"}]}" ;;
+  *commits/cafe1234*) printf "{\"commit\":{\"tree\":{\"sha\":\"deadbeeftree\"}}}" ;;
+  *actions/runs/11/jobs*) printf "{\"total_count\":2,\"jobs\":[{\"name\":\"main-1-suite\",\"conclusion\":\"success\"},{\"name\":\"main-2-suite\",\"conclusion\":\"skipped\"}]}" ;;
+  *) exit 22 ;;
+esac'
+got=$(PATH="$STUB_DIR:$PATH" bash "$GATE" push deadbeeftree 2>/dev/null)
+check "push mode runs when only some suite legs succeeded" run "$got"
+
+# push mode: a run with no suite job at all (build only) proves nothing
+make_curl 'case "$*" in
+  *actions/workflows*) printf "{\"workflow_runs\":[{\"id\":11,\"head_sha\":\"cafe1234\"}]}" ;;
+  *commits/cafe1234*) printf "{\"commit\":{\"tree\":{\"sha\":\"deadbeeftree\"}}}" ;;
+  *actions/runs/11/jobs*) printf "{\"total_count\":1,\"jobs\":[{\"name\":\"build\",\"conclusion\":\"success\"}]}" ;;
+  *) exit 22 ;;
+esac'
+got=$(PATH="$STUB_DIR:$PATH" bash "$GATE" push deadbeeftree 2>/dev/null)
+check "push mode runs when the run has no suite job" run "$got"
+
+# push mode: a truncated jobs page cannot be judged -> run
+make_curl 'case "$*" in
+  *actions/workflows*) printf "{\"workflow_runs\":[{\"id\":11,\"head_sha\":\"cafe1234\"}]}" ;;
+  *commits/cafe1234*) printf "{\"commit\":{\"tree\":{\"sha\":\"deadbeeftree\"}}}" ;;
+  *actions/runs/11/jobs*) printf "{\"total_count\":150,\"jobs\":[{\"name\":\"main-1-suite\",\"conclusion\":\"success\"}]}" ;;
+  *) exit 22 ;;
+esac'
+got=$(PATH="$STUB_DIR:$PATH" bash "$GATE" push deadbeeftree 2>/dev/null)
+check "push mode runs when the jobs page is truncated" run "$got"
+
+# push mode: jobs lookup fails for the matching run -> run (fail-open)
+make_curl 'case "$*" in
+  *actions/workflows*) printf "{\"workflow_runs\":[{\"id\":11,\"head_sha\":\"cafe1234\"}]}" ;;
+  *commits/cafe1234*) printf "{\"commit\":{\"tree\":{\"sha\":\"deadbeeftree\"}}}" ;;
+  *) exit 22 ;;
+esac'
+got=$(PATH="$STUB_DIR:$PATH" bash "$GATE" push deadbeeftree 2>/dev/null)
+check "push mode fails open when the jobs lookup fails" run "$got"
+
+# push mode: a skipped run first, a run that ran second, same tree -> skip
+make_curl 'case "$*" in
+  *actions/workflows*) printf "{\"workflow_runs\":[{\"id\":11,\"head_sha\":\"cafe1234\"},{\"id\":12,\"head_sha\":\"beef5678\"}]}" ;;
+  *commits/cafe1234*) printf "{\"commit\":{\"tree\":{\"sha\":\"deadbeeftree\"}}}" ;;
+  *commits/beef5678*) printf "{\"commit\":{\"tree\":{\"sha\":\"deadbeeftree\"}}}" ;;
+  *actions/runs/11/jobs*) printf '"'$SKIPPED_JOBS'"' ;;
+  *actions/runs/12/jobs*) printf '"'$RAN_JOBS'"' ;;
+  *) exit 22 ;;
+esac'
+got=$(PATH="$STUB_DIR:$PATH" bash "$GATE" push deadbeeftree 2>/dev/null)
+check "push mode skips on a later run that ran after a skipped one" skip "$got"
+
 # push mode: runs list fails -> run (fail-open)
 make_curl 'exit 22'
 got=$(PATH="$STUB_DIR:$PATH" bash "$GATE" push deadbeeftree 2>/dev/null)
@@ -113,7 +183,7 @@ check "push mode fails open on API error" run "$got"
 
 # push mode: per-commit lookup fails for the only candidate -> run
 make_curl 'case "$*" in
-  *actions/workflows*) printf "{\"workflow_runs\":[{\"head_sha\":\"cafe1234\"}]}" ;;
+  *actions/workflows*) printf "{\"workflow_runs\":[{\"id\":11,\"head_sha\":\"cafe1234\"}]}" ;;
   *) exit 22 ;;
 esac'
 got=$(PATH="$STUB_DIR:$PATH" bash "$GATE" push deadbeeftree 2>/dev/null)
