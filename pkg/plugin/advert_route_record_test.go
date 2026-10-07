@@ -145,6 +145,16 @@ func TestReconcileAdvertisedRoutes_NoRouterHeardYetWithdrawsNothing(t *testing.T
 	}
 }
 
+func TestReconcileAdvertisedRoutes_ARouterAnnouncingNothingWithdrawsTheRecord(t *testing.T) {
+	m, f := joinManagerWithRoutes(t, DHCPNetworkOptions{IPv6: true})
+	if err := m.reconcileAdvertisedRoutes(dhcp.Info{RouterSeen: true}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if got := destinations(f.deleted); len(got) != 1 || got[0] != "2001:db8:1::/48" {
+		t.Errorf("deleted %v after a router announced no route (RFC 4191 section 2.3)", got)
+	}
+}
+
 func v6LinkRoute(t *testing.T, dst, gw string, proto netlink.RouteProtocol) netlink.Route {
 	return netlink.Route{Dst: cidr(t, dst), Gw: net.ParseIP(gw), Protocol: proto}
 }
