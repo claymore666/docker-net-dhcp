@@ -42,8 +42,8 @@ so `docker plugin upgrade` from v2.4.0 asks for nothing new.
 | What changed | What it does to you |
 | --- | --- |
 | `api_version` on `/Plugin.Health` reports the API version the plugin negotiated with the engine, up to 1.56 on Docker 29.x where it read 1.51 (#178) | A dashboard or alert that compares it with `1.51` needs updating |
-| The plugin's User-Agent toward the engine is `moby-client/<version>` (#178) | A socket proxy that allows requests by user agent must allow it |
-| `docker network create` refuses five option values that failed every container: a `gateway` that is not a bare unicast IPv4 address, a `vendor_class` over 255 octets, a `client_id` over 254, a negative `lease_timeout`, and an `mtu` below 1280 with IPv6 on (#1240) | A create command with one of them now fails and names the option. Networks created earlier keep loading |
+| The plugin's User-Agent toward the engine is `moby-client/<version> <os>/<arch>` (#178) | A socket proxy that allows requests by user agent must allow it |
+| `docker network create` refuses five option values that failed every container: a `gateway` that is not a bare unicast IPv4 address (loopback and broadcast are refused too), a `vendor_class` over 255 octets, a `client_id` over 254, a negative `lease_timeout`, and an `mtu` below 1280 with IPv6 on (#1240) | A create command with one of them now fails and names the option. Networks created earlier keep loading |
 | The per-endpoint `ip` driver option matches its key in any letter case, and an empty value counts as not set (#1245) | A container connected with `--driver-opt IP=<address>` or Compose `IP:` gets that address where it got a DHCP lease before. Two spellings with different values are refused |
 | A macvlan or ipvlan child, and the container end of a bridge-mode veth, has IPv6 switched off until it moves into the container, on a network without IPv6 (#1247) | The host no longer takes a SLAAC address and a default route through a link that is about to leave it |
 | With `propagate_dns` on a dual-stack network, `/etc/resolv.conf` carries both families' resolvers and search domains, IPv4 first (#1250) | The file no longer holds only the family that wrote last |
@@ -123,11 +123,12 @@ so `docker plugin upgrade` from v2.4.0 asks for nothing new.
   a link another network still uses (#1251).
 - `docker run --ip <address>` no longer stays refused with "held by another
   endpoint" after a container on an IPAM network was removed while the
-  plugin was disabled or down. At start-up the plugin hands such an
-  address back once Docker runs no container with its MAC and the minute
-  it keeps a removed lease for a restart has passed, so `--ip` for that
-  address can still be refused for about a minute after the plugin
-  starts, until the old lease is released. A reservation whose lease
+  plugin was disabled or down. At start-up the plugin gives such a record
+  up once Docker runs no container with its MAC, and the `--ip` request
+  reaches the DHCP server at once. The server may still refuse the address
+  while the old lease is live there: with `release_lease=on_remove` the
+  plugin hands that lease back about a minute after start-up, under the
+  default the server keeps it until it expires. A reservation whose lease
   record cannot be written now fails before any address is requested, so
   no lease is left without a record (#1246).
 - With `propagate_dns` on a dual-stack network, the container's
