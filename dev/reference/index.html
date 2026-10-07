@@ -4565,6 +4565,12 @@ already parse it were not told to expect a new type.</p>
 <td>(v1.4.0+) Attaches cancelled because <code>Leave</code> arrived while the attach was still running, since the endpoint was being torn down. Not a fault: there is no running container missing a renewal client. Distinguished from <code>join_start_failures</code> by direct evidence instead of inference, since the plugin cancelled the attach itself and knows why (#406).</td>
 </tr>
 <tr>
+<td><code>join_aborted_link_withdrawn</code></td>
+<td>no</td>
+<td>n/a</td>
+<td><em>(v2.5.0+)</em> Attaches abandoned because the container's link left its sandbox after <code>Join</code>: the plugin had found it there, and on the failure the kernel no longer has it. Docker does this when it refuses the attach after <code>Join</code>, for example a second network in a subnet the container already routes (<a href="https://github.com/claymore666/docker-net-dhcp/issues/847">#847</a>): it moves the link back out and the container does not start. Not a fault: the link is gone, so no renewal client is owed, and this never flips <code>healthy</code>. A link that is still in the sandbox when the attach fails, up or not, stays <code>join_start_failures</code>. Before v2.5.0 this case was counted there, and turned <code>healthy</code> false for a container that never ran (<a href="https://github.com/claymore666/docker-net-dhcp/issues/1236">#1236</a>).</td>
+</tr>
+<tr>
 <td><code>tombstone_write_failures</code></td>
 <td>yes</td>
 <td>fail</td>
