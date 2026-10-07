@@ -129,10 +129,11 @@ func (p *Plugin) createIPAMEndpoint(ctx context.Context, callStart time.Time, r 
 	}
 
 	p.rememberEndpoint(r.EndpointID, endpointFingerprint{
-		MAC:    mac.String(),
-		IPv4:   want.Addr().String(),
-		IPv6:   v6IP,
-		Ifname: p.hintIfname(r.EndpointID),
+		MAC:       mac.String(),
+		IPv4:      want.Addr().String(),
+		IPv6:      v6IP,
+		Ifname:    p.hintIfname(r.EndpointID),
+		RecordKey: endpointRecordKey(mode, r.EndpointID, mac),
 	}, hostname)
 
 	log.WithFields(log.Fields{

@@ -453,8 +453,10 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 	}
 
 	var hintMAC, hintGW, hintIPv4, hintIPv6 string
+	var recordKey net.HardwareAddr
 	p.updateJoinHint(r.EndpointID, func(h *joinHint) {
 		hintMAC = h.MacAddress.String()
+		recordKey = endpointRecordKey(mode, r.EndpointID, h.MacAddress)
 		hintGW = h.Gateway
 		if h.IPv4 != nil {
 			hintIPv4 = h.IPv4.IP.String()
@@ -464,9 +466,13 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 		}
 	})
 
-	if mode == ModeMacvlan {
-		p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: hintMAC, IPv4: hintIPv4, IPv6: hintIPv6, Ifname: p.hintIfname(r.EndpointID)}, hostname)
+	// No MAC on ipvlan, whose children share the parent's, so it gets no tombstone, only the release (#1249).
+	fpMAC := hintMAC
+	if mode == ModeIPvlan {
+		fpMAC = ""
 	}
+	p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: fpMAC, IPv4: hintIPv4, IPv6: hintIPv6,
+		Ifname: p.hintIfname(r.EndpointID), RecordKey: recordKey}, hostname)
 
 	log.WithFields(log.Fields{
 		"network":  shortID(r.NetworkID),
