@@ -1,15 +1,14 @@
 # The label taxonomy (#715).
 #
 # THIS FILE IS THE DECLARATION. Before it existed, the taxonomy lived in
-# nobody's file: `.github/issue-labeler.yml` and the `ALLOWED_LABELS` block
-# in `.github/workflows/issue-labeler.yml` are inputs to the labeller, not a
-# statement of what may exist, so a label absent from both was not forbidden
+# nobody's file: `.github/issue-labeler.yml` is an input to the labeller, not a
+# statement of what may exist, so a label absent from it was not forbidden
 # — only invisible. The taxonomy was consolidated once and rotted twice, and
 # both rots were found by a person reading the tracker.
 #
 # `scripts/check-label-taxonomy.sh` reads this file:
-#   --static  every entry is well formed, and the labeller's two lists are
-#             subsets of it. A property of the tree, so it gates pull requests.
+#   --static  every entry is well formed, and the labeller's rule map is a
+#             subset of it. A property of the tree, so it gates pull requests.
 #   --live    the tracker's labels match this file in BOTH directions, and no
 #             open issue violates the rules below. Needs the API, so it runs
 #             on a schedule.

@@ -1,6 +1,6 @@
 # Fixture for check-label-taxonomy.sh --static (#393, #745): <title><TAB><labels>
 # '-' means the rule pass must NOT classify it — those titles are the
-# ones that fall through to the model pass, and that fall-through is
+# ones left unlabelled for the maintainer, and that fall-through is
 # just as much a behaviour worth pinning as a match is.
 # Titles are real ones from this repo's history where possible.
 
@@ -22,7 +22,7 @@ docs(internals): a lapsed lease is not an event the plugin receives	documentatio
 doc: fix a stale flag name in the reference	documentation
 refactor(udhcpc): fold the event builder into the client wrapper	refactor
 
-# --- must fall through to the model pass ---
+# --- must stay unlabelled ---
 Health floor cannot tell an absent counter from a zero one	-
 recovery_failed counts a container that exited before recovery reached it	-
 DHCPv4 lease is not released on a fast docker restart	-
