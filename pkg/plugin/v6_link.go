@@ -108,14 +108,14 @@ var errV6LinkNameUnstable = errors.New("the container link kept being renamed wh
 // on that thread, and /proc/net would answer for the leader's (#1065).
 var (
 	v6LinkNameByIndex = func(index int) (string, error) {
-		l, err := netlink.LinkByIndex(index)
+		l, err := nlLinkByIndexCurNS(index)
 		if err != nil {
 			return "", err
 		}
 		return l.Attrs().Name, nil
 	}
 	v6LinkIndexByName = func(name string) (int, error) {
-		l, err := netlink.LinkByName(name)
+		l, err := nlLinkByName(name)
 		if err != nil {
 			return 0, err
 		}
