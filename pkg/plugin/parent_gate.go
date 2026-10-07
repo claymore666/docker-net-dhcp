@@ -196,7 +196,7 @@ func (g *parentGuard) Unlock() {
 
 // addChildLink takes an unused guard so the gate is checked by the compiler; parentless bridge links bypass it (#558).
 func addChildLink(_ *parentGuard, link netlink.Link) error {
-	return netlink.LinkAdd(link)
+	return nlLinkAdd(link)
 }
 
 func (p *Plugin) lockParent(ctx context.Context, parent, kind, op string) *parentGuard {

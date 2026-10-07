@@ -44,6 +44,13 @@ explicit goal — see "Becoming a maintainer" below.
 - Releases are deliberate, maintainer-initiated steps; merging a PR is
   not a release. The procedure is documented in the release runbook.
 
+The tracker automation (the label, milestone and issue-state workflows and
+their gates) is frozen at its current size, because each line of it
+automates coordination between people and this project has one
+maintainer (#748). It is unfrozen when there is a second maintainer or a
+first external contributor, the growth this document names as a goal.
+Until then a change to it is a deletion or a fix.
+
 ## Becoming a maintainer
 
 Sustained, high-quality contribution is the path to commit/maintainer

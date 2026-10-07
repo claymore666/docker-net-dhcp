@@ -54,7 +54,7 @@ func refuseEnslavedParent(parent netlink.Link, own int) error {
 		return nil
 	}
 	name := fmt.Sprintf("index %d", master)
-	if m, err := netlink.LinkByIndex(master); err == nil {
+	if m, err := nlLinkByIndexCurNS(master); err == nil {
 		name = m.Attrs().Name
 	}
 	return fmt.Errorf("parent %v is already a port of %v, and the kernel would move it out without an error; remove it from %v or choose another NIC: %w",
@@ -329,7 +329,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 	)
 
 	if err := func() error {
-		fresh, err := netlink.LinkByName(la.Name)
+		fresh, err := nlEndpointLinkByName(la.Name)
 		if err != nil {
 			return fmt.Errorf("failed to re-fetch %v link: %w", mode, err)
 		}
@@ -448,7 +448,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 		// Best-effort rollback: a link LinkDel misses goes with its netns.
 		p.closeRecord(recordID)
 		p.closeRecord(recordID6)
-		_ = netlink.LinkDel(link)
+		_ = nlLinkDel(link)
 		return res, err
 	}
 
