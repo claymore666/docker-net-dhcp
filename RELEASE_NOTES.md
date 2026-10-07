@@ -25,6 +25,13 @@ The notes below go back to the first release of this project.
   that restarted onto a held record keeps it out of the release; and a
   network removal running beside the periodic pass releases each address
   once, not twice (#1237).
+- An IPv6 route a router advertises (RFC 4191 Route Information) is now
+  added again at the next advertisement when adding it failed, and removed
+  again when removing it failed; before, one failed write left the
+  container wrong until it restarted. A route Join installed, or one on
+  the container's link when the plugin restarted, is now removed when the
+  router stops advertising it. Host routes Join copied into the container
+  stay, and nothing is removed before a router has been heard (#1239).
 - `host_ifname` needs Linux 6.2 or later, and now says so. On an older
   kernel, such as Debian 12 or Unraid 6.12 (both 6.1), the rename of the
   up host-side link is refused with `EBUSY`, every link keeps its generated
