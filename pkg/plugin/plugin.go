@@ -1399,6 +1399,7 @@ func (p *Plugin) recoveredManager(networkID, endpointID string, mac net.Hardware
 	m.setLastIP(false, ipv4)
 	m.setLastIP(true, ipv6)
 	m.MacAddress = mac
+	m.recovered = true
 	if ipv6 == nil || opts.SkipRoutes || !opts.ipv6Enabled() {
 		return m
 	}

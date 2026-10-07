@@ -76,10 +76,10 @@ func stubEndpointKernel(t *testing.T) *endpointKernel {
 		v6:   dhcp.Info{IP: "2001:db8::57/128"},
 	}
 	prevBy, prevEp, prevAdd, prevUp, prevMAC := nlLinkByName, nlEndpointLinkByName, nlLinkAdd, nlLinkSetUp, nlLinkSetHardwareAddr
-	prevMaster, prevDel, prevMTU, prevGet := nlLinkSetMaster, nlLinkDel, nlHandleLinkSetMTU, dhcpGetIP
+	prevMaster, prevDel, prevMTU, prevGet, prevAlias := nlLinkSetMaster, nlLinkDel, nlHandleLinkSetMTU, dhcpGetIP, nlLinkSetAlias
 	t.Cleanup(func() {
 		nlLinkByName, nlEndpointLinkByName, nlLinkAdd, nlLinkSetUp, nlLinkSetHardwareAddr = prevBy, prevEp, prevAdd, prevUp, prevMAC
-		nlLinkSetMaster, nlLinkDel, nlHandleLinkSetMTU, dhcpGetIP = prevMaster, prevDel, prevMTU, prevGet
+		nlLinkSetMaster, nlLinkDel, nlHandleLinkSetMTU, dhcpGetIP, nlLinkSetAlias = prevMaster, prevDel, prevMTU, prevGet, prevAlias
 	})
 	byName := func(name string) (netlink.Link, error) {
 		if err := k.step("byname", name); err != nil {
@@ -120,6 +120,7 @@ func stubEndpointKernel(t *testing.T) *endpointKernel {
 		return k.step("mac", l.Attrs().Name)
 	}
 	nlLinkSetMaster = func(l, master netlink.Link) error { return k.step("master", l.Attrs().Name+"->"+master.Attrs().Name) }
+	nlLinkSetAlias = func(netlink.Link, string) error { return nil }
 	nlHandleLinkSetMTU = func(_ *netlink.Handle, l netlink.Link, _ int) error { return k.step("mtu", l.Attrs().Name) }
 	nlLinkDel = func(l netlink.Link) error {
 		k.calls = append(k.calls, "del:"+l.Attrs().Name)
