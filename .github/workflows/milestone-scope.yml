@@ -19,7 +19,7 @@ name: Milestone scope
 # anybody touching the tree: somebody sets a milestone in the web UI and
 # the next unrelated PR goes red, charging the cost to whoever pushed
 # next. It would fail on a tracker API blip too. Same reasoning, and the
-# same accepted cost, as the Starter tasks workflow.
+# same accepted cost, as scripts/check-good-first-issues.sh --live.
 #
 # A RED RUN IS A PROMPT TO LOOK, NOT PROOF. The tracker's issue-list
 # index lags the issue itself by up to about a minute, so a run that
