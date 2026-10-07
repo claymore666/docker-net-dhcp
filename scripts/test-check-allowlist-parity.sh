@@ -137,6 +137,17 @@ else
     no "both lists empty should pass with an explicit message (got $(verdict "$d"))"
 fi
 
+# The other way the both-empty pass could be wrong: the config names a GHSA
+# in a shape the parser does not read (flow style, quoted), so it reads zero
+# next to an empty allowlist. That is an unreadable config, not an empty one.
+d="$TMP/unreadshape"; write_case "$d" \
+'allow-ghsas: [GHSA-x744-4wpc-v9h2]' \
+'# every entry was removed' \
+"$MAP"
+[ "$(verdict "$d")" = 2 ] \
+    && ok "a GHSA in a shape the parser does not read, beside an empty allowlist, is rc2" \
+    || no "an unread GHSA beside an empty allowlist must not pass (got $(verdict "$d"))"
+
 d="$TMP/emptymap"; write_case "$d" \
 'allow-ghsas:
   - GHSA-x744-4wpc-v9h2' \
