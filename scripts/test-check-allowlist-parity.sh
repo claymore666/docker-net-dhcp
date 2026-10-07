@@ -123,6 +123,20 @@ d="$TMP/emptyallow"; write_case "$d" \
     && ok "an allowlist that parses to zero live entries is rc2, not wholesale drift" \
     || no "a zero-entry allowlist should exit 2 (got $(verdict "$d"))"
 
+# Nothing accepted on either side is the end state of the allowlists, not
+# a failed parse: the config names no GHSA, so the empty allowlist is
+# the answer and the gate says so on its PASS line (#178).
+d="$TMP/bothempty"; write_case "$d" \
+'# every acceptance was withdrawn' \
+'# every entry was removed
+#   GO-2026-4887 removed 2026-10-07.' \
+"$MAP"
+if [ "$(verdict "$d")" = 0 ] && bash "$GATE" "$d/config.yml" "$d/allowlist.txt" "$d/map.txt" 2>&1 | grep -F 'allow-ghsas is empty; 0 live' >/dev/null; then
+    ok "both lists empty passes and says so, rather than passing silently"
+else
+    no "both lists empty should pass with an explicit message (got $(verdict "$d"))"
+fi
+
 d="$TMP/emptymap"; write_case "$d" \
 'allow-ghsas:
   - GHSA-x744-4wpc-v9h2' \

@@ -85,11 +85,15 @@ mapfile -t LIVE_GO < <(
         | sort -u
 )
 
-if [ "${#LIVE_GO[@]}" -eq 0 ]; then
-    echo "::error title=Nothing to inspect::$ALLOWLIST parses to zero live entries." \
-         "Either every acceptance was removed — in which case allow-ghsas must be" \
-         "empty too and this gate should be told so — or the parse is wrong and" \
-         "every GHSA below would be reported as drift." >&2
+# Both lists empty is the state the project is working toward: nothing is
+# accepted anywhere (#178 removed the last two). It is told apart from a
+# broken parse of the allowlist by the config still naming GHSAs, which a
+# parse that lost every entry would report as wholesale drift.
+if [ "${#LIVE_GO[@]}" -eq 0 ] && [ "${#GHSAS[@]}" -gt 0 ]; then
+    echo "::error title=Nothing to inspect::$ALLOWLIST parses to zero live entries" \
+         "while allow-ghsas still names ${#GHSAS[@]} GHSA(s). Either every acceptance" \
+         "was removed — in which case allow-ghsas must be empty too — or the parse" \
+         "is wrong and every GHSA below would be reported as drift." >&2
     exit 2
 fi
 
