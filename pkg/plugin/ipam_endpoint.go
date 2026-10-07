@@ -257,7 +257,7 @@ func (p *Plugin) addIPAMEndpointLink(ctx context.Context, endpointID, mode strin
 			remove()
 			return nil, err
 		}
-		if _, err := linkUpAwaitingAddress(ctx, link, childLinkUpBudget); err != nil {
+		if _, err := upChildLink(ctx, opts, link, childLinkUpBudget); err != nil {
 			remove()
 			return nil, fmt.Errorf("failed to set %v link up: %w", mode, err)
 		}
@@ -297,6 +297,7 @@ func (p *Plugin) addIPAMEndpointLink(ctx context.Context, endpointID, mode strin
 		remove()
 		return nil, fmt.Errorf("failed to find container side of veth pair: %w", err)
 	}
+	childIPv6OffFor(opts, ctrName)
 	if err := nlLinkSetUp(ctrLink); err != nil {
 		remove()
 		return nil, fmt.Errorf("failed to set container side link of veth pair up: %w", err)

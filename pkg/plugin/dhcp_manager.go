@@ -137,6 +137,11 @@ type dhcpManager struct {
 	// Lifetime 0 removes one (RFC 4861 section 6.3.4, #1088). Used by the v6 consumer goroutine only.
 	onLinkInstalled map[string]bool
 
+	// dnsMu guards both families' last applied resolvers and is held across the write (#1250).
+	dnsMu sync.Mutex
+	dnsV4 familyDNS
+	dnsV6 familyDNS
+
 	// mtuMu guards each family's last accepted MTU, the only state both family goroutines write.
 	mtuMu sync.Mutex
 	mtuV4 int
@@ -946,11 +951,26 @@ func (m *dhcpManager) logObservedOptions(v6 bool, info dhcp.Info) {
 // propagateDNS applies option 6, or on v6 option 23 merged with RFC 8106 RDNSS and DNSSL (section 5.3.1), when
 // opted in; it never fails the renewal. An empty list is a no-op, as RFC 8106 section 6.1 keeps resolvers past the
 // router lifetime, and writeContainerResolvConf refuses a file with no nameserver. A shorter non-empty list is
-// applied in full (RFC 4861 section 6.3.4, #821).
+// applied in full (RFC 4861 section 6.3.4, #821). Each write carries both families' servers and domains (#1250).
 func (m *dhcpManager) propagateDNS(v6 bool, info dhcp.Info) {
 	if !m.opts.PropagateDNS || len(info.DNSServers) == 0 {
 		return
 	}
+
+	m.dnsMu.Lock()
+	defer m.dnsMu.Unlock()
+	fam := familyDNS{servers: info.DNSServers, search: resolvSafe(info.SearchList)}
+	if len(fam.search) == 0 {
+		if d := usableSearchDomain(info.Domain); d != "" {
+			fam.search = []string{d}
+		}
+	}
+	if v6 {
+		m.dnsV6 = fam
+	} else {
+		m.dnsV4 = fam
+	}
+	servers, search := mergeFamilyDNS(m.dnsV4, m.dnsV6)
 
 	ctx, cancel := context.WithTimeout(context.Background(), dnsPropagateTimeout)
 	pid, ctrID, err := m.findContainerPID(ctx)
@@ -969,19 +989,19 @@ func (m *dhcpManager) propagateDNS(v6 bool, info dhcp.Info) {
 		iface = m.ctrLink.Attrs().Name
 	}
 
-	if err := writeContainerResolvConf(pid, ctrID, info.DNSServers, info.SearchList, info.Domain, iface); err != nil {
+	if err := resolvConfWriter(pid, ctrID, servers, search, "", iface); err != nil {
 		m.noteDNSPropagationPIDMismatch(err)
 		log.
 			WithError(err).
 			WithFields(m.logFields(v6)).
-			WithField("dns", info.DNSServers).
+			WithField("dns", servers).
 			Error("Failed to write container resolv.conf")
 		return
 	}
 
 	log.
 		WithFields(m.logFields(v6)).
-		WithField("dns", info.DNSServers).
+		WithField("dns", servers).
 		Debug("Propagated DHCP DNS servers to container resolv.conf")
 }
 

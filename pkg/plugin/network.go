@@ -946,7 +946,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	return res, err
 }
 
-func (p *Plugin) createEndpoint(ctx context.Context, r CreateEndpointRequest) (CreateEndpointResponse, error) {
+func (p *Plugin) createEndpoint(ctx context.Context, r CreateEndpointRequest) (_ CreateEndpointResponse, err error) {
 	// The daemon's deadline on this call comes first; see v6AcquisitionDeadline.
 	callStart := endpointCallStart()
 	log.WithField("options", r.Options).Debug("CreateEndpoint options")
@@ -1020,6 +1020,12 @@ func (p *Plugin) createEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	requestedV6 := explicitV6
 	if effectiveMAC == "" {
 		if mac, ip, ipv6, ok := p.consumeTombstone(r.NetworkID, hostname); ok {
+			// A failed create hands it back, or the retry leases a new MAC and address (#657).
+			defer func() {
+				if err != nil {
+					p.addTombstone(r.NetworkID, hostname.name, mac, ip, ipv6)
+				}
+			}()
 			effectiveMAC = mac
 			if requestedIP == "" {
 				requestedIP = ip
@@ -1079,11 +1085,13 @@ func (p *Plugin) createEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		if err != nil {
 			return fmt.Errorf("failed to find container side of veth pair: %w", err)
 		}
+		childIPv6OffFor(opts, ctrName)
 		if err := nlLinkSetUp(ctrLink); err != nil {
 			return fmt.Errorf("failed to set container side link of veth pair up: %w", err)
 		}
 
-		// Pin the container-side MAC, which the kernel often resets after LinkSetMaster.
+		// Setting the random MAC marks it assigned, so udev's MACAddressPolicy=persistent leaves it alone, as pinChildMAC
+		// does for a child (#103); LinkSetMaster below enslaves the host end, not this one.
 		if effectiveMAC == "" {
 			if err := nlLinkSetHardwareAddr(ctrLink, ctrLink.Attrs().HardwareAddr); err != nil {
 				return fmt.Errorf("failed to set container side of veth pair's MAC address: %w", err)
@@ -1200,10 +1208,11 @@ func (p *Plugin) createEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 
 		return nil
 	}(); err != nil {
-		// Best-effort veth cleanup on failure.
 		p.closeRecord(recordID)
 		p.closeRecord(recordID6)
-		_ = nlLinkDel(hostLink)
+		if delErr := nlLinkDel(hostLink); delErr != nil {
+			log.WithError(delErr).WithField("link", hostName).Warn("Endpoint link cleanup failed; remove it with `ip link del`")
+		}
 		return res, err
 	}
 

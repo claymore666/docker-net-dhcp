@@ -504,9 +504,9 @@ func TestLeaseRenewIPv6_HonorsT1(t *testing.T) {
 	}
 }
 
-// resolv.conf is last-writer-wins between the families, so the v6 nameserver's appearance is polled.
+// The v6 nameserver is written from the v6 bound event, after Join returns, so its appearance is polled; the v4 one stays beside it (#1250).
 
-// TestIPv6_DNS6Propagation checks that propagate_dns=true writes the DHCPv6 option-23 server into resolv.conf.
+// TestIPv6_DNS6Propagation checks that propagate_dns=true writes the DHCPv6 option-23 server into resolv.conf beside the DHCPv4 one.
 func TestIPv6_DNS6Propagation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -529,12 +529,13 @@ func TestIPv6_DNS6Propagation(t *testing.T) {
 		var out string
 		for time.Now().Before(deadline) {
 			out = harness.ExecOutput(t, ctx, id, "cat", "/etc/resolv.conf")
-			if strings.Contains(out, harness.TestDNS6Server) {
+			if strings.Contains(out, harness.TestDNS6Server) && strings.Contains(out, harness.TestDNSServer) {
 				return
 			}
 			time.Sleep(500 * time.Millisecond)
 		}
-		t.Errorf("DHCPv6 DNS server %s never appeared in resolv.conf\nlast contents:\n%s", harness.TestDNS6Server, out)
+		t.Errorf("DHCPv6 DNS server %s and DHCPv4 DNS server %s never both appeared in resolv.conf\nlast contents:\n%s",
+			harness.TestDNS6Server, harness.TestDNSServer, out)
 	})
 
 	t.Run("default leaves resolv.conf alone", func(t *testing.T) {
