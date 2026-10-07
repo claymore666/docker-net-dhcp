@@ -25,13 +25,6 @@ The notes below go back to the first release of this project.
   that restarted onto a held record keeps it out of the release; and a
   network removal running beside the periodic pass releases each address
   once, not twice (#1237).
-- A per-endpoint `ip` driver option written with another letter case, such
-  as `docker network connect --driver-opt IP=192.168.0.50` or `IP:` under
-  Compose `driver_opts:`, was ignored and the container got an address from
-  DHCP with no message. The key now matches without regard to case, and two
-  spellings with different values are refused. An empty `ip` value, as
-  Compose sends for `ip: "${IP}"` with `IP` unset, now counts as not set
-  and the container gets a DHCP lease instead of failing to start (#1245).
 
 ## v2.4.0
 
