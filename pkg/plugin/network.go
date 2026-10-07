@@ -942,7 +942,7 @@ func (p *Plugin) createEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	if _, err := p.ensureBridge(ctx, opts, "create_endpoint"); err != nil {
 		return res, err
 	}
-	bridge, err := netlink.LinkByName(opts.Bridge)
+	bridge, err := nlEndpointLinkByName(opts.Bridge)
 	if err != nil {
 		return res, fmt.Errorf("failed to get bridge interface: %w", err)
 	}
@@ -992,7 +992,7 @@ func (p *Plugin) createEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		hostLink.PeerHardwareAddr = addr
 	}
 
-	if err := netlink.LinkAdd(hostLink); err != nil {
+	if err := nlLinkAdd(hostLink); err != nil {
 		return res, fmt.Errorf("failed to create veth pair: %w", err)
 	}
 	// Hoisted, so a failed CreateEndpoint closes the CREATED record it opened in the append-only journal (#899).
@@ -1008,21 +1008,21 @@ func (p *Plugin) createEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		if err := applyEndpointMTU(opts.MTU, hostLink, &netlink.Veth{LinkAttrs: netlink.LinkAttrs{Name: ctrName}}); err != nil {
 			return err
 		}
-		if err := netlink.LinkSetUp(hostLink); err != nil {
+		if err := nlLinkSetUp(hostLink); err != nil {
 			return fmt.Errorf("failed to set host side link of veth pair up: %w", err)
 		}
 
-		ctrLink, err := netlink.LinkByName(ctrName)
+		ctrLink, err := nlEndpointLinkByName(ctrName)
 		if err != nil {
 			return fmt.Errorf("failed to find container side of veth pair: %w", err)
 		}
-		if err := netlink.LinkSetUp(ctrLink); err != nil {
+		if err := nlLinkSetUp(ctrLink); err != nil {
 			return fmt.Errorf("failed to set container side link of veth pair up: %w", err)
 		}
 
 		// Pin the container-side MAC, which the kernel often resets after LinkSetMaster.
 		if effectiveMAC == "" {
-			if err := netlink.LinkSetHardwareAddr(ctrLink, ctrLink.Attrs().HardwareAddr); err != nil {
+			if err := nlLinkSetHardwareAddr(ctrLink, ctrLink.Attrs().HardwareAddr); err != nil {
 				return fmt.Errorf("failed to set container side of veth pair's MAC address: %w", err)
 			}
 		}
@@ -1031,7 +1031,7 @@ func (p *Plugin) createEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 			res.Interface.MacAddress = ctrLink.Attrs().HardwareAddr.String()
 		}
 
-		if err := netlink.LinkSetMaster(hostLink, bridge); err != nil {
+		if err := nlLinkSetMaster(hostLink, bridge); err != nil {
 			return fmt.Errorf("failed to attach host side link of veth peer to bridge: %w", err)
 		}
 
@@ -1140,7 +1140,7 @@ func (p *Plugin) createEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		// Best-effort veth cleanup on failure.
 		p.closeRecord(recordID)
 		p.closeRecord(recordID6)
-		_ = netlink.LinkDel(hostLink)
+		_ = nlLinkDel(hostLink)
 		return res, err
 	}
 
@@ -1510,7 +1510,7 @@ func joinRouteSource(opts DHCPNetworkOptions) (netlink.Link, error) {
 		}
 		return l, nil
 	}
-	l, err := netlink.LinkByName(opts.Bridge)
+	l, err := nlEndpointLinkByName(opts.Bridge)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get bridge interface: %w", err)
 	}
