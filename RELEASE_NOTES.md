@@ -25,10 +25,6 @@ The notes below go back to the first release of this project.
   that restarted onto a held record keeps it out of the release; and a
   network removal running beside the periodic pass releases each address
   once, not twice (#1237).
-- A bridge-mode `docker network create` that failed after the plugin had put
-  the parent NIC back into its own bridge no longer leaves the NIC a port of
-  that bridge. The plugin releases it again, unless another call has relied
-  on the port in the meantime (#1242).
 
 ## v2.4.0
 
