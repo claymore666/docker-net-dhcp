@@ -575,36 +575,15 @@ func (p *Plugin) saveNetworkAndBind(networkID string, opts DHCPNetworkOptions, b
 // DeleteNetwork removes the network's state and stops its managers, since libnetwork sends no Leave for stopped
 // containers (#46).
 func (p *Plugin) DeleteNetwork(r DeleteNetworkRequest) error {
-	// Release first: whether to release and by which interface are read from the options deleteOptions removes, and
-	// the tombstones keyed by this network die with it (#984).
-	if released := p.releaseNetworkRecords(r.NetworkID); released > 0 {
-		log.WithFields(log.Fields{
-			"network":  r.NetworkID,
-			"released": released,
-		}).Info("release_lease=on_remove: handed this network's still-held addresses back before removing it")
-	}
+	deleteErr := p.removeNetworkHostState(context.Background(), r.NetworkID, "delete_network")
 
 	// The binding goes here, not in ReleasePool, which libnetwork also calls for a failed create on a shared PoolID
 	// (#110).
 	p.ipamIndex.unbindNetwork(r.NetworkID)
 	p.v6Absence.forget(r.NetworkID)
-
-	// Read from disk before deleteOptions removes them; an unreadable or refused record keeps its sub-interface (#902).
-	opts, optsErr := loadOptions(r.NetworkID)
-	if optsErr == nil {
-		optsErr = validateVlanOption(opts)
-	}
-	if optsErr == nil {
-		optsErr = validateBridgeOwnOptions(opts)
-	}
-
-	if err := deleteOptions(r.NetworkID); err != nil {
-		log.WithError(err).WithField("network", r.NetworkID).
+	if deleteErr != nil {
+		log.WithError(deleteErr).WithField("network", r.NetworkID).
 			Warn("Failed to remove persisted options; harmless leftover")
-	}
-	if optsErr == nil {
-		p.retireVlanLink(context.Background(), r.NetworkID, opts, "delete_network")
-		p.retireBridge(context.Background(), r.NetworkID, opts, "delete_network")
 	}
 
 	orphaned := p.takeDHCPManagersForNetwork(r.NetworkID)
@@ -629,6 +608,33 @@ func (p *Plugin) DeleteNetwork(r DeleteNetworkRequest) error {
 
 	log.WithField("network", r.NetworkID).Info("Network deleted")
 	return nil
+}
+
+// removeNetworkHostState hands held on_remove addresses back, then removes the options and retires the vlan
+// sub-interface and bridge from the options read before they go; DeleteNetwork and the stale-network sweep share it
+// (#984, #902, #1251). It returns the options-removal error.
+func (p *Plugin) removeNetworkHostState(ctx context.Context, networkID, op string) error {
+	if released := p.releaseNetworkRecords(networkID); released > 0 {
+		log.WithFields(log.Fields{
+			"network":  networkID,
+			"released": released,
+		}).Info("release_lease=on_remove: handed this network's still-held addresses back before removing it")
+	}
+
+	opts, optsErr := loadOptions(networkID)
+	if optsErr == nil {
+		optsErr = validateVlanOption(opts)
+	}
+	if optsErr == nil {
+		optsErr = validateBridgeOwnOptions(opts)
+	}
+
+	deleteErr := deleteOptions(networkID)
+	if optsErr == nil {
+		p.retireVlanLink(ctx, networkID, opts, op)
+		p.retireBridge(ctx, networkID, opts, op)
+	}
+	return deleteErr
 }
 
 // vethPairNames tolerates a short EndpointID from a malformed response, at the cost of pair uniqueness.
@@ -1952,7 +1958,7 @@ func (p *Plugin) daemonSaysContainerGone(r JoinRequest) bool {
 	return ctr.State.Status == dContainer.StateExited || ctr.State.Status == dContainer.StateDead
 }
 
-// settleFailedAttach counts a failed attach once: endpoint left, vanished, no container, start failure (#1186).
+// settleFailedAttach counts a failed attach once: left, vanished, withdrawn, no container, start failure (#1186, #1236).
 func (p *Plugin) settleFailedAttach(r JoinRequest, m *dhcpManager, err error) {
 	fields := log.Fields{
 		"network":  shortID(r.NetworkID),
@@ -1981,6 +1987,14 @@ func (p *Plugin) settleFailedAttach(r JoinRequest, m *dhcpManager, err error) {
 			Info("Container went away during attach; no persistent client needed")
 		p.removeDHCPManagerIfSame(r.EndpointID, m)
 		// No persistent client; the one-shot's address expires on the server (#800).
+		return
+	}
+	// The engine took the located link back out of the sandbox, which it does when it refuses the attach (#1236).
+	if errors.Is(err, errContainerLinkWithdrawn) {
+		p.joinAbortedLinkWithdrawn.Add(1)
+		log.WithError(err).WithFields(fields).
+			Info("The container's link left its sandbox during attach; no persistent client needed")
+		p.removeDHCPManagerIfSame(r.EndpointID, m)
 		return
 	}
 	// No container claimed the endpoint (#566), not a plugin fault; the address is left to expire (#800).
