@@ -1859,7 +1859,7 @@ func (m *dhcpManager) locateContainerLink(ctx context.Context) error {
 		return util.ErrNotVEth
 	}
 
-	ctrIndex, err := netlink.VethPeerIndex(hostVeth)
+	ctrIndex, err := nlVethPeerIndex(hostVeth)
 	if err != nil {
 		return fmt.Errorf("failed to get container side of veth's index: %w", err)
 	}

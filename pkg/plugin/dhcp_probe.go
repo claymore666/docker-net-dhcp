@@ -44,7 +44,7 @@ func (p *Plugin) runDHCPProbe(ctx context.Context, opts DHCPNetworkOptions, pol 
 	if parent == "" {
 		return errors.New("validate_dhcp: parent NIC name is empty")
 	}
-	if _, err := netlink.LinkByName(parent); err != nil {
+	if _, err := nlLinkByName(parent); err != nil {
 		return fmt.Errorf("validate_dhcp: parent %q not found: %w", parent, err)
 	}
 
@@ -57,7 +57,7 @@ func (p *Plugin) runDHCPProbe(ctx context.Context, opts DHCPNetworkOptions, pol 
 		return fmt.Errorf("validate_dhcp: MAC generation: %w", err)
 	}
 
-	parentLink, err := netlink.LinkByName(parent)
+	parentLink, err := nlLinkByName(parent)
 	if err != nil {
 		return fmt.Errorf("validate_dhcp: relookup parent: %w", err)
 	}
@@ -71,7 +71,7 @@ func (p *Plugin) runDHCPProbe(ctx context.Context, opts DHCPNetworkOptions, pol 
 			explainChildLinkAdd(err, mode, parent, parentLink.Attrs().Index))
 	}
 	defer func() {
-		if err := netlink.LinkDel(probeLink); err != nil {
+		if err := nlLinkDel(probeLink); err != nil {
 			log.WithError(err).WithField("link", probeName).Warn("validate_dhcp probe link cleanup failed")
 		}
 	}()
@@ -79,7 +79,7 @@ func (p *Plugin) runDHCPProbe(ctx context.Context, opts DHCPNetworkOptions, pol 
 	if err := pinPassthruProbe(opts, parentLink, probeName); err != nil {
 		return fmt.Errorf("validate_dhcp: %w", err)
 	}
-	if err := netlink.LinkSetUp(probeLink); err != nil {
+	if err := nlLinkSetUp(probeLink); err != nil {
 		return fmt.Errorf("validate_dhcp: bring probe link up: %w", err)
 	}
 

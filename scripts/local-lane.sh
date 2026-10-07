@@ -116,6 +116,7 @@ LANE=(
   "license headers|-|bash scripts/check-license-headers.sh"
   "lock discipline|-|bash scripts/check-lock-discipline.sh"
   "proc-path discipline|-|bash scripts/check-proc-path-discipline.sh"
+  "netlink seam|-|bash scripts/check-netlink-seam.sh"
   "openat cloexec|-|bash scripts/check-openat-cloexec.sh"
   "doc opener|-|bash scripts/check-doc-opener.sh"
   "changed names in release notes|git|bash scripts/check-breaking-names.sh"

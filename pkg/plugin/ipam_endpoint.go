@@ -249,7 +249,7 @@ func (p *Plugin) addIPAMEndpointLink(ctx context.Context, endpointID, mode strin
 			return nil, explainChildLinkAdd(err, mode, opts.linkParent(), parent.Attrs().Index)
 		}
 		remove := func() {
-			if err := netlink.LinkDel(link); err != nil {
+			if err := nlLinkDel(link); err != nil {
 				log.WithError(err).WithField("link", la.Name).Warn("Endpoint link cleanup failed; remove it with `ip link del`")
 			}
 		}
@@ -268,7 +268,7 @@ func (p *Plugin) addIPAMEndpointLink(ctx context.Context, endpointID, mode strin
 	if _, err := p.ensureBridge(ctx, opts, "create_endpoint"); err != nil {
 		return nil, err
 	}
-	bridge, err := netlink.LinkByName(opts.Bridge)
+	bridge, err := nlEndpointLinkByName(opts.Bridge)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get bridge interface: %w", err)
 	}
@@ -276,11 +276,11 @@ func (p *Plugin) addIPAMEndpointLink(ctx context.Context, endpointID, mode strin
 	la := netlink.NewLinkAttrs()
 	la.Name = hostName
 	hostLink := &netlink.Veth{LinkAttrs: la, PeerName: ctrName, PeerHardwareAddr: mac}
-	if err := netlink.LinkAdd(hostLink); err != nil {
+	if err := nlLinkAdd(hostLink); err != nil {
 		return nil, fmt.Errorf("failed to create veth pair: %w", err)
 	}
 	remove := func() {
-		if err := netlink.LinkDel(hostLink); err != nil {
+		if err := nlLinkDel(hostLink); err != nil {
 			log.WithError(err).WithField("link", hostName).Warn("Endpoint link cleanup failed; remove it with `ip link del`")
 		}
 	}
@@ -288,20 +288,20 @@ func (p *Plugin) addIPAMEndpointLink(ctx context.Context, endpointID, mode strin
 		remove()
 		return nil, err
 	}
-	if err := netlink.LinkSetUp(hostLink); err != nil {
+	if err := nlLinkSetUp(hostLink); err != nil {
 		remove()
 		return nil, fmt.Errorf("failed to set host side link of veth pair up: %w", err)
 	}
-	ctrLink, err := netlink.LinkByName(ctrName)
+	ctrLink, err := nlEndpointLinkByName(ctrName)
 	if err != nil {
 		remove()
 		return nil, fmt.Errorf("failed to find container side of veth pair: %w", err)
 	}
-	if err := netlink.LinkSetUp(ctrLink); err != nil {
+	if err := nlLinkSetUp(ctrLink); err != nil {
 		remove()
 		return nil, fmt.Errorf("failed to set container side link of veth pair up: %w", err)
 	}
-	if err := netlink.LinkSetMaster(hostLink, bridge); err != nil {
+	if err := nlLinkSetMaster(hostLink, bridge); err != nil {
 		remove()
 		return nil, fmt.Errorf("failed to attach host side link of veth peer to bridge: %w", err)
 	}
