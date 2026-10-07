@@ -19,13 +19,6 @@ The notes below go back to the first release of this project.
   read when the container started, which its own change never updated. It
   now reads the link's MTU from the kernel, so a withdrawn value puts back
   the MTU the link had before the plugin first changed it (#1238).
-- A container on two ipvlan networks whose links share a MAC, such as two
-  networks on one parent or one on the parent and one on its `vlan=N`
-  sub-interface, now runs each network's DHCP client on that network's
-  link. Before, the second network's client could run on the first
-  network's link, so its renewals left on the wrong segment and its
-  address, routes and MTU landed on the wrong interface. The same holds
-  for a macvlan `passthru` link, which also wears its parent's MAC (#1243).
 
 ## v2.4.0
 
