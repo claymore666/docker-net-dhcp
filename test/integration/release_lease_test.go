@@ -11,9 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
-	docker "github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/network"
+	docker "github.com/moby/moby/client"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
@@ -60,7 +59,7 @@ func TestReleaseLease_TheOptionIsRefusedAtCreateOrItIsNot(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -81,20 +80,20 @@ func TestReleaseLease_TheOptionIsRefusedAtCreateOrItIsNot(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			netName := "dhcptest-rl-" + strings.ReplaceAll(tc.value, "_", "-")
-			_, err := cli.NetworkCreate(ctx, netName, network.CreateOptions{
+			_, err := cli.NetworkCreate(ctx, netName, docker.NetworkCreateOptions{
 				Driver: harness.DriverName,
 				IPAM:   &network.IPAM{Driver: "null"},
 				Options: map[string]string{
 					"mode": "macvlan", "parent": harness.HostVeth, "release_lease": tc.value,
 				},
 			})
-			t.Cleanup(func() { _ = cli.NetworkRemove(context.Background(), netName) })
+			t.Cleanup(func() { _, _ = cli.NetworkRemove(context.Background(), netName, docker.NetworkRemoveOptions{}) })
 
 			if !tc.wantErr {
 				if err != nil {
 					t.Fatalf("release_lease=%q was refused: %v", tc.value, err)
 				}
-				if _, err := cli.NetworkInspect(ctx, netName, network.InspectOptions{}); err != nil {
+				if _, err := cli.NetworkInspect(ctx, netName, docker.NetworkInspectOptions{}); err != nil {
 					t.Errorf("the create was accepted and the network does not exist: %v", err)
 				}
 				return
@@ -133,7 +132,7 @@ func TestReleaseLease_OnStopHandsTheAddressBack(t *testing.T) {
 
 	harness.CreateNetwork(t, ctx, netName, "macvlan", map[string]string{"release_lease": "on_stop"})
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -154,7 +153,7 @@ func TestReleaseLease_OnStopHandsTheAddressBack(t *testing.T) {
 		"releases_sent_v4", "release_failures_v4", "releases_sent_v6", "release_failures_v6")
 	releasesBefore := fixture.CountLogLines("DHCPRELEASE", ip)
 
-	if err := cli.ContainerStop(ctx, id, container.StopOptions{}); err != nil {
+	if _, err := cli.ContainerStop(ctx, id, docker.ContainerStopOptions{}); err != nil {
 		t.Fatalf("ContainerStop: %v", err)
 	}
 
@@ -190,19 +189,19 @@ func TestReleaseLease_OnStopHandsTheAddressBack(t *testing.T) {
 	}
 
 	// No tombstone was laid, so the restart is a new endpoint with a new MAC.
-	if err := cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
+	if _, err := cli.ContainerStart(ctx, id, docker.ContainerStartOptions{}); err != nil {
 		t.Fatalf("ContainerStart: %v", err)
 	}
 	deadline := time.Now().Add(harness.IPAcquisitionBudget)
 	var macAfter, ipAfter string
 	for time.Now().Before(deadline) {
-		ins, err := cli.ContainerInspect(ctx, id)
+		ins, err := cli.ContainerInspect(ctx, id, docker.ContainerInspectOptions{})
 		if err != nil {
 			t.Fatalf("ContainerInspect: %v", err)
 		}
-		for _, ep := range ins.NetworkSettings.Networks {
-			if ep.IPAddress != "" {
-				ipAfter, macAfter = ep.IPAddress, ep.MacAddress
+		for _, ep := range ins.Container.NetworkSettings.Networks {
+			if ep.IPAddress.IsValid() {
+				ipAfter, macAfter = harness.AddrString(ep.IPAddress), ep.MacAddress.String()
 			}
 		}
 		if ipAfter != "" {
@@ -243,7 +242,7 @@ func TestReleaseLease_DefaultNetworksStillKeepTheirAddresses(t *testing.T) {
 
 	harness.CreateNetwork(t, ctx, netName, "macvlan", nil)
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -256,7 +255,7 @@ func TestReleaseLease_DefaultNetworksStillKeepTheirAddresses(t *testing.T) {
 	w := harness.BeginCounterWindow(t, ctx, cli,
 		"tombstones_consumed", "releases_sent", "release_failures")
 
-	if err := cli.ContainerStop(ctx, id, container.StopOptions{}); err != nil {
+	if _, err := cli.ContainerStop(ctx, id, docker.ContainerStopOptions{}); err != nil {
 		t.Fatalf("ContainerStop: %v", err)
 	}
 	time.Sleep(leaseRetentionSettle)
@@ -266,19 +265,19 @@ func TestReleaseLease_DefaultNetworksStillKeepTheirAddresses(t *testing.T) {
 			"as it would for a physical host that was switched off", ip)
 	}
 
-	if err := cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
+	if _, err := cli.ContainerStart(ctx, id, docker.ContainerStartOptions{}); err != nil {
 		t.Fatalf("ContainerStart: %v", err)
 	}
 	deadline := time.Now().Add(harness.IPAcquisitionBudget)
 	var macAfter, ipAfter string
 	for time.Now().Before(deadline) {
-		ins, err := cli.ContainerInspect(ctx, id)
+		ins, err := cli.ContainerInspect(ctx, id, docker.ContainerInspectOptions{})
 		if err != nil {
 			t.Fatalf("ContainerInspect: %v", err)
 		}
-		for _, ep := range ins.NetworkSettings.Networks {
-			if ep.IPAddress != "" {
-				ipAfter, macAfter = ep.IPAddress, ep.MacAddress
+		for _, ep := range ins.Container.NetworkSettings.Networks {
+			if ep.IPAddress.IsValid() {
+				ipAfter, macAfter = harness.AddrString(ep.IPAddress), ep.MacAddress.String()
 			}
 		}
 		if ipAfter != "" {
@@ -344,7 +343,7 @@ func TestReleaseLease_OnStopHandsTheV6AddressBackToo(t *testing.T) {
 		"ipv6":          "true",
 	})
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -374,7 +373,7 @@ func TestReleaseLease_OnStopHandsTheV6AddressBackToo(t *testing.T) {
 		v6: fixture.CountLogLines("DHCPRELEASE", v6),
 	}
 
-	if err := cli.ContainerStop(ctx, id, container.StopOptions{}); err != nil {
+	if _, err := cli.ContainerStop(ctx, id, docker.ContainerStopOptions{}); err != nil {
 		t.Fatalf("ContainerStop: %v", err)
 	}
 

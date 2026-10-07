@@ -12,8 +12,6 @@ import (
 	"testing"
 	"time"
 
-	docker "github.com/docker/docker/client"
-
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
@@ -117,7 +115,7 @@ func TestDHCPv6_AdvertisedMTUReachesTheContainer(t *testing.T) {
 	f := harness.NewV6FixtureWithArgs(t, harness.V6Managed, managedArgsWith(raParams(advertisedMTU, 1800)))
 	dumpOnFailure(t, f)
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -163,7 +161,7 @@ func TestDHCPv6_RouterWithdrawalAndReturn(t *testing.T) {
 	f := harness.NewV6FixtureWithArgs(t, harness.V6Managed, managedArgsWith(raParams(0, 1800)))
 	dumpOnFailure(t, f)
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -266,7 +264,7 @@ func TestDHCPv6_NoAddressSegmentGetsNoIPv6RouteYet(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -325,7 +323,7 @@ func TestDHCPv6_RouterDiscoveryCountersRise(t *testing.T) {
 	f := harness.NewV6FixtureWithArgs(t, harness.V6Managed, managedArgsWith(raParams(0, 1800)))
 	dumpOnFailure(t, f)
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}

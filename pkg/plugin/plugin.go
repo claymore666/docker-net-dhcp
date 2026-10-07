@@ -28,6 +28,7 @@ import (
 	dNetwork "github.com/moby/moby/api/types/network"
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
@@ -562,6 +563,9 @@ type Plugin struct {
 
 	// joinAbortedEndpointLeft counts attaches cancelled by Leave (#406); not healthy-affecting.
 	joinAbortedEndpointLeft atomic.Int32
+
+	// joinAbortedLinkWithdrawn counts attaches whose located link left the sandbox (#1236); not healthy-affecting.
+	joinAbortedLinkWithdrawn atomic.Int32
 
 	// unsafeHostnamesRejected counts hostnames with a control character dropped before option 12 (#692); a legitimate
 	// hostname has none, so non-zero means someone is trying.
@@ -1190,7 +1194,7 @@ func (p *Plugin) recoverEndpoints(ctx context.Context, daemonWait time.Duration)
 		// (#1047).
 		if ipamBindingOf(n.ID) != nil {
 			if listed, ok := ipamListedMACs(netInfo.Containers); ok {
-				p.giveUpStrandedIPAMRecords(n.ID, listed, time.Now())
+				p.giveUpStrandedIPAMRecords(ctx, n.ID, listed, time.Now())
 			}
 		}
 	}
@@ -1326,14 +1330,7 @@ func (p *Plugin) recoverOneEndpoint(ctx context.Context, containerID, networkID,
 
 	ipv4 = p.recoveredV4(networkID, endpointRecordKey(opts.Mode, endpointID, mac), ipv4)
 
-	fakeJoin := JoinRequest{
-		NetworkID:  networkID,
-		EndpointID: endpointID,
-	}
-	m := newDHCPManager(p.docker, fakeJoin, opts).withPlugin(p)
-	m.setLastIP(false, ipv4)
-	m.setLastIP(true, ipv6)
-	m.MacAddress = mac
+	m := p.recoveredManager(networkID, endpointID, mac, ipv4, ipv6, opts)
 	// Checked and registered in one operation, so a mid-recovery Join keeps its manager (#480).
 	if !p.registerDHCPManagerIfAbsent(endpointID, m) {
 		p.recoveryAlreadyManaged.Add(1)
@@ -1389,6 +1386,46 @@ func (p *Plugin) recoverOneEndpoint(ctx context.Context, containerID, networkID,
 		p.recoveredOK.Add(1)
 	}()
 	return true, nil
+}
+
+// recoveredManager builds the manager recovery registers, which has no Join answer to seed its advertised routes
+// from, so it adopts them from the link, minus the host link's destinations Join may have copied (#102, #1239).
+func (p *Plugin) recoveredManager(networkID, endpointID string, mac net.HardwareAddr, ipv4, ipv6 *netlink.Addr, opts DHCPNetworkOptions) *dhcpManager {
+	m := newDHCPManager(p.docker, JoinRequest{NetworkID: networkID, EndpointID: endpointID}, opts).withPlugin(p)
+	m.setLastIP(false, ipv4)
+	m.setLastIP(true, ipv6)
+	m.MacAddress = mac
+	if ipv6 == nil || opts.SkipRoutes || !opts.ipv6Enabled() {
+		return m
+	}
+	dests, err := hostRouteDestinations(opts)
+	if err != nil {
+		log.WithError(err).WithFields(log.Fields{"network": shortID(networkID), "endpoint": shortID(endpointID)}).
+			Warn("recovery: cannot read the host routes; a route the router withdraws stays until the container restarts")
+		return m
+	}
+	m.adoptAdvertRoutes, m.hostRouteDests = true, dests
+	return m
+}
+
+// hostRouteDestinations lists the non-default IPv6 destinations on the link Join copies routes from (#102).
+func hostRouteDestinations(opts DHCPNetworkOptions) (map[string]bool, error) {
+	link, err := joinRouteSource(opts)
+	if err != nil {
+		return nil, err
+	}
+	routes, err := util.DumpResult(nlRouteListFiltered(unix.AF_INET6, &netlink.Route{LinkIndex: link.Attrs().Index},
+		netlink.RT_FILTER_OIF))
+	if err != nil {
+		return nil, fmt.Errorf("failed to list host routes: %w", err)
+	}
+	dests := make(map[string]bool, len(routes))
+	for _, r := range routes {
+		if !isDefaultRoute(r) {
+			dests[r.Dst.String()] = true
+		}
+	}
+	return dests, nil
 }
 
 // lookupEndpointMAC reads Docker's stored MAC for an endpoint so a restart rebuilds the link with that MAC.

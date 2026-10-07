@@ -12,8 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	docker "github.com/docker/docker/client"
+	docker "github.com/moby/moby/client"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
@@ -40,7 +39,7 @@ func TestSLAAC_StablePrivacyFormsAnAddressThatIsNotTheMACsAndSurvivesARestart(t 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -76,7 +75,7 @@ func TestSLAAC_StablePrivacyFormsAnAddressThatIsNotTheMACsAndSurvivesARestart(t 
 	}
 
 	w2 := harness.BeginCounterWindow(t, ctx, cli, "ipv6_slaac_addresses")
-	if err := cli.ContainerRestart(ctx, id, container.StopOptions{}); err != nil {
+	if _, err := cli.ContainerRestart(ctx, id, docker.ContainerRestartOptions{}); err != nil {
 		t.Fatalf("ContainerRestart: %v", err)
 	}
 	_, mac2 := ipamNetworkAddress(t, ctx, cli, id, netName)

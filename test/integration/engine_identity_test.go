@@ -12,9 +12,8 @@ import (
 	"testing"
 	"time"
 
-	docker "github.com/docker/docker/client"
-
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
+	docker "github.com/moby/moby/client"
 )
 
 // TestEngineIdentity_HealthMatchesTheDaemonsOwnAnswer checks the #670 engine fields against the daemon's own answer to this client.
@@ -22,13 +21,13 @@ func TestEngineIdentity_HealthMatchesTheDaemonsOwnAnswer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
 	defer cli.Close()
 
-	srv, err := cli.ServerVersion(ctx)
+	srv, err := cli.ServerVersion(ctx, docker.ServerVersionOptions{})
 	if err != nil {
 		t.Fatalf("ServerVersion: %v", err)
 	}

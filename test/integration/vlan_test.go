@@ -16,9 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
-	docker "github.com/docker/docker/client"
+	docker "github.com/moby/moby/client"
 	"github.com/vishvananda/netlink"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
@@ -123,7 +121,7 @@ func assertTaggedLease(t *testing.T, ctx context.Context, v *harness.VlanFixture
 // removeContainer removes id now, ahead of its cleanup, so the network it is on can be deleted.
 func removeContainer(t *testing.T, ctx context.Context, cli *docker.Client, id string) {
 	t.Helper()
-	if err := cli.ContainerRemove(ctx, id, container.RemoveOptions{Force: true}); err != nil {
+	if _, err := cli.ContainerRemove(ctx, id, docker.ContainerRemoveOptions{Force: true}); err != nil {
 		t.Fatalf("ContainerRemove(%s): %v", id[:12], err)
 	}
 }
@@ -131,7 +129,7 @@ func removeContainer(t *testing.T, ctx context.Context, cli *docker.Client, id s
 // removeNetwork deletes a network now, failing the test on an error.
 func removeNetwork(t *testing.T, ctx context.Context, cli *docker.Client, id string) {
 	t.Helper()
-	if err := cli.NetworkRemove(ctx, id); err != nil {
+	if _, err := cli.NetworkRemove(ctx, id, docker.NetworkRemoveOptions{}); err != nil {
 		t.Fatalf("NetworkRemove(%s): %v", id[:12], err)
 	}
 }
@@ -177,18 +175,18 @@ func TestVlan_TheSubInterfaceCarriesTheLeaseSurvivesARestartAndGoesWithItsLastNe
 	t.Cleanup(func() {
 		bg, bgCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer bgCancel()
-		if err := cli.PluginEnable(bg, harness.PluginRef, types.PluginEnableOptions{Timeout: 30}); err != nil &&
+		if _, err := cli.PluginEnable(bg, harness.PluginRef, docker.PluginEnableOptions{Timeout: 30}); err != nil &&
 			!strings.Contains(err.Error(), "already enabled") {
 			t.Logf("WARN: cleanup PluginEnable: %v", err)
 		}
 	})
-	if err := cli.PluginDisable(ctx, harness.PluginRef, types.PluginDisableOptions{Force: true}); err != nil {
+	if _, err := cli.PluginDisable(ctx, harness.PluginRef, docker.PluginDisableOptions{Force: true}); err != nil {
 		t.Fatalf("PluginDisable: %v", err)
 	}
 	if err := harness.WaitPluginEnabled(ctx, cli, false, 15*time.Second); err != nil {
 		t.Fatalf("plugin did not reach disabled state: %v", err)
 	}
-	if err := cli.PluginEnable(ctx, harness.PluginRef, types.PluginEnableOptions{Timeout: 30}); err != nil {
+	if _, err := cli.PluginEnable(ctx, harness.PluginRef, docker.PluginEnableOptions{Timeout: 30}); err != nil {
 		t.Fatalf("PluginEnable: %v", err)
 	}
 	if err := harness.WaitPluginEnabled(ctx, cli, true, 30*time.Second); err != nil {

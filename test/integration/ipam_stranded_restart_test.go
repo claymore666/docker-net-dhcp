@@ -12,10 +12,9 @@ import (
 	"time"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
-	docker "github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	docker "github.com/moby/moby/client"
 )
 
 // A removed endpoint holds its address for 60 s. A second container claims it under the server's lease identity while
@@ -41,7 +40,7 @@ func TestIPAMStranded_APluginThatEndsMidRestartGivesTheAddressBack(t *testing.T)
 		}
 	})
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -51,7 +50,7 @@ func TestIPAMStranded_APluginThatEndsMidRestartGivesTheAddressBack(t *testing.T)
 	t.Cleanup(func() {
 		bg, bgCancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer bgCancel()
-		if err := cli.PluginEnable(bg, harness.PluginRef, types.PluginEnableOptions{Timeout: 30}); err != nil &&
+		if _, err := cli.PluginEnable(bg, harness.PluginRef, docker.PluginEnableOptions{Timeout: 30}); err != nil &&
 			!strings.Contains(err.Error(), "already enabled") {
 			t.Logf("WARN: cleanup PluginEnable: %v", err)
 		}
@@ -67,7 +66,7 @@ func TestIPAMStranded_APluginThatEndsMidRestartGivesTheAddressBack(t *testing.T)
 	}
 	t.Logf("the address to keep: %s (first hardware address %s)", addr, firstMAC)
 
-	if err := cli.ContainerRemove(ctx, firstID, container.RemoveOptions{Force: true}); err != nil {
+	if _, err := cli.ContainerRemove(ctx, firstID, docker.ContainerRemoveOptions{Force: true}); err != nil {
 		t.Fatalf("ContainerRemove(%s): %v", firstCtr, err)
 	}
 
@@ -77,28 +76,26 @@ func TestIPAMStranded_APluginThatEndsMidRestartGivesTheAddressBack(t *testing.T)
 	t.Log("the DHCP server is down; the next address request will claim the address and then wait")
 
 	create, err := cli.ContainerCreate(ctx,
-		&container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}, Hostname: retryCtr},
-		harness.HostConfig(),
-		&network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{netName: {}}},
-		nil, retryCtr)
+		docker.ContainerCreateOptions{Config: &container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}, Hostname: retryCtr}, HostConfig: harness.HostConfig(), NetworkingConfig: &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{netName: {}}}, Name: retryCtr})
 	if err != nil {
 		t.Fatalf("ContainerCreate(%s): %v", retryCtr, err)
 	}
 	t.Cleanup(func() {
 		bg := context.Background()
-		_ = cli.ContainerStop(bg, create.ID, container.StopOptions{})
-		_ = cli.ContainerRemove(bg, create.ID, container.RemoveOptions{Force: true})
+		_, _ = cli.ContainerStop(bg, create.ID, docker.ContainerStopOptions{})
+		_, _ = cli.ContainerRemove(bg, create.ID, docker.ContainerRemoveOptions{Force: true})
 	})
 
 	// No t.Fatalf off the test goroutine: it would report against whichever test is running.
 	startErr := make(chan error, 1)
 	go func() {
-		startErr <- cli.ContainerStart(context.Background(), create.ID, container.StartOptions{})
+		_, err := cli.ContainerStart(context.Background(), create.ID, docker.ContainerStartOptions{})
+		startErr <- err
 	}()
 
 	time.Sleep(teardownAfter)
 
-	if err := cli.PluginDisable(ctx, harness.PluginRef, types.PluginDisableOptions{Force: true}); err != nil {
+	if _, err := cli.PluginDisable(ctx, harness.PluginRef, docker.PluginDisableOptions{Force: true}); err != nil {
 		t.Fatalf("PluginDisable: %v", err)
 	}
 	if err := harness.WaitPluginEnabled(ctx, cli, false, 30*time.Second); err != nil {
@@ -112,7 +109,7 @@ func TestIPAMStranded_APluginThatEndsMidRestartGivesTheAddressBack(t *testing.T)
 	}
 
 	ef.StartAgain()
-	if err := cli.PluginEnable(ctx, harness.PluginRef, types.PluginEnableOptions{Timeout: 30}); err != nil &&
+	if _, err := cli.PluginEnable(ctx, harness.PluginRef, docker.PluginEnableOptions{Timeout: 30}); err != nil &&
 		!strings.Contains(err.Error(), "already enabled") {
 		t.Fatalf("PluginEnable: %v", err)
 	}
@@ -127,7 +124,7 @@ func TestIPAMStranded_APluginThatEndsMidRestartGivesTheAddressBack(t *testing.T)
 			"window this test measures; nothing was proved either way", elapsed)
 	}
 
-	if err := cli.ContainerStart(ctx, create.ID, container.StartOptions{}); err != nil {
+	if _, err := cli.ContainerStart(ctx, create.ID, docker.ContainerStartOptions{}); err != nil {
 		t.Fatalf("the container could not be started again after the plugin came back: %v.\n"+
 			"A record left behind with no endpoint on it still answers for its address and for "+
 			"the hardware address it was claimed under, so this is one of the two shapes the "+
@@ -155,12 +152,12 @@ func awaitEndpoint(t *testing.T, ctx context.Context, cli *docker.Client, id, ne
 	t.Helper()
 	deadline := time.Now().Add(harness.IPAcquisitionBudget)
 	for time.Now().Before(deadline) {
-		ins, err := cli.ContainerInspect(ctx, id)
+		ins, err := cli.ContainerInspect(ctx, id, docker.ContainerInspectOptions{})
 		if err != nil {
 			t.Fatalf("ContainerInspect: %v", err)
 		}
-		if ep, ok := ins.NetworkSettings.Networks[netName]; ok && ep.IPAddress != "" {
-			return ep.IPAddress, ep.MacAddress
+		if ep, ok := ins.Container.NetworkSettings.Networks[netName]; ok && ep.IPAddress.IsValid() {
+			return harness.AddrString(ep.IPAddress), ep.MacAddress.String()
 		}
 		select {
 		case <-ctx.Done():

@@ -123,10 +123,14 @@ type dhcpManager struct {
 
 	suppliedMTULogged atomic.Bool
 
-	// lastAdvertRoutes holds the RA-installed more-specific routes, destination to next hop, as the diff base: an
-	// advertisement that drops a prefix withdraws it (RFC 4191 section 2.3), and the kernel table also holds routes
-	// copied from the host bridge that must stay (#821). Used by the v6 consumer goroutine only.
+	// lastAdvertRoutes holds the RA routes on the link, destination to next hop, as the diff base: an advertisement
+	// that drops a prefix withdraws it (RFC 4191 section 2.3). A record, not the kernel table, since the host routes
+	// Join copies (#102) carry the same protocol there and must stay. Seeded from the Join answer, or from the link on
+	// recovery (adoptAdvertRoutes); only a write that succeeded changes it (#1239). v6 consumer goroutine only.
 	lastAdvertRoutes map[string]string
+	// adoptAdvertRoutes asks the first reconcile hearing a router to seed it from the link, minus hostRouteDests.
+	adoptAdvertRoutes bool
+	hostRouteDests    map[string]bool
 	// onLinkInstalled holds the on-link prefixes this manager installed; an omission keeps them and only a Valid
 	// Lifetime 0 removes one (RFC 4861 section 6.3.4, #1088). Used by the v6 consumer goroutine only.
 	onLinkInstalled map[string]bool
@@ -515,9 +519,8 @@ func (m *dhcpManager) renew(v6 bool, info dhcp.Info) error {
 	m.propagateDNS(v6, info)
 	m.propagateMTU(v6, info)
 
-	// The diff base is seeded from the Join answer's routes, which Docker installed before this manager started; left
-	// nil, a first advertisement dropping one would withdraw nothing (RFC 4191 section 2.3, #821). RouteReplace makes
-	// it a reconcile, a no-op when Join and the advertisement agree.
+	// The diff base holds the advertised routes Join returned (newJoinManager) or recovery found on the link, so a
+	// first advertisement dropping one withdraws it (RFC 4191 section 2.3, #821, #1239).
 	if v6 {
 		if err := m.reconcileAdvertisedRoutes(info); err != nil {
 			log.WithError(err).WithFields(m.logFields(v6)).
@@ -1373,37 +1376,22 @@ func (m *dhcpManager) reconcileAdvertisedRoutes(info dhcp.Info) error {
 		want[r.Destination] = r.Gateway
 	}
 
-	for dest, gw := range m.lastAdvertRoutes {
-		if _, still := want[dest]; still {
-			continue
+	// An empty route list before any router was heard is silence, not a withdrawal, as for the default route: a Solicit
+	// does not wait for router discovery (RFC 9915 section 18.2.1), and the record holds what Join installed (#1239).
+	if info.RouterSeen || info.Gateway != "" || len(info.Routes) > 0 || len(info.OnLinkPrefixes) > 0 {
+		if err := m.withdrawAdvertRoutes(idx, want); err != nil && firstErr == nil {
+			firstErr = err
 		}
-		_, dst, err := net.ParseCIDR(dest)
-		if err != nil {
-			continue
-		}
-		route := &netlink.Route{LinkIndex: idx, Dst: dst}
-		if gw != "" {
-			route.Gw = net.ParseIP(gw)
-		}
-		if err := nlHandleRouteDel(m.netHandle, route); err != nil {
-			if firstErr == nil {
-				firstErr = fmt.Errorf("failed to remove withdrawn route %v: %w", dest, err)
-			}
-			continue
-		}
-		log.WithFields(m.logFields(true)).WithField("route", dest).
-			Info("The Router Advertisement stopped offering this route; removed it from the container")
 	}
 
 	for dest, gw := range want {
-		if m.lastAdvertRoutes[dest] == gw {
+		if prev, ok := m.lastAdvertRoutes[dest]; ok && prev == gw {
 			continue
 		}
 		_, dst, err := net.ParseCIDR(dest)
 		if err != nil {
 			log.WithFields(m.logFields(true)).WithField("route", dest).
 				Warn("Advertised route destination is not a prefix; skipping it")
-			delete(want, dest)
 			continue
 		}
 		route := &netlink.Route{LinkIndex: idx, Dst: dst}
@@ -1416,17 +1404,92 @@ func (m *dhcpManager) reconcileAdvertisedRoutes(info dhcp.Info) error {
 			}
 			continue
 		}
+		if m.lastAdvertRoutes == nil {
+			m.lastAdvertRoutes = map[string]string{}
+		}
+		m.lastAdvertRoutes[dest] = gw
 		log.WithFields(m.logFields(true)).WithField("route", dest).WithField("gateway", gw).
 			Info("Applied a route the Router Advertisement asked for")
 	}
-
-	// Recorded even when a write failed: the record is what was asked of the kernel, and the next diff retries.
-	m.lastAdvertRoutes = want
 
 	if err := m.installOnLinkPrefixes(idx, info); err != nil && firstErr == nil {
 		firstErr = err
 	}
 	return firstErr
+}
+
+// withdrawAdvertRoutes removes each recorded route the advertisement no longer offers, dropping it from the record
+// once the kernel no longer holds it; a failed delete stays recorded and is retried (#1239).
+func (m *dhcpManager) withdrawAdvertRoutes(idx int, want map[string]string) error {
+	var firstErr error
+	if m.adoptAdvertRoutes {
+		if err := m.adoptLinkAdvertRoutes(idx); err != nil {
+			firstErr = err
+		}
+	}
+	for dest, gw := range m.lastAdvertRoutes {
+		if _, still := want[dest]; still {
+			continue
+		}
+		_, dst, err := net.ParseCIDR(dest)
+		if err != nil {
+			delete(m.lastAdvertRoutes, dest)
+			continue
+		}
+		route := &netlink.Route{LinkIndex: idx, Dst: dst}
+		if gw != "" {
+			route.Gw = net.ParseIP(gw)
+		}
+		err = nlHandleRouteDel(m.netHandle, route)
+		// ip6_route_del answers ESRCH when no route matches, as after a link flap flushed it (net/ipv6/route.c).
+		if errors.Is(err, unix.ESRCH) {
+			delete(m.lastAdvertRoutes, dest)
+			log.WithFields(m.logFields(true)).WithField("route", dest).
+				Info("The Router Advertisement stopped offering this route; it was already gone from the container")
+			continue
+		}
+		if err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("failed to remove withdrawn route %v: %w", dest, err)
+			}
+			continue
+		}
+		delete(m.lastAdvertRoutes, dest)
+		log.WithFields(m.logFields(true)).WithField("route", dest).
+			Info("The Router Advertisement stopped offering this route; removed it from the container")
+	}
+	return firstErr
+}
+
+// adoptLinkAdvertRoutes seeds the record on recovery, which has no Join answer, from the link's routes through a
+// link-local next hop, the only kind an advertisement names (RFC 4861 section 4.2): not the kernel's, a kernel RA's or
+// a delegated prefix's, and not to a destination the host link holds, which Join may have copied (#102, #1239).
+func (m *dhcpManager) adoptLinkAdvertRoutes(idx int) error {
+	routes, err := nlHandleRouteListFiltered(m.netHandle, unix.AF_INET6, &netlink.Route{LinkIndex: idx},
+		netlink.RT_FILTER_OIF)
+	if err != nil {
+		return fmt.Errorf("failed to list IPv6 routes to recover the advertised ones: %w", err)
+	}
+	for _, r := range routes {
+		if isDefaultRoute(r) || r.Gw == nil || !r.Gw.IsLinkLocalUnicast() || m.hostRouteDests[r.Dst.String()] {
+			continue
+		}
+		switch r.Protocol {
+		case unix.RTPROT_KERNEL, unix.RTPROT_RA, unix.RTPROT_DHCP:
+			continue
+		}
+		if _, ok := m.lastAdvertRoutes[r.Dst.String()]; ok {
+			continue
+		}
+		if m.lastAdvertRoutes == nil {
+			m.lastAdvertRoutes = map[string]string{}
+		}
+		m.lastAdvertRoutes[r.Dst.String()] = r.Gw.String()
+		log.WithFields(m.logFields(true)).WithField("route", r.Dst.String()).WithField("gateway", r.Gw.String()).
+			Info("recovery: treating this route as one a Router Advertisement installed")
+	}
+	m.adoptAdvertRoutes = false
+	return nil
 }
 
 // installOnLinkPrefixes adds each advertised on-link prefix not yet installed, recording only a write that succeeded.
@@ -1908,7 +1971,7 @@ func (m *dhcpManager) awaitContainerLinkUp(ctx context.Context) error {
 	defer cancel()
 	index := m.ctrLink.Attrs().Index
 	err := util.AwaitCondition(awaitCtx, func() (bool, error) {
-		link, err := m.netHandle.LinkByIndex(index)
+		link, err := nlLinkByIndex(m.netHandle, index)
 		if err != nil {
 			return false, fmt.Errorf("failed to read container link %d: %w", index, err)
 		}
@@ -1918,6 +1981,22 @@ func (m *dhcpManager) awaitContainerLinkUp(ctx context.Context) error {
 		return fmt.Errorf("container link %s was never set up: %w", m.ctrLink.Attrs().Name, err)
 	}
 	return nil
+}
+
+// errContainerLinkWithdrawn marks a Start whose located link libnetwork moved back out on a refused attach (#1236).
+var errContainerLinkWithdrawn = errors.New("the container link left the sandbox")
+
+// withdrawnLinkError marks err only when the kernel no longer has the located link's index in the sandbox (#1236).
+func (m *dhcpManager) withdrawnLinkError(err error) error {
+	if m.ctrLink == nil {
+		return err
+	}
+	_, lerr := nlLinkByIndex(m.netHandle, m.ctrLink.Attrs().Index)
+	var notFound netlink.LinkNotFoundError
+	if !errors.As(lerr, &notFound) {
+		return err
+	}
+	return fmt.Errorf("%w: %w", errContainerLinkWithdrawn, err)
 }
 
 // joinPhases times each stage of Start so an expired budget shows where it went: a slow daemon and an earlier
@@ -2168,6 +2247,7 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 		phases.mark("start_clients")
 		return nil
 	}(); err != nil {
+		err = m.withdrawnLinkError(err)
 		closeNetHandle(m.netHandle)
 		closeNsHandle(m.nsHandle)
 		return err

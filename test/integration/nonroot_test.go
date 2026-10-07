@@ -10,8 +10,9 @@ import (
 	"testing"
 	"time"
 
+	docker "github.com/moby/moby/client"
+
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
-	docker "github.com/docker/docker/client"
 )
 
 // Opening /proc/<pid>/ns/net passes the kernel's PTRACE_MODE_READ check by matching uid or by CAP_SYS_PTRACE; every
@@ -40,7 +41,7 @@ func TestNonRootContainer_PersistentClientStarts(t *testing.T) {
 		}
 	})
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -64,13 +65,13 @@ func TestNonRootContainer_PersistentClientStarts(t *testing.T) {
 	case <-time.After(waitFor):
 	}
 
-	ins, err := cli.ContainerInspect(ctx, id)
+	ins, err := cli.ContainerInspect(ctx, id, docker.ContainerInspectOptions{})
 	if err != nil {
 		t.Fatalf("ContainerInspect: %v", err)
 	}
 	var ipAfter string
-	for _, ep := range ins.NetworkSettings.Networks {
-		ipAfter = ep.IPAddress
+	for _, ep := range ins.Container.NetworkSettings.Networks {
+		ipAfter = harness.AddrString(ep.IPAddress)
 	}
 	if ipAfter != ipBefore {
 		t.Errorf("IP changed during renewal window: before=%s after=%s", ipBefore, ipAfter)
