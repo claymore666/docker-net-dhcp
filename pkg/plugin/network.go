@@ -14,6 +14,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -131,6 +132,9 @@ func kernelIfaceName(name string) string {
 
 const maxUserClassOctets = 254
 
+// maxOptionOctets is one option's value (RFC 2132 section 2); the library refuses a longer one at every DISCOVER (#1240).
+const maxOptionOctets = 255
+
 // validateModeOptions is CreateNetwork's pure validation. Interface names pass ValidIfaceName here, since the
 // daemon forwards a NUL in a driver option verbatim and "br0\x00evil" would slip past ErrBridgeUsed (#705).
 func validateModeOptions(opts DHCPNetworkOptions) error {
@@ -150,6 +154,10 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 	// One instance is 1 to 254 octets (RFC 3004 section 4); the library would refuse more at `docker run` (#1120).
 	if n := len(opts.UserClass); n > maxUserClassOctets {
 		return fmt.Errorf("%w: user_class is %d octets, the most option 77 carries is %d", util.ErrIPAM, n, maxUserClassOctets)
+	}
+
+	if err := validateAddressedOptions(opts); err != nil {
+		return err
 	}
 
 	// Whether this network hands leases back (#962); every mode sends DHCP.
@@ -213,6 +221,29 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 		return err
 	}
 	return validateVlanOption(opts)
+}
+
+// validateAddressedOptions refuses a gateway, vendor_class or client_id that would fail the first `docker run` (#1240).
+func validateAddressedOptions(opts DHCPNetworkOptions) error {
+	// Join's IPv4 Gateway, which the engine parses and fails the Join on; the IPv6 one comes from the RA (#1240).
+	if g := opts.Gateway; g != "" {
+		if a, err := netip.ParseAddr(g); err != nil || !a.Is4() {
+			return fmt.Errorf("%w: gateway %q is not an IPv4 address: give a bare address such as 192.168.0.1, "+
+				"without a prefix length, and no IPv6 address, which comes from the router advertisement",
+				util.ErrIPAM, g)
+		} else if a.IsUnspecified() || a.IsLoopback() || a.IsMulticast() || a == netip.AddrFrom4([4]byte{255, 255, 255, 255}) {
+			return fmt.Errorf("%w: gateway %q is not a router's address: it is the unspecified, loopback, multicast or "+
+				"broadcast address, none of which a packet can be forwarded to", util.ErrIPAM, g)
+		}
+	}
+	if n := len(opts.VendorClass); n > maxOptionOctets {
+		return fmt.Errorf("%w: vendor_class is %d octets, the most option 60 carries is %d", util.ErrIPAM, n, maxOptionOctets)
+	}
+	if n := len(dhcp.ClientIdentity([]byte(opts.ClientID))); n > maxOptionOctets {
+		return fmt.Errorf("%w: client_id is %d octets, the most option 61 carries is %d beside its type byte",
+			util.ErrIPAM, n-1, maxOptionOctets-1)
+	}
+	return nil
 }
 
 // sandboxGone reads the filesystem, not the Docker API, since the API call is what times out when a container
@@ -1697,6 +1728,15 @@ func (p *Plugin) newJoinManager(r JoinRequest, opts DHCPNetworkOptions, hint joi
 	m.MacAddress = hint.MacAddress
 	m.engineGateway(false).Store(res.Gateway != "")
 	m.engineGateway(true).Store(res.GatewayIPv6 != "")
+	// By identity: a host route (#102) that won the destination in uniqueStaticRoutes is not the advertisement's (#1239).
+	for _, sr := range res.StaticRoutes {
+		if !opts.SkipRoutes && sr.RouteType == RouteTypeNextHop && slices.Contains(hint.RoutesIPv6, sr) {
+			if m.lastAdvertRoutes == nil {
+				m.lastAdvertRoutes = map[string]string{}
+			}
+			m.lastAdvertRoutes[sr.Destination] = sr.NextHop
+		}
+	}
 	return m
 }
 
