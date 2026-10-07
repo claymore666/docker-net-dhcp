@@ -43,7 +43,7 @@ func (p *Plugin) dropStaleNetworks(ctx context.Context, live []dNetwork.Summary)
 		if !cerrdefs.IsNotFound(err) {
 			continue
 		}
-		if p.dropStaleNetwork(id) {
+		if p.dropStaleNetwork(ctx, id) {
 			gone = append(gone, id)
 		}
 	}
@@ -53,10 +53,11 @@ func (p *Plugin) dropStaleNetworks(ctx context.Context, live []dNetwork.Summary)
 	return len(gone)
 }
 
-// A deleteOptions failure keeps the binding: the file rebinds at the next start and this pass runs again (#1174).
-func (p *Plugin) dropStaleNetwork(id string) bool {
+// A deleteOptions failure keeps the binding: the file rebinds at the next start and this pass runs again (#1174). The
+// release and host cleanup are DeleteNetwork's, since libnetwork removes a network whose driver call failed (#1251).
+func (p *Plugin) dropStaleNetwork(ctx context.Context, id string) bool {
 	held := ipamBindingOf(id) != nil
-	if err := deleteOptions(id); err != nil {
+	if err := p.removeNetworkHostState(ctx, id, "stale_network"); err != nil {
 		log.WithError(err).WithField("network", shortID(id)).
 			Warn("A network Docker no longer has could not have its persisted file removed; it is retried at the next start")
 		return false

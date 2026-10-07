@@ -30,9 +30,8 @@ jobs:
       - name: Dependency review
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
-          # Posture (fail-on-severity: high) and the allow-ghsas list of
-          # known-unreachable daemon-side docker/docker advisories live in
-          # the config file — the advisory-level counterpart of
+          # Posture (fail-on-severity: high) and any allow-ghsas list live
+          # in the config file — the advisory-level counterpart of
           # .github/vuln-allowlist.txt (#193). Keep accepted findings
           # there with justification + review date, not inline here.
           config-file: ./.github/dependency-review-config.yml

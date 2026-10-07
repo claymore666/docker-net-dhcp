@@ -14,8 +14,7 @@ import (
 	"time"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
-	"github.com/docker/docker/api/types"
-	docker "github.com/docker/docker/client"
+	docker "github.com/moby/moby/client"
 )
 
 // DHCPv6 has no RFC 5227 section 2.4 listener: RFC 4862 section 5.4 detection runs only when an address is taken into
@@ -38,7 +37,7 @@ func TestDHCPv6_ASquatOnARunningContainerIsCountedAndTheAddressChanges(t *testin
 		}
 	})
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -48,7 +47,7 @@ func TestDHCPv6_ASquatOnARunningContainerIsCountedAndTheAddressChanges(t *testin
 	t.Cleanup(func() {
 		bg, bgCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer bgCancel()
-		if err := cli.PluginEnable(bg, harness.PluginRef, types.PluginEnableOptions{Timeout: 30}); err != nil {
+		if _, err := cli.PluginEnable(bg, harness.PluginRef, docker.PluginEnableOptions{Timeout: 30}); err != nil {
 			if !strings.Contains(err.Error(), "already enabled") {
 				t.Logf("WARN: cleanup PluginEnable: %v", err)
 			}
@@ -156,15 +155,15 @@ func TestDHCPv6_ASquatOnARunningContainerIsCountedAndTheAddressChanges(t *testin
 
 	// Known wrong, pinned by equality: libnetwork has no in-place endpoint address swap, so Docker still reports the
 	// squatted address (#104, #881); a fix or a changed shape fails here and the message says what to write instead.
-	ins, err := cli.ContainerInspect(ctx, id)
+	ins, err := cli.ContainerInspect(ctx, id, docker.ContainerInspectOptions{})
 	if err != nil {
 		t.Fatalf("ContainerInspect: %v", err)
 	}
-	ep, ok := ins.NetworkSettings.Networks[netName]
+	ep, ok := ins.Container.NetworkSettings.Networks[netName]
 	if !ok {
 		t.Fatalf("container is not attached to %s any more", netName)
 	}
-	if ep.GlobalIPv6Address != held {
+	if harness.AddrString(ep.GlobalIPv6Address) != held {
 		t.Errorf("KNOWN-WRONG PIN MOVED: docker reports %q for this endpoint, not the "+
 			"pre-conflict %s that this round pins.\n"+
 			"  The container's interface carries %s. If libnetwork gained an endpoint-address "+

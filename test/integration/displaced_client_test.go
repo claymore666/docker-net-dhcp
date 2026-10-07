@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
-	docker "github.com/docker/docker/client"
+	docker "github.com/moby/moby/client"
 )
 
 // A Join for an endpoint that already has a manager displaces it, registerDHCPManager returning the incumbent (#682).
@@ -39,7 +39,7 @@ func TestDisplacedClient_TheInterfaceNeverCarriesTwoClients(t *testing.T) {
 		}
 	})
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -194,11 +194,11 @@ func dhcpv4Sockets(t *testing.T, ctx context.Context, ctrID string, ifIndex int)
 // endpointIDOf returns the endpoint id Docker gave the container on netName, the key of the plugin's registry.
 func endpointIDOf(t *testing.T, ctx context.Context, cli *docker.Client, ctrID, netName string) string {
 	t.Helper()
-	ins, err := cli.ContainerInspect(ctx, ctrID)
+	ins, err := cli.ContainerInspect(ctx, ctrID, docker.ContainerInspectOptions{})
 	if err != nil {
 		t.Fatalf("ContainerInspect: %v", err)
 	}
-	ep, ok := ins.NetworkSettings.Networks[netName]
+	ep, ok := ins.Container.NetworkSettings.Networks[netName]
 	if !ok {
 		t.Fatalf("container is not attached to %s", netName)
 	}

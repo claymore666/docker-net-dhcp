@@ -116,7 +116,7 @@ below decide what is in a release; this page follows them.
   unit-tested
 - [#674], what a version number promises, written down
 - [#178], the frozen `docker/docker` module replaced by the ones moby
-  publishes
+  publishes; done, shipping in the next release
 
 ## The release line
 

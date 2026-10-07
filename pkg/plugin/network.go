@@ -132,6 +132,9 @@ func kernelIfaceName(name string) string {
 
 const maxUserClassOctets = 254
 
+// maxOptionOctets is one option's value (RFC 2132 section 2); the library refuses a longer one at every DISCOVER (#1240).
+const maxOptionOctets = 255
+
 // validateModeOptions is CreateNetwork's pure validation. Interface names pass ValidIfaceName here, since the
 // daemon forwards a NUL in a driver option verbatim and "br0\x00evil" would slip past ErrBridgeUsed (#705).
 func validateModeOptions(opts DHCPNetworkOptions) error {
@@ -151,6 +154,10 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 	// One instance is 1 to 254 octets (RFC 3004 section 4); the library would refuse more at `docker run` (#1120).
 	if n := len(opts.UserClass); n > maxUserClassOctets {
 		return fmt.Errorf("%w: user_class is %d octets, the most option 77 carries is %d", util.ErrIPAM, n, maxUserClassOctets)
+	}
+
+	if err := validateAddressedOptions(opts); err != nil {
+		return err
 	}
 
 	// Whether this network hands leases back (#962); every mode sends DHCP.
@@ -214,6 +221,29 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 		return err
 	}
 	return validateVlanOption(opts)
+}
+
+// validateAddressedOptions refuses a gateway, vendor_class or client_id that would fail the first `docker run` (#1240).
+func validateAddressedOptions(opts DHCPNetworkOptions) error {
+	// Join's IPv4 Gateway, which the engine parses and fails the Join on; the IPv6 one comes from the RA (#1240).
+	if g := opts.Gateway; g != "" {
+		if a, err := netip.ParseAddr(g); err != nil || !a.Is4() {
+			return fmt.Errorf("%w: gateway %q is not an IPv4 address: give a bare address such as 192.168.0.1, "+
+				"without a prefix length, and no IPv6 address, which comes from the router advertisement",
+				util.ErrIPAM, g)
+		} else if a.IsUnspecified() || a.IsLoopback() || a.IsMulticast() || a == netip.AddrFrom4([4]byte{255, 255, 255, 255}) {
+			return fmt.Errorf("%w: gateway %q is not a router's address: it is the unspecified, loopback, multicast or "+
+				"broadcast address, none of which a packet can be forwarded to", util.ErrIPAM, g)
+		}
+	}
+	if n := len(opts.VendorClass); n > maxOptionOctets {
+		return fmt.Errorf("%w: vendor_class is %d octets, the most option 60 carries is %d", util.ErrIPAM, n, maxOptionOctets)
+	}
+	if n := len(dhcp.ClientIdentity([]byte(opts.ClientID))); n > maxOptionOctets {
+		return fmt.Errorf("%w: client_id is %d octets, the most option 61 carries is %d beside its type byte",
+			util.ErrIPAM, n-1, maxOptionOctets-1)
+	}
+	return nil
 }
 
 // sandboxGone reads the filesystem, not the Docker API, since the API call is what times out when a container
@@ -545,36 +575,15 @@ func (p *Plugin) saveNetworkAndBind(networkID string, opts DHCPNetworkOptions, b
 // DeleteNetwork removes the network's state and stops its managers, since libnetwork sends no Leave for stopped
 // containers (#46).
 func (p *Plugin) DeleteNetwork(r DeleteNetworkRequest) error {
-	// Release first: whether to release and by which interface are read from the options deleteOptions removes, and
-	// the tombstones keyed by this network die with it (#984).
-	if released := p.releaseNetworkRecords(r.NetworkID); released > 0 {
-		log.WithFields(log.Fields{
-			"network":  r.NetworkID,
-			"released": released,
-		}).Info("release_lease=on_remove: handed this network's still-held addresses back before removing it")
-	}
+	deleteErr := p.removeNetworkHostState(context.Background(), r.NetworkID, "delete_network")
 
 	// The binding goes here, not in ReleasePool, which libnetwork also calls for a failed create on a shared PoolID
 	// (#110).
 	p.ipamIndex.unbindNetwork(r.NetworkID)
 	p.v6Absence.forget(r.NetworkID)
-
-	// Read from disk before deleteOptions removes them; an unreadable or refused record keeps its sub-interface (#902).
-	opts, optsErr := loadOptions(r.NetworkID)
-	if optsErr == nil {
-		optsErr = validateVlanOption(opts)
-	}
-	if optsErr == nil {
-		optsErr = validateBridgeOwnOptions(opts)
-	}
-
-	if err := deleteOptions(r.NetworkID); err != nil {
-		log.WithError(err).WithField("network", r.NetworkID).
+	if deleteErr != nil {
+		log.WithError(deleteErr).WithField("network", r.NetworkID).
 			Warn("Failed to remove persisted options; harmless leftover")
-	}
-	if optsErr == nil {
-		p.retireVlanLink(context.Background(), r.NetworkID, opts, "delete_network")
-		p.retireBridge(context.Background(), r.NetworkID, opts, "delete_network")
 	}
 
 	orphaned := p.takeDHCPManagersForNetwork(r.NetworkID)
@@ -599,6 +608,33 @@ func (p *Plugin) DeleteNetwork(r DeleteNetworkRequest) error {
 
 	log.WithField("network", r.NetworkID).Info("Network deleted")
 	return nil
+}
+
+// removeNetworkHostState hands held on_remove addresses back, then removes the options and retires the vlan
+// sub-interface and bridge from the options read before they go; DeleteNetwork and the stale-network sweep share it
+// (#984, #902, #1251). It returns the options-removal error.
+func (p *Plugin) removeNetworkHostState(ctx context.Context, networkID, op string) error {
+	if released := p.releaseNetworkRecords(networkID); released > 0 {
+		log.WithFields(log.Fields{
+			"network":  networkID,
+			"released": released,
+		}).Info("release_lease=on_remove: handed this network's still-held addresses back before removing it")
+	}
+
+	opts, optsErr := loadOptions(networkID)
+	if optsErr == nil {
+		optsErr = validateVlanOption(opts)
+	}
+	if optsErr == nil {
+		optsErr = validateBridgeOwnOptions(opts)
+	}
+
+	deleteErr := deleteOptions(networkID)
+	if optsErr == nil {
+		p.retireVlanLink(ctx, networkID, opts, op)
+		p.retireBridge(ctx, networkID, opts, op)
+	}
+	return deleteErr
 }
 
 // vethPairNames tolerates a short EndpointID from a malformed response, at the cost of pair uniqueness.
@@ -667,12 +703,38 @@ func resolveExplicitV6(r CreateEndpointRequest) (string, error) {
 	return addr.IP.String(), nil
 }
 
-// parseDriverOptIP reads the bare IPv4 of the `ip` driver-opt, a flat key in r.Options (#46).
+// parseDriverOptIP reads the bare IPv4 of the `ip` driver-opt, a flat key in r.Options (#46). The key matches
+// case-insensitively because `docker network connect --driver-opt IP=` and Compose keep its case (#1245).
 func parseDriverOptIP(options map[string]interface{}) (string, error) {
-	raw, ok := options["ip"]
-	if !ok {
+	var keys []string
+	for k := range options {
+		if strings.EqualFold(k, "ip") {
+			keys = append(keys, k)
+		}
+	}
+	if len(keys) == 0 {
 		return "", nil
 	}
+	sort.Strings(keys)
+	var first, firstKey string
+	for _, k := range keys {
+		if s, ok := options[k].(string); ok && s == "" {
+			continue
+		}
+		v, err := parseDriverOptIPValue(options[k])
+		if err != nil {
+			return "", err
+		}
+		if firstKey == "" {
+			first, firstKey = v, k
+		} else if v != first {
+			return "", fmt.Errorf("conflicting driver-opt ip spellings %q=%q vs %q=%q: %w", firstKey, first, k, v, util.ErrIPAM)
+		}
+	}
+	return first, nil
+}
+
+func parseDriverOptIPValue(raw interface{}) (string, error) {
 	s, ok := raw.(string)
 	if !ok || s == "" {
 		return "", fmt.Errorf("invalid driver-opt ip %v: expected non-empty string: %w", raw, util.ErrIPAM)
@@ -1888,7 +1950,7 @@ func (p *Plugin) daemonSaysContainerGone(r JoinRequest) bool {
 	return ctr.State.Status == dContainer.StateExited || ctr.State.Status == dContainer.StateDead
 }
 
-// settleFailedAttach counts a failed attach once: endpoint left, vanished, no container, start failure (#1186).
+// settleFailedAttach counts a failed attach once: left, vanished, withdrawn, no container, start failure (#1186, #1236).
 func (p *Plugin) settleFailedAttach(r JoinRequest, m *dhcpManager, err error) {
 	fields := log.Fields{
 		"network":  shortID(r.NetworkID),
@@ -1917,6 +1979,14 @@ func (p *Plugin) settleFailedAttach(r JoinRequest, m *dhcpManager, err error) {
 			Info("Container went away during attach; no persistent client needed")
 		p.removeDHCPManagerIfSame(r.EndpointID, m)
 		// No persistent client; the one-shot's address expires on the server (#800).
+		return
+	}
+	// The engine took the located link back out of the sandbox, which it does when it refuses the attach (#1236).
+	if errors.Is(err, errContainerLinkWithdrawn) {
+		p.joinAbortedLinkWithdrawn.Add(1)
+		log.WithError(err).WithFields(fields).
+			Info("The container's link left its sandbox during attach; no persistent client needed")
+		p.removeDHCPManagerIfSame(r.EndpointID, m)
 		return
 	}
 	// No container claimed the endpoint (#566), not a plugin fault; the address is left to expire (#800).

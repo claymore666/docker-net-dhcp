@@ -17,8 +17,7 @@ import (
 	"time"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
-	"github.com/docker/docker/api/types"
-	docker "github.com/docker/docker/client"
+	docker "github.com/moby/moby/client"
 )
 
 // RFC 5227 section 2.1's worst case is PROBE_WAIT 1s + 2 x PROBE_MAX 2s + ANNOUNCE_WAIT 2s = 7s, and a decline adds
@@ -78,7 +77,7 @@ func TestConflictCheck_SquattedOfferIsDeclined(t *testing.T) {
 			// This excuses only the floor counter under-reporting the conflict by one after a later recycle (#524).
 			harness.AllowStagedConflicts(1)
 
-			cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+			cli, err := harness.NewDockerClient()
 			if err != nil {
 				t.Fatalf("docker client: %v", err)
 			}
@@ -169,7 +168,7 @@ func TestConflictCheck_SquatterAfterTheFact(t *testing.T) {
 			})
 			recycleAfterDeliberateConflict(t)
 
-			cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+			cli, err := harness.NewDockerClient()
 			if err != nil {
 				t.Fatalf("docker client: %v", err)
 			}
@@ -244,7 +243,7 @@ func TestConflictCheck_OffSendsNoProbe(t *testing.T) {
 	// Declared beside the conflict_check=off that causes it, so the census gate judges only the rest (#551).
 	harness.AllowUnprobedLeases(1)
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -334,7 +333,7 @@ func TestConflictCheck_WaitAcquisitionIsTimed(t *testing.T) {
 		}
 	})
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -412,7 +411,7 @@ func TestConflictCheck_RestartInsideTheAsyncWindow(t *testing.T) {
 		}
 	})
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -519,7 +518,7 @@ func TestConflictCheck_BridgeModeDoesNotSelfReport(t *testing.T) {
 
 	const netName = "dh-itest-cc-bridge"
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -601,19 +600,19 @@ func awaitContainerAddr(t *testing.T, ctx context.Context, id, was string, withi
 // cliReset recycles the plugin process, which is the only way to clear its process-local counters.
 func cliReset(ctx context.Context, t *testing.T) error {
 	t.Helper()
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		return err
 	}
 	defer cli.Close()
 
-	if err := cli.PluginDisable(ctx, harness.PluginRef, types.PluginDisableOptions{Force: true}); err != nil {
+	if _, err := cli.PluginDisable(ctx, harness.PluginRef, docker.PluginDisableOptions{Force: true}); err != nil {
 		return err
 	}
 	if err := harness.WaitPluginEnabled(ctx, cli, false, 15*time.Second); err != nil {
 		return err
 	}
-	if err := cli.PluginEnable(ctx, harness.PluginRef, types.PluginEnableOptions{Timeout: 30}); err != nil {
+	if _, err := cli.PluginEnable(ctx, harness.PluginRef, docker.PluginEnableOptions{Timeout: 30}); err != nil {
 		if !strings.Contains(err.Error(), "already enabled") {
 			return err
 		}
