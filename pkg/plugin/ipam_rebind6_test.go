@@ -437,7 +437,7 @@ func TestIPAMRebind6_TheRestartRuleReadsBothScopes(t *testing.T) {
 	from := len(s2Lines(t, journal))
 	now := time.Now()
 
-	if n := p.giveUpStrandedIPAMRecords(ipamTestNetwork, []net.HardwareAddr{running}, now); n != 4 {
+	if n := p.giveUpStrandedIPAMRecords(context.Background(), ipamTestNetwork, []net.HardwareAddr{running}, now); n != 4 {
 		t.Fatalf("the rule gave up %d records, want 4: the stranded pair, the lone v6 record and the split v4 one", n)
 	}
 	tail := s2Tail(t, journal, from,
@@ -453,7 +453,7 @@ func TestIPAMRebind6_TheRestartRuleReadsBothScopes(t *testing.T) {
 	}
 
 	from = len(s2Lines(t, journal))
-	if n := p.giveUpStrandedIPAMRecords(ipamTestNetwork, []net.HardwareAddr{running}, now); n != 0 {
+	if n := p.giveUpStrandedIPAMRecords(context.Background(), ipamTestNetwork, []net.HardwareAddr{running}, now); n != 0 {
 		t.Fatalf("a second run gave up %d records, want 0", n)
 	}
 	s2Tail(t, journal, from)
@@ -531,7 +531,7 @@ func TestIPAMRebind6_GapA_AnExpiredReBoundLeaseIsClosedAndNeverReleased(t *testi
 		t.Errorf("the sweep handed back %d and sent %d, want neither: the leases expired at the server", n, sender.callCount())
 	}
 	f0Reopen(t, p, journal, "proc-2")
-	if n := p.giveUpStrandedIPAMRecords(ipamTestNetwork, nil, time.Now()); n != 0 {
+	if n := p.giveUpStrandedIPAMRecords(context.Background(), ipamTestNetwork, nil, time.Now()); n != 0 {
 		t.Errorf("the restart rule found %d stranded records, want 0", n)
 	}
 }
@@ -574,7 +574,7 @@ func TestIPAMRebind6_GapB_ASecondProcessCannotRunTheRuleOnALiveJournal(t *testin
 
 	f0Reopen(t, p, journal, "proc-2")
 	from := len(s2Lines(t, journal))
-	if n := p.giveUpStrandedIPAMRecords(ipamTestNetwork, []net.HardwareAddr{running}, time.Now()); n != 1 {
+	if n := p.giveUpStrandedIPAMRecords(context.Background(), ipamTestNetwork, []net.HardwareAddr{running}, time.Now()); n != 1 {
 		t.Fatalf("the rule gave up %d records, want 1", n)
 	}
 	s2Tail(t, journal, from, s2Line{pend4, lease.OpRetain})
