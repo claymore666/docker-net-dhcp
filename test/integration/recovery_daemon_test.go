@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
-	docker "github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	docker "github.com/moby/moby/client"
 )
 
 // Whether recovery or the tombstone path preserves the address depends on whether dockerd's graceful shutdown ran
@@ -38,7 +38,7 @@ func TestRecovery_DaemonRestart_PreservesContainer(t *testing.T) {
 
 	harness.CreateNetwork(t, ctx, netName, "macvlan", nil)
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -52,18 +52,13 @@ func TestRecovery_DaemonRestart_PreservesContainer(t *testing.T) {
 	hostCfg := harness.HostConfig()
 	hostCfg.RestartPolicy = container.RestartPolicy{Name: container.RestartPolicyAlways}
 	create, err := cli.ContainerCreate(ctx,
-		&container.Config{
+		docker.ContainerCreateOptions{Config: &container.Config{
 			Image:    harness.TestImage,
 			Cmd:      []string{"sleep", "infinity"},
 			Hostname: ctrName,
-		},
-		hostCfg,
-		&network.NetworkingConfig{
+		}, HostConfig: hostCfg, NetworkingConfig: &network.NetworkingConfig{
 			EndpointsConfig: map[string]*network.EndpointSettings{netName: {}},
-		},
-		nil,
-		ctrName,
-	)
+		}, Name: ctrName})
 	if err != nil {
 		t.Fatalf("ContainerCreate: %v", err)
 	}
@@ -72,18 +67,18 @@ func TestRecovery_DaemonRestart_PreservesContainer(t *testing.T) {
 		bg, bgCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer bgCancel()
 		// The client above may be closed by the cleanup chain.
-		bgCli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+		bgCli, err := harness.NewDockerClient()
 		if err == nil {
 			defer bgCli.Close()
 			// So the cleanup container does not restart between Stop and Remove.
-			_, _ = bgCli.ContainerUpdate(bg, id, container.UpdateConfig{
-				RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyDisabled},
+			_, _ = bgCli.ContainerUpdate(bg, id, docker.ContainerUpdateOptions{
+				RestartPolicy: &container.RestartPolicy{Name: container.RestartPolicyDisabled},
 			})
-			_ = bgCli.ContainerStop(bg, id, container.StopOptions{})
-			_ = bgCli.ContainerRemove(bg, id, container.RemoveOptions{Force: true})
+			_, _ = bgCli.ContainerStop(bg, id, docker.ContainerStopOptions{})
+			_, _ = bgCli.ContainerRemove(bg, id, docker.ContainerRemoveOptions{Force: true})
 		}
 	})
-	if err := cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
+	if _, err := cli.ContainerStart(ctx, id, docker.ContainerStartOptions{}); err != nil {
 		t.Fatalf("ContainerStart: %v", err)
 	}
 
@@ -197,13 +192,13 @@ func waitForEndpoint(t *testing.T, ctx context.Context, cli *docker.Client, id s
 	t.Helper()
 	deadline := time.Now().Add(budget)
 	for time.Now().Before(deadline) {
-		ins, err := cli.ContainerInspect(ctx, id)
+		ins, err := cli.ContainerInspect(ctx, id, docker.ContainerInspectOptions{})
 		if err != nil {
 			t.Fatalf("ContainerInspect: %v", err)
 		}
-		for _, ep := range ins.NetworkSettings.Networks {
-			if ep.IPAddress != "" {
-				return ep.IPAddress, ep.MacAddress
+		for _, ep := range ins.Container.NetworkSettings.Networks {
+			if ep.IPAddress.IsValid() {
+				return harness.AddrString(ep.IPAddress), ep.MacAddress.String()
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -216,10 +211,10 @@ func waitForEndpoint(t *testing.T, ctx context.Context, cli *docker.Client, id s
 func waitDaemonReady(ctx context.Context, budget time.Duration) (*docker.Client, error) {
 	deadline := time.Now().Add(budget)
 	for time.Now().Before(deadline) {
-		cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+		cli, err := harness.NewDockerClient()
 		if err == nil {
 			pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-			_, perr := cli.Ping(pingCtx)
+			_, perr := cli.Ping(pingCtx, docker.PingOptions{})
 			cancel()
 			if perr == nil {
 				return cli, nil
@@ -236,12 +231,12 @@ func waitContainerRunning(ctx context.Context, cli *docker.Client, id string, bu
 	deadline := time.Now().Add(budget)
 	var lastState string
 	for time.Now().Before(deadline) {
-		ins, err := cli.ContainerInspect(ctx, id)
-		if err == nil && ins.State != nil {
-			if ins.State.Running {
+		ins, err := cli.ContainerInspect(ctx, id, docker.ContainerInspectOptions{})
+		if err == nil && ins.Container.State != nil {
+			if ins.Container.State.Running {
 				return nil
 			}
-			lastState = ins.State.Status
+			lastState = string(ins.Container.State.Status)
 		}
 		select {
 		case <-ctx.Done():

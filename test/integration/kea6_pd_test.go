@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
-	docker "github.com/docker/docker/client"
+	docker "github.com/moby/moby/client"
 )
 
 // keaPDMovedPool is the pool case 3 reconfigures Kea to, apart from harness.Kea6PDPrefix's /48.
@@ -307,7 +307,7 @@ func TestKea6PD_ADisconnectOnStopReleasesThePrefixAndWithdrawsTheAggregate(t *te
 	held := awaitDelegation(t, ctx, kea, id, duid)
 
 	before := kea.CountLogLines("DHCP6_RELEASE_PD_EXPIRED")
-	if err := cli.NetworkDisconnect(ctx, netName, id, false); err != nil {
+	if _, err := cli.NetworkDisconnect(ctx, netName, docker.NetworkDisconnectOptions{Container: id, Force: false}); err != nil {
 		t.Fatalf("NetworkDisconnect: %v", err)
 	}
 	// Kea writes the row before it logs the release, and a Release has no Reply to wait for (dhcp-golib #60).
@@ -391,7 +391,7 @@ func TestKea6PD_APluginRestartRebindsAndKeepsTheAggregate(t *testing.T) {
 		func(h *harness.HealthResponse) bool { return healthReports(h, held[0]) })
 
 	// The new process owns the route only if Start seeded it from the record (#214).
-	if err := cli.NetworkDisconnect(ctx, "dh-itest-pdrst", id, false); err != nil {
+	if _, err := cli.NetworkDisconnect(ctx, "dh-itest-pdrst", docker.NetworkDisconnectOptions{Container: id, Force: false}); err != nil {
 		t.Fatalf("NetworkDisconnect: %v", err)
 	}
 	if got, ok := pollPrefixes(10*time.Second, aggregatesOf(t, ctx, id), none); !ok {
@@ -460,7 +460,7 @@ func TestKea6PD_AnEndpointLeavesAnotherOwnersAggregateAlone(t *testing.T) {
 	}
 
 	before := kea.CountLogLines("DHCP6_RELEASE_PD_EXPIRED")
-	if err := cli.NetworkDisconnect(ctx, netName, id, false); err != nil {
+	if _, err := cli.NetworkDisconnect(ctx, netName, docker.NetworkDisconnectOptions{Container: id, Force: false}); err != nil {
 		t.Fatalf("NetworkDisconnect: %v", err)
 	}
 	deadline := time.Now().Add(15 * time.Second)

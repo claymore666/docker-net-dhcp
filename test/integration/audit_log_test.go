@@ -16,9 +16,9 @@ import (
 	"time"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
-	docker "github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	docker "github.com/moby/moby/client"
 )
 
 // ledgerLine mirrors pkg/plugin.ledgerEntry, duplicated so this package does not import plugin internals.
@@ -112,7 +112,7 @@ func TestAuditLog_RecordsLifecycle(t *testing.T) {
 		}
 	})
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -125,39 +125,34 @@ func TestAuditLog_RecordsLifecycle(t *testing.T) {
 	})
 
 	create, err := cli.ContainerCreate(ctx,
-		&container.Config{
+		docker.ContainerCreateOptions{Config: &container.Config{
 			Image:    harness.TestImage,
 			Cmd:      []string{"sleep", "infinity"},
 			Hostname: ctrName,
-		},
-		harness.HostConfig(),
-		&network.NetworkingConfig{
+		}, HostConfig: harness.HostConfig(), NetworkingConfig: &network.NetworkingConfig{
 			EndpointsConfig: map[string]*network.EndpointSettings{netName: {}},
-		},
-		nil,
-		ctrName,
-	)
+		}, Name: ctrName})
 	if err != nil {
 		t.Fatalf("ContainerCreate: %v", err)
 	}
 	id := create.ID
 	t.Cleanup(func() {
 		bg := context.Background()
-		_ = cli.ContainerRemove(bg, id, container.RemoveOptions{Force: true})
+		_, _ = cli.ContainerRemove(bg, id, docker.ContainerRemoveOptions{Force: true})
 	})
-	if err := cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
+	if _, err := cli.ContainerStart(ctx, id, docker.ContainerStartOptions{}); err != nil {
 		t.Fatalf("ContainerStart: %v", err)
 	}
 
 	var mac, ip string
 	deadline := time.Now().Add(harness.IPAcquisitionBudget)
 	for time.Now().Before(deadline) {
-		ins, err := cli.ContainerInspect(ctx, id)
+		ins, err := cli.ContainerInspect(ctx, id, docker.ContainerInspectOptions{})
 		if err != nil {
 			t.Fatalf("ContainerInspect: %v", err)
 		}
-		if ep := ins.NetworkSettings.Networks[netName]; ep != nil && ep.IPAddress != "" {
-			mac, ip = ep.MacAddress, ep.IPAddress
+		if ep := ins.Container.NetworkSettings.Networks[netName]; ep != nil && ep.IPAddress.IsValid() {
+			mac, ip = ep.MacAddress.String(), harness.AddrString(ep.IPAddress)
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -212,7 +207,7 @@ func TestAuditLog_RecordsLifecycle(t *testing.T) {
 	}
 
 	// Since #800 the row is "stopped", not "release": nothing is released, and the ledger may not claim what the server saw.
-	if err := cli.ContainerStop(ctx, id, container.StopOptions{}); err != nil {
+	if _, err := cli.ContainerStop(ctx, id, docker.ContainerStopOptions{}); err != nil {
 		t.Fatalf("ContainerStop: %v", err)
 	}
 
@@ -254,7 +249,7 @@ func TestAuditLog_DefaultOff(t *testing.T) {
 		}
 	})
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}

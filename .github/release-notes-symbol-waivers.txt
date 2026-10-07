@@ -84,3 +84,14 @@ ParseJSONBody
 #   that release shipped and must not be rewritten to match a later
 #   tree.
 BuildEvent
+#
+# HISTORICAL — v0.1.0 and earlier, lines 3878 and 3965 (the "Changes vs.
+#   upstream" list and the security advisory assessment). They name
+#   `InspectOptions` and `NewClientWithOpts`, both from the
+#   github.com/docker/docker client. The plugin stopped using that module
+#   in d7a6c838 and the integration harness in its follow-up (#178), which
+#   removed the module from go.mod; the moby client's constructor is
+#   `client.New`. The sentences describe the dependency as those releases
+#   shipped it.
+InspectOptions
+NewClientWithOpts

@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
-	docker "github.com/docker/docker/client"
 )
 
 // ipv6_temporary asks for an IA_TA beside the IA_NA (RFC 8415 section 21.5, #927). The observers are the server's lease
@@ -76,7 +75,7 @@ func tmp6AwaitHeld(t *testing.T, ctx context.Context, ctrID string, want ...stri
 
 func tmp6EndpointHealth(t *testing.T, ctx context.Context, netID string) *harness.EndpointHealth {
 	t.Helper()
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -103,7 +102,7 @@ func tmp6EndpointHealth(t *testing.T, ctx context.Context, netID string) *harnes
 
 func tmp6Inspect(t *testing.T, ctx context.Context, ctrID, netName string) string {
 	t.Helper()
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}

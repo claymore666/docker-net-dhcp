@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
-	docker "github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	docker "github.com/moby/moby/client"
 )
 
 // Recovery cannot re-adopt an endpoint after a SIGKILLed daemon (six runs, #480): containerd dies with dockerd, the
@@ -43,7 +43,7 @@ func TestRecovery_DaemonKilled_LeaseIsHeldUntilItExpires(t *testing.T) {
 	// The bridge fixture's dnsmasq serves this segment, and the assertions read its log.
 	harness.CreateNetwork(t, ctx, netName, "bridge", nil)
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -55,18 +55,13 @@ func TestRecovery_DaemonKilled_LeaseIsHeldUntilItExpires(t *testing.T) {
 	hostCfg := harness.HostConfig()
 	hostCfg.RestartPolicy = container.RestartPolicy{Name: container.RestartPolicyAlways}
 	create, err := cli.ContainerCreate(ctx,
-		&container.Config{
+		docker.ContainerCreateOptions{Config: &container.Config{
 			Image:    harness.TestImage,
 			Cmd:      []string{"sleep", "infinity"},
 			Hostname: ctrName,
-		},
-		hostCfg,
-		&network.NetworkingConfig{
+		}, HostConfig: hostCfg, NetworkingConfig: &network.NetworkingConfig{
 			EndpointsConfig: map[string]*network.EndpointSettings{netName: {}},
-		},
-		nil,
-		ctrName,
-	)
+		}, Name: ctrName})
 	if err != nil {
 		t.Fatalf("ContainerCreate: %v", err)
 	}
@@ -75,18 +70,18 @@ func TestRecovery_DaemonKilled_LeaseIsHeldUntilItExpires(t *testing.T) {
 		bg, bgCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer bgCancel()
 		// The client above may be closed by the cleanup chain.
-		bgCli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+		bgCli, err := harness.NewDockerClient()
 		if err != nil {
 			return
 		}
 		defer bgCli.Close()
-		_, _ = bgCli.ContainerUpdate(bg, id, container.UpdateConfig{
-			RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyDisabled},
+		_, _ = bgCli.ContainerUpdate(bg, id, docker.ContainerUpdateOptions{
+			RestartPolicy: &container.RestartPolicy{Name: container.RestartPolicyDisabled},
 		})
-		_ = bgCli.ContainerStop(bg, id, container.StopOptions{})
-		_ = bgCli.ContainerRemove(bg, id, container.RemoveOptions{Force: true})
+		_, _ = bgCli.ContainerStop(bg, id, docker.ContainerStopOptions{})
+		_, _ = bgCli.ContainerRemove(bg, id, docker.ContainerRemoveOptions{Force: true})
 	})
-	if err := cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
+	if _, err := cli.ContainerStart(ctx, id, docker.ContainerStartOptions{}); err != nil {
 		t.Fatalf("ContainerStart: %v", err)
 	}
 

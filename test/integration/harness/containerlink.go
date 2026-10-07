@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"testing"
 
-	docker "github.com/docker/docker/client"
+	docker "github.com/moby/moby/client"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 )
@@ -19,19 +19,19 @@ import (
 // `ip -d link` prints: the kind ("macvlan", "ipvlan"), the sub-mode as the kernel spells it, and the MAC (#905).
 func ChildLinkMode(t *testing.T, ctx context.Context, containerID, ifName string) (kind, mode, mac string) {
 	t.Helper()
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
 	defer cli.Close()
-	ins, err := cli.ContainerInspect(ctx, containerID)
+	ins, err := cli.ContainerInspect(ctx, containerID, docker.ContainerInspectOptions{})
 	if err != nil {
 		t.Fatalf("ContainerInspect(%s): %v", containerID, err)
 	}
-	if ins.State == nil || ins.State.Pid == 0 {
+	if ins.Container.State == nil || ins.Container.State.Pid == 0 {
 		t.Fatalf("container %s has no running process to read the namespace of", containerID)
 	}
-	link, err := linkInPidNetns(ins.State.Pid, ifName)
+	link, err := linkInPidNetns(ins.Container.State.Pid, ifName)
 	if err != nil {
 		t.Fatalf("read %s in container %s: %v", ifName, containerID, err)
 	}
