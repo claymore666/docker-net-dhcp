@@ -1840,6 +1840,18 @@ be true.</p>
    <code>--diff</code> again: it must report that the entry matches. That
    confirmation is the point of the script, and the reason it has no
    push mode.</p>
+<p><strong>Check the starter-task claims against the live tracker</strong> (#748). The
+   README's Contributing section and the badge's <code>small_tasks</code> answer
+   assert that the <code>good first issue</code> label has open issues, or that it
+   has none and the README says so. Both decay without a commit, so run
+   the live half of the gate once, with <code>gh</code> signed in:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>bash<span class="w"> </span>scripts/check-good-first-issues.sh<span class="w"> </span>--live
+</code></pre></div>
+<p>Exit 0 means the claims hold. Exit 1 names the side to fix: the README
+   link, <code>small_tasks_status</code>, or the issues the justification cites. Fix
+   it on the release branch with the rest of this step. Exit 2 means the
+   API could not be read; run it again rather than treating it as a pass.
+   The offline half already runs on every pull request.</p>
 <p>The work happens here, on the release branch. The rc dry-run (step 8)
    is the <strong>enforcement gate</strong>: the real <code>vX.Y.Z</code> tag does not ship
    until every milestone PR is ticked off against the docs. By the real
@@ -1886,14 +1898,14 @@ be true.</p>
    matches no tag at all. Until #912 that published a generated one-line
    placeholder in place of the notes and exited 0. It now refuses, so
    remove whatever follows the version and confirm before tagging:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># THE STATUS IS THE VERDICT. Piped straight into `head`, this block</span>
-<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="c1"># exited 0 whether the notes assembled or the extractor refused,</span>
-<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="c1"># because `head` reports for the pipeline, so the two outcomes the</span>
-<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="c1"># paragraph below promises were indistinguishable to a reader&#39;s</span>
-<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="c1"># eye. Assemble to a file first, and `&amp;&amp;` the preview onto it.</span>
-<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="nv">section</span><span class="o">=</span><span class="k">$(</span>mktemp<span class="k">)</span><span class="w"> </span><span class="o">&amp;&amp;</span>
-<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>scripts/release-body.sh<span class="w"> </span>vX.Y.Z<span class="w"> </span>RELEASE_NOTES.md<span class="w"> </span>&gt;<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$section</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">&amp;&amp;</span>
-<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>head<span class="w"> </span>-20<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$section</span><span class="s2">&quot;</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># THE STATUS IS THE VERDICT. Piped straight into `head`, this block</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="c1"># exited 0 whether the notes assembled or the extractor refused,</span>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="c1"># because `head` reports for the pipeline, so the two outcomes the</span>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="c1"># paragraph below promises were indistinguishable to a reader&#39;s</span>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="c1"># eye. Assemble to a file first, and `&amp;&amp;` the preview onto it.</span>
+<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="nv">section</span><span class="o">=</span><span class="k">$(</span>mktemp<span class="k">)</span><span class="w"> </span><span class="o">&amp;&amp;</span>
+<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a>scripts/release-body.sh<span class="w"> </span>vX.Y.Z<span class="w"> </span>RELEASE_NOTES.md<span class="w"> </span>&gt;<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$section</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">&amp;&amp;</span>
+<a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a>head<span class="w"> </span>-20<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$section</span><span class="s2">&quot;</span>
 </code></pre></div>
 <p>It prints the first 20 lines of the section the release page would
    carry and exits 0, or refuses naming what is wrong (decorated
@@ -1915,9 +1927,9 @@ be true.</p>
    do. Look them up; do not rely on recall. Almost every PR here is
    the maintainer's or Dependabot's, so an outside one is easy to miss
    precisely because it is rare:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>gh<span class="w"> </span>pr<span class="w"> </span>list<span class="w"> </span>--state<span class="w"> </span>merged<span class="w"> </span>--limit<span class="w"> </span><span class="m">300</span><span class="w"> </span>--json<span class="w"> </span>number,title,author<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">  </span>--jq<span class="w"> </span><span class="s1">&#39;.[] | select(.author.login|test(&quot;claymore666|dependabot&quot;)|not)</span>
-<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="s1">             | &quot;#\(.number) @\(.author.login) \(.title)&quot;&#39;</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>gh<span class="w"> </span>pr<span class="w"> </span>list<span class="w"> </span>--state<span class="w"> </span>merged<span class="w"> </span>--limit<span class="w"> </span><span class="m">300</span><span class="w"> </span>--json<span class="w"> </span>number,title,author<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">  </span>--jq<span class="w"> </span><span class="s1">&#39;.[] | select(.author.login|test(&quot;claymore666|dependabot&quot;)|not)</span>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="s1">             | &quot;#\(.number) @\(.author.login) \(.title)&quot;&#39;</span>
 </code></pre></div>
 <p>Also confirm the merged commit still carries their authorship
    (<code>git log -1 --format='%an &lt;%ae&gt;' &lt;sha&gt;</code>). A rebase or squash of a
@@ -1934,10 +1946,10 @@ be true.</p>
 <p><strong>Do not trust the list above. Read the authority.</strong> It carried a
    hand-written total ("eight in total") that was correct when written
    and became a number nothing checked:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>gh<span class="w"> </span>api<span class="w"> </span>repos/claymore666/docker-net-dhcp/branches/dev/protection<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">  </span>--jq<span class="w"> </span><span class="s1">&#39;.required_status_checks.contexts&#39;</span>
-<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>gh<span class="w"> </span>api<span class="w"> </span>repos/claymore666/docker-net-dhcp/branches/main/protection<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">  </span>--jq<span class="w"> </span><span class="s1">&#39;.required_status_checks.contexts&#39;</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>gh<span class="w"> </span>api<span class="w"> </span>repos/claymore666/docker-net-dhcp/branches/dev/protection<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">  </span>--jq<span class="w"> </span><span class="s1">&#39;.required_status_checks.contexts&#39;</span>
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>gh<span class="w"> </span>api<span class="w"> </span>repos/claymore666/docker-net-dhcp/branches/main/protection<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="w">  </span>--jq<span class="w"> </span><span class="s1">&#39;.required_status_checks.contexts&#39;</span>
 </code></pre></div>
 <p>Branch protection is the authority; if the prose and the settings
    disagree, the settings win and the prose is the thing to fix.</p>
@@ -1993,7 +2005,7 @@ be true.</p>
    scope to the ratchet step; none of those is reported as a clean read.
    Eyeballing the log is how the v1.8.0 read started, and building the
    instrument instead found three defects an eyeball would have shipped.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>bash<span class="w"> </span>scripts/coverage-read.sh<span class="w"> </span><span class="m">32623575563</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>bash<span class="w"> </span>scripts/coverage-read.sh<span class="w"> </span><span class="m">32623575563</span>
 </code></pre></div>
 <p>The exit code carries the verdict: 0 a complete reading, 1 the
    ratchet's account and the raw <code>covdata</code> numbers disagree, 2 it cannot
@@ -2037,20 +2049,20 @@ be true.</p>
    on <code>main</code> as of #735, so a red one blocks the release PR and cannot
    sit in the list being ignored. If it is red, do what it says. The
    manual form, for a head it did not cover:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>gh<span class="w"> </span>run<span class="w"> </span>list<span class="w"> </span>--workflow<span class="w"> </span>coverage.yml<span class="w"> </span>--limit<span class="w"> </span><span class="m">5</span><span class="w">   </span><span class="c1"># look for &quot;cancelled&quot;</span>
-<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>gh<span class="w"> </span>run<span class="w"> </span>rerun<span class="w"> </span>&lt;id&gt;<span class="w">                               </span><span class="c1"># once the group is idle</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>gh<span class="w"> </span>run<span class="w"> </span>list<span class="w"> </span>--workflow<span class="w"> </span>coverage.yml<span class="w"> </span>--limit<span class="w"> </span><span class="m">5</span><span class="w">   </span><span class="c1"># look for &quot;cancelled&quot;</span>
+<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>gh<span class="w"> </span>run<span class="w"> </span>rerun<span class="w"> </span>&lt;id&gt;<span class="w">                               </span><span class="c1"># once the group is idle</span>
 </code></pre></div>
 <p>Wait for the integration run on the same ref to finish before
    rerunning, or it will just queue and be displaced again. This cost a
    full debugging session on v1.3.5 (#365). The fix is thirty seconds
    once you know the shape of it.
 7. <strong>Assemble the verification evidence, don't hand-write it.</strong>
-   <div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="nv">sha</span><span class="o">=</span><span class="k">$(</span>git<span class="w"> </span>rev-parse<span class="w"> </span>HEAD<span class="k">)</span><span class="w">   </span><span class="c1"># or the commit a skipped run&#39;s gate names</span>
-<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="k">for</span><span class="w"> </span>id<span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="k">$(</span>gh<span class="w"> </span>run<span class="w"> </span>list<span class="w"> </span>--workflow<span class="w"> </span>integration.yml<span class="w"> </span>--commit<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$sha</span><span class="s2">&quot;</span><span class="w"> </span>--json<span class="w"> </span>databaseId<span class="w"> </span>-q<span class="w"> </span><span class="s1">&#39;.[].databaseId&#39;</span><span class="k">)</span><span class="p">;</span><span class="w"> </span><span class="k">do</span>
-<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="w">  </span>gh<span class="w"> </span>run<span class="w"> </span>view<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$id</span><span class="s2">&quot;</span><span class="w"> </span>--json<span class="w"> </span>databaseId,event,attempt,conclusion,url,jobs<span class="w"> </span>-q<span class="w"> </span><span class="s1">&#39;&quot;\(.databaseId) \(.event) attempt \(.attempt) \(.conclusion) \(.url)\n  suites: \([.jobs[] | select(.name | endswith(&quot;-suite&quot;)) | .conclusion] | group_by(.) | map(&quot;\(length) \(.[0])&quot;) | join(&quot;, &quot;))&quot;&#39;</span>
-<a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="w">  </span><span class="nv">gate</span><span class="o">=</span><span class="k">$(</span>gh<span class="w"> </span>run<span class="w"> </span>view<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$id</span><span class="s2">&quot;</span><span class="w"> </span>--json<span class="w"> </span><span class="nb">jobs</span><span class="w"> </span>-q<span class="w"> </span><span class="s1">&#39;.jobs[] | select(.name == &quot;gate&quot;) | .databaseId&#39;</span><span class="k">)</span>
-<a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a><span class="w">  </span>gh<span class="w"> </span>run<span class="w"> </span>view<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$id</span><span class="s2">&quot;</span><span class="w"> </span>--log<span class="w"> </span>--job<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$gate</span><span class="s2">&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-o<span class="w"> </span>-E<span class="w"> </span><span class="s1">&#39;gate decision: (run|skip)|docs-only diff|already passed integration at [0-9a-f]{40}&#39;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>sed<span class="w"> </span><span class="s1">&#39;s/^/  gate: /&#39;</span>
-<a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a><span class="k">done</span>
+   <div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="nv">sha</span><span class="o">=</span><span class="k">$(</span>git<span class="w"> </span>rev-parse<span class="w"> </span>HEAD<span class="k">)</span><span class="w">   </span><span class="c1"># or the commit a skipped run&#39;s gate names</span>
+<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="k">for</span><span class="w"> </span>id<span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="k">$(</span>gh<span class="w"> </span>run<span class="w"> </span>list<span class="w"> </span>--workflow<span class="w"> </span>integration.yml<span class="w"> </span>--commit<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$sha</span><span class="s2">&quot;</span><span class="w"> </span>--json<span class="w"> </span>databaseId<span class="w"> </span>-q<span class="w"> </span><span class="s1">&#39;.[].databaseId&#39;</span><span class="k">)</span><span class="p">;</span><span class="w"> </span><span class="k">do</span>
+<a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="w">  </span>gh<span class="w"> </span>run<span class="w"> </span>view<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$id</span><span class="s2">&quot;</span><span class="w"> </span>--json<span class="w"> </span>databaseId,event,attempt,conclusion,url,jobs<span class="w"> </span>-q<span class="w"> </span><span class="s1">&#39;&quot;\(.databaseId) \(.event) attempt \(.attempt) \(.conclusion) \(.url)\n  suites: \([.jobs[] | select(.name | endswith(&quot;-suite&quot;)) | .conclusion] | group_by(.) | map(&quot;\(length) \(.[0])&quot;) | join(&quot;, &quot;))&quot;&#39;</span>
+<a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="w">  </span><span class="nv">gate</span><span class="o">=</span><span class="k">$(</span>gh<span class="w"> </span>run<span class="w"> </span>view<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$id</span><span class="s2">&quot;</span><span class="w"> </span>--json<span class="w"> </span><span class="nb">jobs</span><span class="w"> </span>-q<span class="w"> </span><span class="s1">&#39;.jobs[] | select(.name == &quot;gate&quot;) | .databaseId&#39;</span><span class="k">)</span>
+<a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a><span class="w">  </span>gh<span class="w"> </span>run<span class="w"> </span>view<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$id</span><span class="s2">&quot;</span><span class="w"> </span>--log<span class="w"> </span>--job<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$gate</span><span class="s2">&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-o<span class="w"> </span>-E<span class="w"> </span><span class="s1">&#39;gate decision: (run|skip)|docs-only diff|already passed integration at [0-9a-f]{40}&#39;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>sed<span class="w"> </span><span class="s1">&#39;s/^/  gate: /&#39;</span>
+<a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a><span class="k">done</span>
 </code></pre></div>
    Lists every integration run on the release PR's head commit with its
    attempt, its suite jobs by conclusion, and the gate's decision. Paste
@@ -2076,18 +2088,18 @@ be true.</p>
 <p><strong>Pull main, dry-run, then tag:</strong> first push <code>vX.Y.Z-rc1</code> and
    confirm the workflow run is green end-to-end (pre-release mode,
    <code>:latest</code> untouched; see "Pre-release dry-run" above). Then:
-   <div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>git<span class="w"> </span>checkout<span class="w"> </span>main<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>pull<span class="w"> </span>--ff-only<span class="w"> </span><span class="o">&amp;&amp;</span>
-<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="c1"># Step 4&#39;s check, on the tree that is about to be tagged. The release</span>
-<a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="c1"># page&#39;s body comes from here, and its refusal would otherwise arrive</span>
-<a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="c1"># after the images are pushed.</span>
-<a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a><span class="c1">#</span>
-<a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a><span class="c1"># THE `&amp;&amp;` IS THE POINT. Newline-separated, a refusal here printed its</span>
-<a id="__codelineno-14-7" name="__codelineno-14-7" href="#__codelineno-14-7"></a><span class="c1"># error and the next line pushed the tag anyway, which is the failure</span>
-<a id="__codelineno-14-8" name="__codelineno-14-8" href="#__codelineno-14-8"></a><span class="c1"># this check exists to prevent. Chained, the block stops at the first</span>
-<a id="__codelineno-14-9" name="__codelineno-14-9" href="#__codelineno-14-9"></a><span class="c1"># non-zero and nothing below it runs.</span>
-<a id="__codelineno-14-10" name="__codelineno-14-10" href="#__codelineno-14-10"></a>scripts/release-body.sh<span class="w"> </span>vX.Y.Z<span class="w"> </span>RELEASE_NOTES.md<span class="w"> </span>&gt;/dev/null<span class="w"> </span><span class="o">&amp;&amp;</span>
-<a id="__codelineno-14-11" name="__codelineno-14-11" href="#__codelineno-14-11"></a>git<span class="w"> </span>tag<span class="w"> </span>-s<span class="w"> </span>vX.Y.Z<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;vX.Y.Z: &lt;one-liner&gt;&quot;</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w">   </span><span class="c1"># signed (#175)</span>
-<a id="__codelineno-14-12" name="__codelineno-14-12" href="#__codelineno-14-12"></a>git<span class="w"> </span>push<span class="w"> </span>origin<span class="w"> </span>vX.Y.Z
+   <div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>git<span class="w"> </span>checkout<span class="w"> </span>main<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>pull<span class="w"> </span>--ff-only<span class="w"> </span><span class="o">&amp;&amp;</span>
+<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="c1"># Step 4&#39;s check, on the tree that is about to be tagged. The release</span>
+<a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a><span class="c1"># page&#39;s body comes from here, and its refusal would otherwise arrive</span>
+<a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a><span class="c1"># after the images are pushed.</span>
+<a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a><span class="c1">#</span>
+<a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a><span class="c1"># THE `&amp;&amp;` IS THE POINT. Newline-separated, a refusal here printed its</span>
+<a id="__codelineno-15-7" name="__codelineno-15-7" href="#__codelineno-15-7"></a><span class="c1"># error and the next line pushed the tag anyway, which is the failure</span>
+<a id="__codelineno-15-8" name="__codelineno-15-8" href="#__codelineno-15-8"></a><span class="c1"># this check exists to prevent. Chained, the block stops at the first</span>
+<a id="__codelineno-15-9" name="__codelineno-15-9" href="#__codelineno-15-9"></a><span class="c1"># non-zero and nothing below it runs.</span>
+<a id="__codelineno-15-10" name="__codelineno-15-10" href="#__codelineno-15-10"></a>scripts/release-body.sh<span class="w"> </span>vX.Y.Z<span class="w"> </span>RELEASE_NOTES.md<span class="w"> </span>&gt;/dev/null<span class="w"> </span><span class="o">&amp;&amp;</span>
+<a id="__codelineno-15-11" name="__codelineno-15-11" href="#__codelineno-15-11"></a>git<span class="w"> </span>tag<span class="w"> </span>-s<span class="w"> </span>vX.Y.Z<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;vX.Y.Z: &lt;one-liner&gt;&quot;</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w">   </span><span class="c1"># signed (#175)</span>
+<a id="__codelineno-15-12" name="__codelineno-15-12" href="#__codelineno-15-12"></a>git<span class="w"> </span>push<span class="w"> </span>origin<span class="w"> </span>vX.Y.Z
 </code></pre></div>
     Use <code>-s</code> (signed) so the release tag shows <strong>Verified</strong> on GitHub;
     the dev box has <code>tag.gpgsign=true</code> so <code>-a</code> would also sign, but spell
@@ -2214,22 +2226,22 @@ siblings, so a refused promotion does not suppress the release.</p>
     release: the publish path is still exercised, but dry-run builds
     stay out of the public list. No manual <code>gh release create</code>; instead
     verify:
-   <div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>gh<span class="w"> </span>release<span class="w"> </span>view<span class="w"> </span>vX.Y.Z<span class="w">   </span><span class="c1"># body = the RELEASE_NOTES section; assets:</span>
-<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="w">                         </span><span class="c1">#   net-dhcp-plugin-vX.Y.Z-linux-amd64.tar.gz</span>
-<a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a><span class="w">                         </span><span class="c1">#   net-dhcp-plugin-vX.Y.Z-linux-arm64.tar.gz</span>
-<a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a><span class="w">                         </span><span class="c1">#   checksums.txt + checksums.txt.sigstore.json</span>
-<a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a><span class="w">                         </span><span class="c1">#   checksums-arm64.txt + checksums-arm64.txt.sigstore.json</span>
-<a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a><span class="w">                         </span><span class="c1">#   provenance.intoto.jsonl + provenance-arm64.intoto.jsonl</span>
-<a id="__codelineno-15-7" name="__codelineno-15-7" href="#__codelineno-15-7"></a><span class="c1"># Re-verify the signature the way a downstream consumer would:</span>
-<a id="__codelineno-15-8" name="__codelineno-15-8" href="#__codelineno-15-8"></a>cosign<span class="w"> </span>verify-blob<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-15-9" name="__codelineno-15-9" href="#__codelineno-15-9"></a><span class="w">  </span>--bundle<span class="w"> </span>checksums.txt.sigstore.json<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-15-10" name="__codelineno-15-10" href="#__codelineno-15-10"></a><span class="w">  </span>--certificate-identity-regexp<span class="w"> </span><span class="s1">&#39;^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@&#39;</span><span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-15-11" name="__codelineno-15-11" href="#__codelineno-15-11"></a><span class="w">  </span>--certificate-oidc-issuer<span class="w"> </span>https://token.actions.githubusercontent.com<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-15-12" name="__codelineno-15-12" href="#__codelineno-15-12"></a><span class="w">  </span>checksums.txt
-<a id="__codelineno-15-13" name="__codelineno-15-13" href="#__codelineno-15-13"></a><span class="c1"># And the provenance, taken from the page, with no API call:</span>
-<a id="__codelineno-15-14" name="__codelineno-15-14" href="#__codelineno-15-14"></a>gh<span class="w"> </span>attestation<span class="w"> </span>verify<span class="w"> </span>net-dhcp-plugin-vX.Y.Z-linux-amd64.tar.gz<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-15-15" name="__codelineno-15-15" href="#__codelineno-15-15"></a><span class="w">  </span>--bundle<span class="w"> </span>provenance.intoto.jsonl<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-15-16" name="__codelineno-15-16" href="#__codelineno-15-16"></a><span class="w">  </span>--repo<span class="w"> </span>claymore666/docker-net-dhcp
+   <div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>gh<span class="w"> </span>release<span class="w"> </span>view<span class="w"> </span>vX.Y.Z<span class="w">   </span><span class="c1"># body = the RELEASE_NOTES section; assets:</span>
+<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a><span class="w">                         </span><span class="c1">#   net-dhcp-plugin-vX.Y.Z-linux-amd64.tar.gz</span>
+<a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a><span class="w">                         </span><span class="c1">#   net-dhcp-plugin-vX.Y.Z-linux-arm64.tar.gz</span>
+<a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a><span class="w">                         </span><span class="c1">#   checksums.txt + checksums.txt.sigstore.json</span>
+<a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a><span class="w">                         </span><span class="c1">#   checksums-arm64.txt + checksums-arm64.txt.sigstore.json</span>
+<a id="__codelineno-16-6" name="__codelineno-16-6" href="#__codelineno-16-6"></a><span class="w">                         </span><span class="c1">#   provenance.intoto.jsonl + provenance-arm64.intoto.jsonl</span>
+<a id="__codelineno-16-7" name="__codelineno-16-7" href="#__codelineno-16-7"></a><span class="c1"># Re-verify the signature the way a downstream consumer would:</span>
+<a id="__codelineno-16-8" name="__codelineno-16-8" href="#__codelineno-16-8"></a>cosign<span class="w"> </span>verify-blob<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-16-9" name="__codelineno-16-9" href="#__codelineno-16-9"></a><span class="w">  </span>--bundle<span class="w"> </span>checksums.txt.sigstore.json<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-16-10" name="__codelineno-16-10" href="#__codelineno-16-10"></a><span class="w">  </span>--certificate-identity-regexp<span class="w"> </span><span class="s1">&#39;^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@&#39;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-16-11" name="__codelineno-16-11" href="#__codelineno-16-11"></a><span class="w">  </span>--certificate-oidc-issuer<span class="w"> </span>https://token.actions.githubusercontent.com<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-16-12" name="__codelineno-16-12" href="#__codelineno-16-12"></a><span class="w">  </span>checksums.txt
+<a id="__codelineno-16-13" name="__codelineno-16-13" href="#__codelineno-16-13"></a><span class="c1"># And the provenance, taken from the page, with no API call:</span>
+<a id="__codelineno-16-14" name="__codelineno-16-14" href="#__codelineno-16-14"></a>gh<span class="w"> </span>attestation<span class="w"> </span>verify<span class="w"> </span>net-dhcp-plugin-vX.Y.Z-linux-amd64.tar.gz<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-16-15" name="__codelineno-16-15" href="#__codelineno-16-15"></a><span class="w">  </span>--bundle<span class="w"> </span>provenance.intoto.jsonl<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-16-16" name="__codelineno-16-16" href="#__codelineno-16-16"></a><span class="w">  </span>--repo<span class="w"> </span>claymore666/docker-net-dhcp
 </code></pre></div>
    Adjust the title/notes in the UI if the one-liner needs polish.
    The job is idempotent on a tag re-dispatch (re-uploads assets with
@@ -2280,7 +2292,7 @@ siblings, so a refused promotion does not suppress the release.</p>
 <ol>
 <li><strong>Fast-forward <code>dev</code> to <code>main</code></strong> so the release commit (version
    pins, RELEASE_NOTES section) lands on <code>dev</code> too:
-   <div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>git<span class="w"> </span>checkout<span class="w"> </span>dev<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>merge<span class="w"> </span>--ff-only<span class="w"> </span>main<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>push<span class="w"> </span>origin<span class="w"> </span>dev
+   <div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>git<span class="w"> </span>checkout<span class="w"> </span>dev<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>merge<span class="w"> </span>--ff-only<span class="w"> </span>main<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>push<span class="w"> </span>origin<span class="w"> </span>dev
 </code></pre></div>
    Skipping this leaves the next feature branch starting from the
    previous version's README/docs, and the next release PR has to
@@ -2293,12 +2305,12 @@ siblings, so a refused promotion does not suppress the release.</p>
    commits of its own since the release, so the window opens when the
    release PR lands and closes on the next merge into <code>dev</code>,
    permanently, and by doing something otherwise correct.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="c1"># is a back-merge OWED?  prints a count</span>
-<a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>git<span class="w"> </span>rev-list<span class="w"> </span>--count<span class="w"> </span>origin/dev..origin/main
-<a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a><span class="c1"># does `dev` carry commits of its own?  (--is-ancestor prints nothing)</span>
-<a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a>git<span class="w"> </span>merge-base<span class="w"> </span>--is-ancestor<span class="w"> </span>origin/dev<span class="w"> </span>origin/main<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-17-5" name="__codelineno-17-5" href="#__codelineno-17-5"></a><span class="w">    </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;dev is contained in main&quot;</span><span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-17-6" name="__codelineno-17-6" href="#__codelineno-17-6"></a><span class="w">    </span><span class="o">||</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;dev has commits of its own&quot;</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="c1"># is a back-merge OWED?  prints a count</span>
+<a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a>git<span class="w"> </span>rev-list<span class="w"> </span>--count<span class="w"> </span>origin/dev..origin/main
+<a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a><span class="c1"># does `dev` carry commits of its own?  (--is-ancestor prints nothing)</span>
+<a id="__codelineno-18-4" name="__codelineno-18-4" href="#__codelineno-18-4"></a>git<span class="w"> </span>merge-base<span class="w"> </span>--is-ancestor<span class="w"> </span>origin/dev<span class="w"> </span>origin/main<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-18-5" name="__codelineno-18-5" href="#__codelineno-18-5"></a><span class="w">    </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;dev is contained in main&quot;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-18-6" name="__codelineno-18-6" href="#__codelineno-18-6"></a><span class="w">    </span><span class="o">||</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;dev has commits of its own&quot;</span>
 </code></pre></div>
 <p><strong>Two different questions, and neither answers the other.</strong> The count
    is commits on <code>main</code> that <code>dev</code> lacks; it says a back-merge is
@@ -2380,11 +2392,11 @@ siblings, so a refused promotion does not suppress the release.</p>
 12. <strong>Prune merged branches.</strong> The repo has <em>Automatically delete head
    branches</em> enabled, so merged PR head branches are removed on merge.
    Two things that setting doesn't cover, so clean them now:
-   <div class="highlight"><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="c1"># the release branch is merged but was never a PR head:</span>
-<a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a>git<span class="w"> </span>push<span class="w"> </span>origin<span class="w"> </span>--delete<span class="w"> </span>release/vX.Y.Z
-<a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a><span class="c1"># sweep for any other branch already merged into dev that lingered:</span>
-<a id="__codelineno-18-4" name="__codelineno-18-4" href="#__codelineno-18-4"></a>git<span class="w"> </span>fetch<span class="w"> </span>--prune<span class="w"> </span>origin
-<a id="__codelineno-18-5" name="__codelineno-18-5" href="#__codelineno-18-5"></a>git<span class="w"> </span>branch<span class="w"> </span>-r<span class="w"> </span>--merged<span class="w"> </span>origin/dev<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-vE<span class="w"> </span><span class="s1">&#39;origin/(dev|main|HEAD)$&#39;</span>
+   <div class="highlight"><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="c1"># the release branch is merged but was never a PR head:</span>
+<a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a>git<span class="w"> </span>push<span class="w"> </span>origin<span class="w"> </span>--delete<span class="w"> </span>release/vX.Y.Z
+<a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a><span class="c1"># sweep for any other branch already merged into dev that lingered:</span>
+<a id="__codelineno-19-4" name="__codelineno-19-4" href="#__codelineno-19-4"></a>git<span class="w"> </span>fetch<span class="w"> </span>--prune<span class="w"> </span>origin
+<a id="__codelineno-19-5" name="__codelineno-19-5" href="#__codelineno-19-5"></a>git<span class="w"> </span>branch<span class="w"> </span>-r<span class="w"> </span>--merged<span class="w"> </span>origin/dev<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-vE<span class="w"> </span><span class="s1">&#39;origin/(dev|main|HEAD)$&#39;</span>
 </code></pre></div>
    Delete what that sweep lists. Leave alone: open-PR branches,
    Dependabot branches (it recreates its own; close via the PR), and
