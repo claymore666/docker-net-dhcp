@@ -14,7 +14,6 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 )
 
-// failFirst makes the first call through a route seam fail and passes the rest to the fake table, counting calls.
 func failFirst(t *testing.T, seam *func(*netlink.Handle, *netlink.Route) error, failWith error) *int {
 	t.Helper()
 	calls := 0
@@ -146,12 +145,10 @@ func TestReconcileAdvertisedRoutes_NoRouterHeardYetWithdrawsNothing(t *testing.T
 	}
 }
 
-// v6LinkRoute is a route on the container link as the kernel lists it.
 func v6LinkRoute(t *testing.T, dst, gw string, proto netlink.RouteProtocol) netlink.Route {
 	return netlink.Route{Dst: cidr(t, dst), Gw: net.ParseIP(gw), Protocol: proto}
 }
 
-// recoveredWithHostRoutes builds a recovered manager on a macvlan network whose parent holds hostRoutes.
 func recoveredWithHostRoutes(t *testing.T, opts DHCPNetworkOptions, hostRoutes []netlink.Route, hostErr error) (*dhcpManager, *fakeRouteTable) {
 	t.Helper()
 	prevLink, prevList := nlLinkByName, nlRouteListFiltered

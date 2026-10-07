@@ -128,8 +128,7 @@ type dhcpManager struct {
 	// Join copies (#102) carry the same protocol there and must stay. Seeded from the Join answer, or from the link on
 	// recovery (adoptAdvertRoutes); only a write that succeeded changes it (#1239). v6 consumer goroutine only.
 	lastAdvertRoutes map[string]string
-	// adoptAdvertRoutes asks the first reconcile that hears a router to seed lastAdvertRoutes from the link, skipping
-	// hostRouteDests, the host link's destinations at recovery (#1239).
+	// adoptAdvertRoutes asks the first reconcile hearing a router to seed it from the link, minus hostRouteDests.
 	adoptAdvertRoutes bool
 	hostRouteDests    map[string]bool
 	// onLinkInstalled holds the on-link prefixes this manager installed; an omission keeps them and only a Valid
