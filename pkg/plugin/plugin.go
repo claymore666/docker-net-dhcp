@@ -1189,7 +1189,7 @@ func (p *Plugin) recoverEndpoints(ctx context.Context, daemonWait time.Duration)
 		// (#1047).
 		if ipamBindingOf(n.ID) != nil {
 			if listed, ok := ipamListedMACs(netInfo.Containers); ok {
-				p.giveUpStrandedIPAMRecords(n.ID, listed, time.Now())
+				p.giveUpStrandedIPAMRecords(ctx, n.ID, listed, time.Now())
 			}
 		}
 	}
