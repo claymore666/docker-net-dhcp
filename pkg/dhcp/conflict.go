@@ -125,9 +125,13 @@ func otherModes(not proto.ConflictMode) []string {
 // Only proto.ConflictWait puts the probe window before Acquired; ConflictAsync returns at the ACK and ConflictOff never
 // probes, so refusing them would refuse a working setup. Zero means the derived default (#882).
 
-// CheckLeaseTimeout refuses a lease_timeout that cannot fund one acquisition in mode.
+// CheckLeaseTimeout refuses a lease_timeout that cannot fund one acquisition in mode, a negative one in every mode (#1240).
 func CheckLeaseTimeout(timeout time.Duration, mode proto.ConflictMode) error {
-	if timeout <= 0 || mode != proto.ConflictWait {
+	if timeout < 0 {
+		return fmt.Errorf("lease_timeout %v is negative: every acquisition would start with its deadline already past; "+
+			"leave it unset for the default or give a positive duration", timeout)
+	}
+	if timeout == 0 || mode != proto.ConflictWait {
 		return nil
 	}
 	acd := proto.DefaultACDParams()
