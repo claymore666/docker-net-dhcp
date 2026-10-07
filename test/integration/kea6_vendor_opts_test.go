@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	docker "github.com/moby/moby/client"
+
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
@@ -50,13 +52,13 @@ func TestKea6Option17ReachesTheOptionsLogLine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ContainerStart on the Kea segment: %v", err)
 	}
-	ins, err := cli.ContainerInspect(ctx, id)
+	ins, err := cli.ContainerInspect(ctx, id, docker.ContainerInspectOptions{})
 	if err != nil {
 		t.Fatalf("ContainerInspect: %v", err)
 	}
-	ep := ins.NetworkSettings.Networks[netName]
+	ep := ins.Container.NetworkSettings.Networks[netName]
 	if ep == nil || len(ep.NetworkID) < 12 {
-		t.Fatalf("the container has no endpoint on %s: %+v", netName, ins.NetworkSettings.Networks)
+		t.Fatalf("the container has no endpoint on %s: %+v", netName, ins.Container.NetworkSettings.Networks)
 	}
 	ours := []string{"DHCP options received", "is_ipv6=true", "network=" + ep.NetworkID[:12]}
 

@@ -11,8 +11,6 @@ import (
 	"os"
 	"time"
 
-	docker "github.com/docker/docker/client"
-
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
@@ -36,7 +34,7 @@ func checkHealthFloor(suite time.Duration) int {
 	ctx, cancel := context.WithTimeout(context.Background(), healthFloorBudget+15*time.Second)
 	defer cancel()
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "HEALTH FLOOR: docker client:", err)
 		return 1

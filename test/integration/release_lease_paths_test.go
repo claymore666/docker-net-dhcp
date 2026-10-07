@@ -11,9 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
-	docker "github.com/docker/docker/client"
+	docker "github.com/moby/moby/client"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
@@ -24,7 +22,7 @@ const endpointDeletedBudget = 10 * time.Second
 
 func releasePathsClient(t *testing.T) *docker.Client {
 	t.Helper()
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -75,7 +73,7 @@ func awaitEndpointsDeleted(t *testing.T, ctx context.Context, mark int64, endpoi
 
 func stopContainer(t *testing.T, ctx context.Context, cli *docker.Client, id string) time.Time {
 	t.Helper()
-	if err := cli.ContainerStop(ctx, id, container.StopOptions{}); err != nil {
+	if _, err := cli.ContainerStop(ctx, id, docker.ContainerStopOptions{}); err != nil {
 		t.Fatalf("ContainerStop(%s): %v", id, err)
 	}
 	return time.Now()
@@ -98,12 +96,12 @@ func recyclePlugin(t *testing.T, ctx context.Context, cli *docker.Client, whileD
 	t.Cleanup(func() {
 		bg, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err := cli.PluginEnable(bg, harness.PluginRef, types.PluginEnableOptions{Timeout: pluginCallTimeout}); err != nil &&
+		if _, err := cli.PluginEnable(bg, harness.PluginRef, docker.PluginEnableOptions{Timeout: pluginCallTimeout}); err != nil &&
 			!strings.Contains(err.Error(), "already enabled") {
 			t.Logf("WARN: cleanup PluginEnable: %v", err)
 		}
 	})
-	if err := cli.PluginDisable(ctx, harness.PluginRef, types.PluginDisableOptions{Force: true}); err != nil {
+	if _, err := cli.PluginDisable(ctx, harness.PluginRef, docker.PluginDisableOptions{Force: true}); err != nil {
 		t.Fatalf("PluginDisable: %v", err)
 	}
 	if err := harness.WaitPluginEnabled(ctx, cli, false, pluginDisableBudget); err != nil {
@@ -112,7 +110,7 @@ func recyclePlugin(t *testing.T, ctx context.Context, cli *docker.Client, whileD
 	if whileDown != nil {
 		whileDown()
 	}
-	if err := cli.PluginEnable(ctx, harness.PluginRef, types.PluginEnableOptions{Timeout: pluginCallTimeout}); err != nil {
+	if _, err := cli.PluginEnable(ctx, harness.PluginRef, docker.PluginEnableOptions{Timeout: pluginCallTimeout}); err != nil {
 		t.Fatalf("PluginEnable: %v", err)
 	}
 	if err := harness.WaitPluginEnabled(ctx, cli, true, pluginEnableBudget); err != nil {
@@ -161,7 +159,7 @@ func TestReleaseLease_OnRemoveNetworkRemovalHandsTheHeldAddressBackAtOnce(t *tes
 
 	stopped := stopContainer(t, ctx, cli, id)
 	awaitEndpointsDeleted(t, ctx, mark, ep)
-	if err := cli.ContainerRemove(ctx, id, container.RemoveOptions{}); err != nil {
+	if _, err := cli.ContainerRemove(ctx, id, docker.ContainerRemoveOptions{}); err != nil {
 		t.Fatalf("ContainerRemove: %v", err)
 	}
 
@@ -175,7 +173,7 @@ func TestReleaseLease_OnRemoveNetworkRemovalHandsTheHeldAddressBackAtOnce(t *tes
 	}
 
 	removed := time.Now()
-	if err := cli.NetworkRemove(ctx, netID); err != nil {
+	if _, err := cli.NetworkRemove(ctx, netID, docker.NetworkRemoveOptions{}); err != nil {
 		t.Fatalf("NetworkRemove: %v", err)
 	}
 
@@ -262,7 +260,7 @@ func TestReleaseLease_OnRemoveNetworkRemovalHandsBackOnlyThatNetworksAddresses(t
 		}
 	}
 
-	if err := cli.NetworkRemove(ctx, removedID); err != nil {
+	if _, err := cli.NetworkRemove(ctx, removedID, docker.NetworkRemoveOptions{}); err != nil {
 		t.Fatalf("NetworkRemove(%s): %v", removedNet, err)
 	}
 	for _, c := range []*held{a1, a2} {
@@ -411,18 +409,18 @@ func TestReleaseLease_OnStopLeavesTheAddressToExpireWhenThePluginMissedTheStop(t
 		start := time.Now()
 		stopContainer(t, ctx, cli, id)
 		t.Logf("docker stop returned after %s with the plugin disabled", time.Since(start))
-		ins, err := cli.ContainerInspect(ctx, id)
+		ins, err := cli.ContainerInspect(ctx, id, docker.ContainerInspectOptions{})
 		if err != nil {
 			t.Fatalf("ContainerInspect: %v", err)
 		}
-		if ins.State == nil || ins.State.Running {
+		if ins.Container.State == nil || ins.Container.State.Running {
 			t.Fatalf("the container is still running after docker stop")
 		}
-		p, _, err := cli.PluginInspectWithRaw(ctx, harness.PluginRef)
+		p, err := cli.PluginInspect(ctx, harness.PluginRef, docker.PluginInspectOptions{})
 		if err != nil {
 			t.Fatalf("PluginInspect: %v", err)
 		}
-		if p.Enabled {
+		if p.Plugin.Enabled {
 			t.Fatalf("the plugin was enabled when docker stop returned, so the stop may have reached it")
 		}
 	})

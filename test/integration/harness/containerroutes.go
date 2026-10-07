@@ -12,7 +12,7 @@ import (
 	"testing"
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
-	docker "github.com/docker/docker/client"
+	docker "github.com/moby/moby/client"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
@@ -29,19 +29,19 @@ type ContainerRoute struct {
 // containerHandle opens a netlink handle in the container's own network namespace; the caller closes it.
 func containerHandle(t *testing.T, ctx context.Context, containerID string) *netlink.Handle {
 	t.Helper()
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
 	defer cli.Close()
-	ins, err := cli.ContainerInspect(ctx, containerID)
+	ins, err := cli.ContainerInspect(ctx, containerID, docker.ContainerInspectOptions{})
 	if err != nil {
 		t.Fatalf("ContainerInspect(%s): %v", containerID, err)
 	}
-	if ins.State == nil || ins.State.Pid == 0 {
+	if ins.Container.State == nil || ins.Container.State.Pid == 0 {
 		t.Fatalf("container %s has no running process to read the namespace of", containerID)
 	}
-	ns, err := netns.GetFromPid(ins.State.Pid)
+	ns, err := netns.GetFromPid(ins.Container.State.Pid)
 	if err != nil {
 		t.Fatalf("netns of container %s: %v", containerID, err)
 	}

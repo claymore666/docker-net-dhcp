@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
+	docker "github.com/moby/moby/client"
+
+	"github.com/moby/moby/api/types/network"
 
 	"github.com/claymore666/dhcp-golib/lease"
 
@@ -193,7 +193,7 @@ func TestRequireMAC_WithoutAMACIsRefusedAndLeavesNothing(t *testing.T) {
 
 			// Started seconds after the refusal, so a record the refusal left would be this start's re-bind candidate.
 			if err := ipamRunContainerErr(t, ctx, cli, netName, netName+"-mac",
-				&network.EndpointSettings{MacAddress: c.mac}); err != nil {
+				&network.EndpointSettings{MacAddress: harness.MustMAC(c.mac)}); err != nil {
 				t.Fatalf("a container with --mac-address %s was refused: %v", c.mac, err)
 			}
 			addr, mac := ipamNetworkAddress(t, ctx, cli, netName+"-mac", netName)
@@ -252,46 +252,46 @@ func TestRequireMAC_NetworkConnectIsRefused(t *testing.T) {
 	if eps := ipamNetworkInspect(t, ctx, cli, strictNet).Containers; len(eps) != 0 {
 		t.Errorf("the refused connect left an endpoint on %s: %v", strictNet, eps)
 	}
-	ins, err := cli.ContainerInspect(ctx, id)
+	ins, err := cli.ContainerInspect(ctx, id, docker.ContainerInspectOptions{})
 	if err != nil {
 		t.Fatalf("ContainerInspect: %v", err)
 	}
 	// A failed connect leaves the engine's empty entry in the container view on 26.1.5 and 29.8.1 (measured 2026-09-24, #1036).
-	if es, ok := ins.NetworkSettings.Networks[strictNet]; ok &&
-		(es.EndpointID != "" || es.IPAddress != "" || es.GlobalIPv6Address != "" || es.MacAddress != "") {
+	if es, ok := ins.Container.NetworkSettings.Networks[strictNet]; ok &&
+		(es.EndpointID != "" || es.IPAddress.IsValid() || es.GlobalIPv6Address.IsValid() || len(es.MacAddress) != 0) {
 		t.Errorf("the container holds an endpoint on %s after the refused connect: %+v", strictNet, es)
 	}
 	if linksAfter := harness.ExecOutput(t, ctx, id, "ip", "-o", "link", "show"); linksAfter != linksBefore {
 		t.Errorf("the refused connect changed the container's interfaces:\nbefore:\n%s\nafter:\n%s", linksBefore, linksAfter)
 	}
-	if _, ok := ins.NetworkSettings.Networks[firstNet]; !ok || !ins.State.Running {
+	if _, ok := ins.Container.NetworkSettings.Networks[firstNet]; !ok || !ins.Container.State.Running {
 		t.Errorf("the refused connect disturbed the container: running=%v networks=%v",
-			ins.State.Running, ins.NetworkSettings.Networks)
+			ins.Container.State.Running, ins.Container.NetworkSettings.Networks)
 	}
 
 	// With the leftover entry the restart is refused and stops the container, and only a stopped container can be disconnected (#1036).
-	if _, ok := ins.NetworkSettings.Networks[strictNet]; ok {
-		err := cli.ContainerRestart(ctx, id, container.StopOptions{})
+	if _, ok := ins.Container.NetworkSettings.Networks[strictNet]; ok {
+		_, err := cli.ContainerRestart(ctx, id, docker.ContainerRestartOptions{})
 		if err == nil || !strings.Contains(err.Error(), "require_mac is set on this network") {
 			t.Fatalf("docker restart with the leftover entry: want the require_mac refusal, got %v", err)
 		}
-		if st, ierr := cli.ContainerInspect(ctx, id); ierr != nil || st.State.Running {
+		if st, ierr := cli.ContainerInspect(ctx, id, docker.ContainerInspectOptions{}); ierr != nil || st.Container.State.Running {
 			t.Fatalf("the refused restart left the container running or unreadable: %v", ierr)
 		}
 		if out, err := exec.CommandContext(ctx, "docker", "network", "disconnect", strictNet, id).CombinedOutput(); err != nil {
 			t.Fatalf("docker network disconnect of the stopped container: %v\n%s", err, out)
 		}
-		if err := cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
+		if _, err := cli.ContainerStart(ctx, id, docker.ContainerStartOptions{}); err != nil {
 			t.Fatalf("docker start after the disconnect: %v", err)
 		}
-	} else if err := cli.ContainerRestart(ctx, id, container.StopOptions{}); err != nil {
+	} else if _, err := cli.ContainerRestart(ctx, id, docker.ContainerRestartOptions{}); err != nil {
 		t.Fatalf("docker restart after the refused connect: %v", err)
 	}
-	if ins, err = cli.ContainerInspect(ctx, id); err != nil {
+	if ins, err = cli.ContainerInspect(ctx, id, docker.ContainerInspectOptions{}); err != nil {
 		t.Fatalf("ContainerInspect: %v", err)
 	}
-	if _, ok := ins.NetworkSettings.Networks[strictNet]; ok || !ins.State.Running || ins.NetworkSettings.Networks[firstNet] == nil {
-		t.Errorf("after the restart: running=%v networks=%v", ins.State.Running, ins.NetworkSettings.Networks)
+	if _, ok := ins.Container.NetworkSettings.Networks[strictNet]; ok || !ins.Container.State.Running || ins.Container.NetworkSettings.Networks[firstNet] == nil {
+		t.Errorf("after the restart: running=%v networks=%v", ins.Container.State.Running, ins.Container.NetworkSettings.Networks)
 	}
 }
 
@@ -306,7 +306,7 @@ func TestRequireMAC_APluginRecycleKeepsAnAcceptedContainer(t *testing.T) {
 	const pinned = "02:00:00:10:36:05"
 	harness.CreateNetwork(t, ctx, netName, "macvlan", map[string]string{"require_mac": "true"})
 	if err := ipamRunContainerErr(t, ctx, cli, netName, ctrName,
-		&network.EndpointSettings{MacAddress: pinned}); err != nil {
+		&network.EndpointSettings{MacAddress: harness.MustMAC(pinned)}); err != nil {
 		t.Fatalf("a container with --mac-address was refused: %v", err)
 	}
 	before, mac := ipamNetworkAddress(t, ctx, cli, ctrName, netName)
@@ -317,7 +317,7 @@ func TestRequireMAC_APluginRecycleKeepsAnAcceptedContainer(t *testing.T) {
 	t.Cleanup(func() {
 		bg, bgCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer bgCancel()
-		if err := cli.PluginEnable(bg, harness.PluginRef, types.PluginEnableOptions{Timeout: 30}); err != nil &&
+		if _, err := cli.PluginEnable(bg, harness.PluginRef, docker.PluginEnableOptions{Timeout: 30}); err != nil &&
 			!strings.Contains(err.Error(), "already enabled") {
 			t.Logf("WARN: cleanup PluginEnable: %v", err)
 		}
@@ -326,13 +326,13 @@ func TestRequireMAC_APluginRecycleKeepsAnAcceptedContainer(t *testing.T) {
 	// As in TestRecovery_PluginDisableEnable_PreservesEndpoint: the recovered Join client probes asynchronously (#725).
 	harness.AllowUnprobedLeases(1)
 
-	if err := cli.PluginDisable(ctx, harness.PluginRef, types.PluginDisableOptions{Force: true}); err != nil {
+	if _, err := cli.PluginDisable(ctx, harness.PluginRef, docker.PluginDisableOptions{Force: true}); err != nil {
 		t.Fatalf("PluginDisable: %v", err)
 	}
 	if err := harness.WaitPluginEnabled(ctx, cli, false, 15*time.Second); err != nil {
 		t.Fatalf("plugin did not reach disabled state: %v", err)
 	}
-	if err := cli.PluginEnable(ctx, harness.PluginRef, types.PluginEnableOptions{Timeout: 30}); err != nil {
+	if _, err := cli.PluginEnable(ctx, harness.PluginRef, docker.PluginEnableOptions{Timeout: 30}); err != nil {
 		t.Fatalf("PluginEnable: %v", err)
 	}
 	if err := harness.WaitPluginEnabled(ctx, cli, true, 30*time.Second); err != nil {
@@ -348,7 +348,7 @@ func TestRequireMAC_APluginRecycleKeepsAnAcceptedContainer(t *testing.T) {
 		t.Errorf("recovery_failed=%d: the accepted endpoint was not rebuilt", after.RecoveryFailed)
 	}
 
-	if err := cli.ContainerRestart(ctx, ctrName, container.StopOptions{}); err != nil {
+	if _, err := cli.ContainerRestart(ctx, ctrName, docker.ContainerRestartOptions{}); err != nil {
 		t.Fatalf("docker restart of the accepted container failed: %v", err)
 	}
 	after, mac := ipamNetworkAddress(t, ctx, cli, ctrName, netName)
