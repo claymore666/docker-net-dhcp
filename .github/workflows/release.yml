@@ -844,7 +844,7 @@ jobs:
       # SPDX and CycloneDX in one pass; both are attached to the release
       # and folded into the signed checksum manifest below.
       - name: Install syft
-        uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
 
       - name: Generate SBOM (SPDX + CycloneDX)
         run: |
@@ -1199,7 +1199,7 @@ jobs:
           scripts/publish-hub-alias.sh --expect-digest "${HUB_DIGEST}" "docker.io/${HUB_NAME}:${ARM_TAG}" "docker.io/${HUB_ALIAS}:${ARM_TAG}"
 
       - name: Install syft
-        uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
 
       # Arch-suffixed filenames throughout: these land on the SAME
       # GitHub Release as the amd64 set, and `sbom.spdx.json` twice on
