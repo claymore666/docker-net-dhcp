@@ -509,16 +509,8 @@
 #              per network create, plugin log read and rule restore:
 #              67.19, rounded up so a first run costs less than the
 #              table says.
-#   #1243 row  TestIPvlan_TwoEndpointsSharingTheParentMACEachLeaseOn-
-#              TheirOwnLink (#1243) is 180.00, INFERRED: no run has
-#              executed it. The vlan fixture and two networks (15s),
-#              two containers each started and connected to a second
-#              network (30s), the wait for every lease to reach T1, one
-#              minute into the two-minute lease (60s), a plugin
-#              disable and enable (15s), the wait for the next renewal
-#              (at most 60s): 180s.
-#   samples    3 for every corpus row. SIXTY-NINE rows are not corpus
-#              samples, and the eighteen groups below are disjoint and
+#   samples    3 for every corpus row. SIXTY-EIGHT rows are not corpus
+#              samples, and the seventeen groups below are disjoint and
 #              exhaust them: the five `one row` notes above -- 73.85,
 #              84.19, 0.05, 12.08 and 13.00 -- the eighteen #110 rows,
 #              the four #962 TestReleaseLease_* rows, the two
@@ -529,8 +521,8 @@
 #              the #1081 renumber row, the five #1037
 #              TestMTUOption_* rows, the four #905 TestSubModes_* rows
 #              the three #902 TestVlan_* rows, the #904 row, the
-#              #1118 row, the #1125 row, the #1116 row and the #1243 row.
-#              Sixty-six of the sixty-nine are INFERRED; the three
+#              #1118 row, the #1125 row and the #1116 row.
+#              Sixty-five of the sixty-eight are INFERRED; the three
 #              that are measured are
 #              TestLeaseRenewIPv6_HonorsT1, from three later head runs,
 #              and TestFailure_UnansweredRenewalsCounted and
@@ -727,7 +719,6 @@ TestIPv6_AcceptedAtCreate	0.02
 TestIPv6_DNS6Propagation	34.17
 TestIPv6_TheV4OnlyPathIsUnchanged	11.57
 TestIPvlan_DHCPv6IdentityIsPerEndpointAndSurvivesARestart	30.86
-TestIPvlan_TwoEndpointsSharingTheParentMACEachLeaseOnTheirOwnLink	180.00
 TestInterfaceName_InvalidRejected	0.44
 TestInterfaceName_MultiNetworkDeterministic	12.08
 TestInterfaceName_PluginHonorsOption	12.50
