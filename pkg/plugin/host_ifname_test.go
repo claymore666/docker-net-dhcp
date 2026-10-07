@@ -853,7 +853,6 @@ func TestAfterAttach_TheContainerNameReachesTheLinkWhenTheLookupIsLate(t *testin
 	}
 }
 
-// A kernel before 6.2 refuses to rename an up link with EBUSY; the log must say why, not just that it refused (#1248).
 func TestRenameHostLink_EBUSYNamesTheKernelBeforeSixPointTwo(t *testing.T) {
 	m, p := aBridgeEndpoint(t, HostIfnameContainerName)
 	k := &fakeKernel{name: "dh-a1b2c3d4e5f6"}
@@ -879,7 +878,6 @@ func TestRenameHostLink_EBUSYNamesTheKernelBeforeSixPointTwo(t *testing.T) {
 	t.Errorf("no log line names the kernel before 6.2 as the reason for EBUSY; lines: %q", msgs)
 }
 
-// Any other refusal keeps the generic line, so the 6.2 reason is not claimed for a cause it does not explain (#1248).
 func TestRenameHostLink_ARefusalOtherThanEBUSYDoesNotBlameTheKernelVersion(t *testing.T) {
 	m, _ := aBridgeEndpoint(t, HostIfnameContainerName)
 	k := &fakeKernel{name: "dh-a1b2c3d4e5f6"}
