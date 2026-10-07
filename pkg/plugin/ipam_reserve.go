@@ -474,7 +474,9 @@ func (p *Plugin) addIPAMReserveLink(ctx context.Context, name, peer, mode string
 			return nil, explainChildLinkAdd(err, mode, opts.linkParent(), parent.Attrs().Index)
 		}
 		if err := nlLinkSetUp(link); err != nil {
-			_ = nlLinkDel(link)
+			if delErr := nlLinkDel(link); delErr != nil {
+				log.WithError(delErr).WithField("link", name).Warn("Reservation link cleanup failed; remove it with `ip link del`")
+			}
 			guard.Unlock()
 			return nil, fmt.Errorf("failed to bring the reservation link up: %w", err)
 		}

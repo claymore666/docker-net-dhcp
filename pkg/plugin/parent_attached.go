@@ -222,7 +222,7 @@ func pinChildMAC(opts DHCPNetworkOptions, userMAC bool, fresh, parent netlink.Li
 	return mac, nil
 }
 
-func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart time.Time, r CreateEndpointRequest, opts DHCPNetworkOptions) (CreateEndpointResponse, error) {
+func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart time.Time, r CreateEndpointRequest, opts DHCPNetworkOptions) (_ CreateEndpointResponse, err error) {
 	res := CreateEndpointResponse{Interface: &EndpointInterface{}}
 	mode := opts.effectiveMode()
 
@@ -257,6 +257,12 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 	requestedV6 := explicitV6
 	if mode == ModeMacvlan && effectiveMAC == "" {
 		if tombMAC, tombIP, tombIPv6, ok := p.consumeTombstone(r.NetworkID, hostname); ok {
+			// A failed create hands it back, or the retry leases a new MAC and address (#657).
+			defer func() {
+				if err != nil {
+					p.addTombstone(r.NetworkID, hostname.name, tombMAC, tombIP, tombIPv6)
+				}
+			}()
 			// The kernel ignores a passthru child's create address, and the pin below sets the parent's (#905).
 			if !opts.macvlanPassthru() {
 				effectiveMAC = tombMAC
@@ -445,10 +451,12 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 		}
 		return nil
 	}(); err != nil {
-		// Best-effort rollback: a link LinkDel misses goes with its netns.
+		// The child is still in the host netns: the engine moves it only after CreateEndpoint returns (#657).
 		p.closeRecord(recordID)
 		p.closeRecord(recordID6)
-		_ = nlLinkDel(link)
+		if delErr := nlLinkDel(link); delErr != nil {
+			log.WithError(delErr).WithField("link", la.Name).Warn("Endpoint link cleanup failed; remove it with `ip link del`")
+		}
 		return res, err
 	}
 
