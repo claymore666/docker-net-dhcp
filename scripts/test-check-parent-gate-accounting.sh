@@ -94,6 +94,14 @@ func other() error { return netlink.LinkAdd(link) }
 EOF
 check "a new unaccounted-for LinkAdd fails" 1 "$TMP/newsite" "$TMP/newsite/manifest.txt" \
     "pkg/plugin/other.go"
+cp -r "$TMP/ok" "$TMP/seamsite"
+cat > "$TMP/seamsite/pkg/plugin/other.go" <<'EOF'
+package plugin
+
+func other() error { return nlLinkAdd(link) }
+EOF
+check "a new unaccounted-for LinkAdd through the seam fails (#657)" 1 "$TMP/seamsite" \
+    "$TMP/seamsite/manifest.txt" "pkg/plugin/other.go"
 check "and the message names lockParent as the thing to check" 1 "$TMP/newsite" \
     "$TMP/newsite/manifest.txt" "Plugin.lockParent"
 
@@ -283,7 +291,7 @@ else
     failures=$((failures + 1))
 fi
 
-real_sites=$(cd "$REPO" && grep -rn "netlink\.LinkAdd(" pkg/ --include='*.go' 2>/dev/null \
+real_sites=$(cd "$REPO" && grep -rnE '\b(netlink\.|nl)LinkAdd\(' pkg/ --include='*.go' 2>/dev/null \
     | grep -vc '_test\.go:')
 if [ "$real_sites" -ge 1 ]; then
     echo "PASS: the committed tree really has $real_sites LinkAdd site(s) to account for"

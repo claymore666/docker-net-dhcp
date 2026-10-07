@@ -94,7 +94,8 @@ declared="$(mktemp)"
 # gate_subjects (#744) lists the non-test Go files git sees under pkg/.
 gofiles=()
 gate_subjects gofiles go-src "$ROOT/pkg"
-hits="$(grep -Hn "netlink\.LinkAdd(" -- "${gofiles[@]}")"
+# nlLinkAdd( is the same call through the seam in pkg/plugin/netlink_seam.go (#657).
+hits="$(grep -HnE '\b(netlink\.|nl)LinkAdd\(' -- "${gofiles[@]}")"
 [ $? -le 1 ] || gate_refuse "grep failed over $ROOT/pkg"
 printf '%s\n' "$hits" | sed "s|^$ROOT/||" | grep -v '^$' \
     | cut -d: -f1 | sort | uniq -c \
