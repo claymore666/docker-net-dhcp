@@ -25,18 +25,6 @@ The notes below go back to the first release of this project.
   that restarted onto a held record keeps it out of the release; and a
   network removal running beside the periodic pass releases each address
   once, not twice (#1237).
-- When `docker run` fails while the plugin is creating a bridge-mode
-  endpoint, and removing the half-made veth also fails, the plugin now logs
-  a warning naming the link and `ip link del`. Before, the link stayed on
-  the host with no trace in the log (#657).
-- The same for the macvlan and ipvlan child link of a failed endpoint
-  creation (#657).
-- The same for the macvlan link a reservation creates when bringing it up
-  fails (#657).
-- A restarting container whose endpoint creation fails once, for example
-  on a DHCP timeout, keeps its MAC address and IP address on the retry.
-  Before, the failed attempt used up the record of the old ones, so the
-  retry got new ones (#657).
 
 ## v2.4.0
 
