@@ -19,6 +19,14 @@ The notes below go back to the first release of this project.
   read when the container started, which its own change never updated. It
   now reads the link's MTU from the kernel, so a withdrawn value puts back
   the MTU the link had before the plugin first changed it (#1238).
+- When `docker run` fails while the plugin is creating a bridge-mode
+  endpoint, and removing the half-made veth also fails, the plugin now logs
+  a warning naming the link and `ip link del`. Before, the link stayed on
+  the host with no trace in the log (#657).
+- The same for the macvlan and ipvlan child link of a failed endpoint
+  creation (#657).
+- The same for the macvlan link a reservation creates when bringing it up
+  fails (#657).
 
 ## v2.4.0
 
