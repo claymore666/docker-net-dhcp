@@ -18,14 +18,22 @@ var (
 	nlLinkList          = netlink.LinkList
 	nlLinkSetAlias      = netlink.LinkSetAlias
 	nlLinkSetMaster     = netlink.LinkSetMaster
+	nlLinkSetNoMaster   = netlink.LinkSetNoMaster
 
 	nlLinkSetHardwareAddr = netlink.LinkSetHardwareAddr
 
 	nlLinkSetName    = netlink.LinkSetName
 	nlLinkAddAltName = netlink.LinkAddAltName
 
+	nlLinkAdd            = netlink.LinkAdd
+	nlEndpointLinkByName = netlink.LinkByName
+	nlLinkByIndexCurNS   = netlink.LinkByIndex
+	nlVethPeerIndex      = netlink.VethPeerIndex
+
 	// nlRouteDel acts in the caller's current namespace; purgeRouterAdvertRoutes calls it inside the sandbox on a locked thread.
 	nlRouteDel = netlink.RouteDel
+	// nlAddrDelCurNS acts in the caller's current namespace, as nlRouteDel; purgeKernelEUI64Addrs is its caller.
+	nlAddrDelCurNS = netlink.AddrDel
 
 	// nlNewHandleAt needs CAP_SYS_ADMIN even for the caller's own namespace, since it calls setns(2) (#417).
 	nlNewHandleAt = netlink.NewHandleAt

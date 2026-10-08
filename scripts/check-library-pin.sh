@@ -4,6 +4,9 @@
 
 # The DHCP library in the BINARY is the module go.mod pins.
 #
+# Expires-when: the build labels the image from the module the binary was
+#   compiled with, not from go list's required version (#1009).
+#
 # WHY THIS EXISTS
 #
 # Until 2.0 the library travelled as a directory under internal/, and
@@ -72,6 +75,8 @@
 # first. A checking script that also compiles is a build step, and
 # where it runs decides whether that matters -- see WHAT IT CANNOT DO.
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 MODULE="github.com/claymore666/dhcp-golib"
 

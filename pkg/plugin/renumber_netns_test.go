@@ -418,6 +418,7 @@ var renumberKernelTests = []string{
 	"TestFirstLease_LeavesTheJoinGatewayToTheEngineInEitherOrder_IPv4",
 	"TestFirstLease_LeavesTheJoinGatewayToTheEngineInEitherOrder_IPv6",
 	"TestFirstLease_TheKernelRefusesTheEngineInstallOverAPluginRoute",
+	"TestHandleEvent_ABindingEndingWhileBoundLeavesTheContainer",
 }
 
 func TestRenumberKernelTests_ARefusedLinkIsNeverAPass(t *testing.T) {

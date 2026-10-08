@@ -42,6 +42,10 @@ func renderLease(l lease.Lease, r proto.RouterObservation, now time.Time, main n
 	// leaves Lease.Preferred at the zero Time that also means infinite, and the kernel would never mark it deprecated
 	// (RFC 4862 section 5.5.4, #819).
 	fillV6Addrs(&info, l, now, main)
+	_, info.DelegatedPrefixes = v6AddrsAt(l.Prefixes, now)
+	if len(info.DelegatedPrefixes) == 0 {
+		info.DelegatedPrefixes = nil
+	}
 	if l.Gateway.IsValid() && !l.Gateway.IsUnspecified() {
 		info.Gateway = l.Gateway.String()
 	}
@@ -110,6 +114,7 @@ func fillV6Observed(info *Info, o wire.OptionsV6, server []byte) {
 	if len(info.NTPServers) == 0 {
 		info.NTPServers = ntpServersV6(o, server)
 	}
+	fillVendorOptions6(info, o)
 }
 
 // ntpServersV6 is every option 56 instance (RFC 5908 section 4) as one string, in wire order: an address as its text,
@@ -186,6 +191,21 @@ func fillVendorOptions(info *Info, o wire.Options) {
 	}
 	for _, b := range blocks {
 		info.VendorIdentifying = append(info.VendorIdentifying, VendorBlock{
+			Enterprise: b.Enterprise,
+			Data:       hex.EncodeToString(b.Data),
+		})
+	}
+}
+
+// fillVendorOptions6 records each instance of DHCPv6 option 17 (RFC 8415 section 21.17), as fillVendorOptions does 125;
+// an instance under four octets leaves the whole option out (#1203).
+func fillVendorOptions6(info *Info, o wire.OptionsV6) {
+	blocks, err := o.VendorOpts()
+	if err != nil {
+		return
+	}
+	for _, b := range blocks {
+		info.VendorInformation = append(info.VendorInformation, VendorBlock{
 			Enterprise: b.Enterprise,
 			Data:       hex.EncodeToString(b.Data),
 		})

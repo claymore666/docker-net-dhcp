@@ -6,6 +6,9 @@
 # must each state a ceiling that holds it, and their job caps must hold
 # the ceilings (#934).
 #
+# Expires-when: no lane runs the whole integration suite in one go test
+#   binary; every lane shards it (#934).
+#
 # WHY THIS EXISTS. Three lanes now run the main suite unsharded --
 # integration-arm64.yml, coverage.yml and integration-hosted.yml -- and
 # each of them arrived at the same ceiling by its own derivation, in its own
@@ -90,13 +93,14 @@
 #          read, a value this gate cannot judge, or an empty population)
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 WF_DIR="${1:-.github/workflows}"
 MAKEFILE="${2:-Makefile}"
 
 refuse() {
-    echo "::error title=One-process budget gate cannot check::$1" >&2
-    exit 2
+    GATE_TITLE='One-process budget gate cannot check' gate_refuse "$1"
 }
 
 [ -d "$WF_DIR" ] || refuse "no workflow directory '$WF_DIR'."

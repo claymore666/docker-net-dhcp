@@ -9,8 +9,13 @@
 # Satisfied by `shell: bash` (which runs `bash -eo pipefail`), a shell
 # naming pipefail, or `set ... -o pipefail` above the tee in the block.
 # Workflow- or job-level `defaults:` are not read: such a step is red.
+#
+# Expires-when: GitHub's default run shell gains pipefail, or no workflow
+#   step pipes into tee (#297).
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 cd "$(dirname "$0")/.." || exit 2
 DIR="${WORKFLOW_DIR:-.github/workflows}"

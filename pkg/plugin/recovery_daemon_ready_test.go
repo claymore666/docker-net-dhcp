@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	dNetwork "github.com/docker/docker/api/types/network"
+	dNetwork "github.com/moby/moby/api/types/network"
 )
 
 // Docker respawns the plugin during its own startup, so recovery's first Docker call

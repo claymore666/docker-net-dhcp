@@ -5,6 +5,9 @@
 # Every documented `docker network create` has a row in the engine
 # matrix (#1013).
 #
+# Expires-when: the engine matrix runs per pull request, so a documented
+#   network shape the cell cannot drive is red on that lane first (#1013).
+#
 # WHAT WENT WRONG WITHOUT IT. docs/reference.md has promised
 # `--ipam-driver <this plugin>` since v2.1.0, and every network the
 # matrix created was created with `--ipam-driver null`, so that shape
@@ -50,6 +53,8 @@
 # Exit: 0 every documented shape is driven, 1 one is not, 2 cannot check.
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 cd "$(dirname "$0")/.." || exit 2
 

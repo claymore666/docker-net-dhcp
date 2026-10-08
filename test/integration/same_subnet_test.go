@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
-	docker "github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	docker "github.com/moby/moby/client"
 )
 
 // sameSubnetLeaseBudget bounds the wait for the ACKs, a positive event that exits early, unlike the release absence below.
@@ -30,7 +30,7 @@ func TestMultiNetwork_SameSubnetRefused(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -57,23 +57,23 @@ func TestMultiNetwork_SameSubnetRefused(t *testing.T) {
 	// test calls t.Parallel and the fixture lease (2m) outlasts the 30s window only for running containers (#847).
 	acksBefore := fixture.CountLogLines("DHCPACK")
 	releasesBefore := fixture.CountLogLines("DHCPRELEASE")
+	w := harness.BeginCounterWindow(t, ctx, cli, "join_start_failures", "join_aborted_link_withdrawn",
+		"join_aborted_endpoint_left", "join_aborted_container_gone", "join_aborted_no_container")
 
 	create, err := cli.ContainerCreate(ctx,
-		&container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}},
-		harness.HostConfig(),
-		&network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{
+		docker.ContainerCreateOptions{Config: &container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}}, HostConfig: harness.HostConfig(), NetworkingConfig: &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{
 			netA: {}, netB: {},
-		}}, nil, "dh-itest-samesubnet-ctr")
+		}}, Name: "dh-itest-samesubnet-ctr"})
 	if err != nil {
 		t.Fatalf("ContainerCreate: %v", err)
 	}
 	t.Cleanup(func() {
 		bg := context.Background()
-		_ = cli.ContainerStop(bg, create.ID, container.StopOptions{})
-		_ = cli.ContainerRemove(bg, create.ID, container.RemoveOptions{Force: true})
+		_, _ = cli.ContainerStop(bg, create.ID, docker.ContainerStopOptions{})
+		_, _ = cli.ContainerRemove(bg, create.ID, docker.ContainerRemoveOptions{Force: true})
 	})
 
-	err = cli.ContainerStart(ctx, create.ID, container.StartOptions{})
+	_, err = cli.ContainerStart(ctx, create.ID, docker.ContainerStartOptions{})
 	if err == nil {
 		// Recorded before the evidence, because harness.ExecOutput calls t.Fatalf on an exec error.
 		t.Errorf("two networks on one subnet attached successfully — libnetwork no longer " +
@@ -135,4 +135,24 @@ func TestMultiNetwork_SameSubnetRefused(t *testing.T) {
 			"change both tests and the docs row together", releases)
 	}
 	t.Logf("\u2713 and released none of them: the addresses stay leased until they expire")
+
+	before, after := w.End()
+	if d := after.JoinStartFailures - before.JoinStartFailures; d != 0 {
+		t.Errorf("join_start_failures rose by %d across a start Docker refused. That counter means a running "+
+			"container without a renewal client; this container never ran, and Docker took the refused "+
+			"link back out of its sandbox (#1236)", d)
+	}
+	aborted := func(h *harness.HealthResponse) int32 {
+		return h.JoinAbortedLinkWithdrawn + h.JoinAbortedEndpointLeft + h.JoinAbortedContainerGone +
+			h.JoinAbortedNoContainer
+	}
+	if d := aborted(after) - aborted(before); d < 1 {
+		t.Errorf("no join_aborted_* counter moved across the refused start (delta %d), so the refused "+
+			"attach was counted nowhere and the flat join_start_failures above proves nothing (#1236)", d)
+	}
+	t.Logf("\u2713 counted as aborted: link_withdrawn +%d, endpoint_left +%d, container_gone +%d, no_container +%d",
+		after.JoinAbortedLinkWithdrawn-before.JoinAbortedLinkWithdrawn,
+		after.JoinAbortedEndpointLeft-before.JoinAbortedEndpointLeft,
+		after.JoinAbortedContainerGone-before.JoinAbortedContainerGone,
+		after.JoinAbortedNoContainer-before.JoinAbortedNoContainer)
 }

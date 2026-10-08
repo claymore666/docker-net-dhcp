@@ -25,6 +25,8 @@ set -u
 GATE="$(dirname "$0")/check-parent-gate-accounting.sh"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 guarded_tmpdir TMP
+# The gate lists subjects through git (#744); every fixture root sits in this work tree.
+git init -q "$TMP"
 
 failures=0
 
@@ -92,6 +94,14 @@ func other() error { return netlink.LinkAdd(link) }
 EOF
 check "a new unaccounted-for LinkAdd fails" 1 "$TMP/newsite" "$TMP/newsite/manifest.txt" \
     "pkg/plugin/other.go"
+cp -r "$TMP/ok" "$TMP/seamsite"
+cat > "$TMP/seamsite/pkg/plugin/other.go" <<'EOF'
+package plugin
+
+func other() error { return nlLinkAdd(link) }
+EOF
+check "a new unaccounted-for LinkAdd through the seam fails (#657)" 1 "$TMP/seamsite" \
+    "$TMP/seamsite/manifest.txt" "pkg/plugin/other.go"
 check "and the message names lockParent as the thing to check" 1 "$TMP/newsite" \
     "$TMP/newsite/manifest.txt" "Plugin.lockParent"
 
@@ -147,6 +157,12 @@ printf 'package plugin\n\nfunc nothing() {}\n' > "$TMP/nosites/pkg/plugin/quiet.
 printf '# nothing declared\n' > "$TMP/nosites/manifest.txt"
 check "zero LinkAdd sites is a broken pattern, not a clean tree" 1 "$TMP/nosites" \
     "$TMP/nosites/manifest.txt" "pattern has stopped matching"
+
+# A pkg/ with no non-test Go source is nothing to judge (#744).
+mkdir -p "$TMP/testsonly/pkg/plugin"
+printf 'package plugin\n' > "$TMP/testsonly/pkg/plugin/quiet_test.go"
+check "a pkg/ with only test files exits 2" 2 "$TMP/testsonly" \
+    "$TMP/nosites/manifest.txt" "no 'go-src' file under"
 
 # Usage errors must be distinguishable from findings: a gate invoked
 # wrongly that exits 1 reads in a log exactly like a gate that found
@@ -275,7 +291,7 @@ else
     failures=$((failures + 1))
 fi
 
-real_sites=$(cd "$REPO" && grep -rn "netlink\.LinkAdd(" pkg/ --include='*.go' 2>/dev/null \
+real_sites=$(cd "$REPO" && grep -rnE '\b(netlink\.|nl)LinkAdd\(' pkg/ --include='*.go' 2>/dev/null \
     | grep -vc '_test\.go:')
 if [ "$real_sites" -ge 1 ]; then
     echo "PASS: the committed tree really has $real_sites LinkAdd site(s) to account for"

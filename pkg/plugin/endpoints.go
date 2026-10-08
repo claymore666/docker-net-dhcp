@@ -306,6 +306,8 @@ type HealthResponse struct {
 
 	// JoinAbortedEndpointLeft counts attaches cancelled because the endpoint left first; not healthy-affecting.
 	JoinAbortedEndpointLeft int32 `json:"join_aborted_endpoint_left"`
+	// JoinAbortedLinkWithdrawn counts attaches whose located link left the sandbox (#1236); not healthy-affecting.
+	JoinAbortedLinkWithdrawn int32 `json:"join_aborted_link_withdrawn"`
 	// TombstoneWriteFailures counts failed tombstone writes and reads refused since #724; Healthy-affecting.
 	TombstoneWriteFailures int32 `json:"tombstone_write_failures"`
 	// TombstoneQuarantines counts unparseable tombstone files moved aside as tombstones.json.corrupt-<ts>, since
@@ -513,6 +515,10 @@ type HealthResponse struct {
 	RouterAdvertGuardFailures int32 `json:"router_advert_guard_failures"`
 	// IPv6RouterWithdrawn counts container v6 default routes removed for a Router Lifetime of 0 (#821).
 	IPv6RouterWithdrawn int32 `json:"ipv6_router_withdrawn"`
+	// The delegated prefix aggregates added and removed, and endpoints whose prefix overlapped another's (#214).
+	IPv6PrefixRoutesInstalled int32 `json:"ipv6_prefix_routes_installed"`
+	IPv6PrefixRoutesWithdrawn int32 `json:"ipv6_prefix_routes_withdrawn"`
+	IPv6PrefixOverlaps        int32 `json:"ipv6_prefix_overlaps"`
 
 	// RouterSolicitsSent and the router counters below are the library's RFC 4861 counters folded across every
 	// DHCPv6 manager, solicitations under section 6.3.7 (#814).
@@ -644,6 +650,7 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		RestartLinkUpWaited:          p.restartLinkUpWaited.Load(),
 		RestartLinkUpTimeouts:        p.restartLinkUpTimeouts.Load(),
 		JoinAbortedEndpointLeft:      p.joinAbortedEndpointLeft.Load(),
+		JoinAbortedLinkWithdrawn:     p.joinAbortedLinkWithdrawn.Load(),
 		TombstoneWriteFailures:       tsFails,
 		TombstoneQuarantines:         tsQuarantines,
 		UnsafeHostnamesRejected:      p.unsafeHostnamesRejected.Load(),
@@ -742,6 +749,9 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		IPv6LinkEnableFailures:       p.ipv6LinkEnableFailures.Load(),
 		RouterAdvertGuardFailures:    p.routerAdvertGuardFailures.Load(),
 		IPv6RouterWithdrawn:          p.ipv6RouterWithdrawn.Load(),
+		IPv6PrefixRoutesInstalled:    p.ipv6PrefixRoutesInstalled.Load(),
+		IPv6PrefixRoutesWithdrawn:    p.ipv6PrefixRoutesWithdrawn.Load(),
+		IPv6PrefixOverlaps:           p.ipv6PrefixOverlaps.Load(),
 		RouterSolicitsSent:           p.routerSolicitsSent.Load(),
 		RouterAdvertsSeen:            p.routerAdvertsSeen.Load(),
 		RouterAdvertsRefused:         p.routerAdvertsRefused.Load(),

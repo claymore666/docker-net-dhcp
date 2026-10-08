@@ -4,6 +4,9 @@
 
 # No tracked file carries a merge-conflict marker (#818).
 #
+# Expires-when: never: a conflict marker in a file no compiler reads passes
+#   every other gate, and git can leave one on any rebase (#818).
+#
 # WHY. A hand-resolved rebase can leave a conflict block behind in a
 # file no compiler reads. RELEASE_NOTES.md carried two of them to a
 # branch tip: `scripts/release-body.sh v2.2.0` emitted four marker
@@ -39,6 +42,8 @@
 # Exit:  0 clean, 1 a marker found, 2 cannot check.
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 if ! root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
     echo "FAIL  not inside a git repository, so there is no tracked tree to read" >&2

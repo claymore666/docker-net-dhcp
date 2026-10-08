@@ -83,7 +83,6 @@ LANE=(
   "staticcheck (integration view)|staticcheck|staticcheck -tags integration ./..."
   "shellcheck (scripts+runner+netboot)|shellcheck|shellcheck -S warning scripts/*.sh ci/runner-image/*.sh test/arm64-netboot/*.sh"
   "actionlint|actionlint|actionlint"
-  "option-docs drift|-|bash scripts/check-option-docs.sh"
   "starter-task claims|-|bash scripts/check-good-first-issues.sh --static"
   "docs drift|-|bash scripts/check-docs-drift.sh"
   "comment budget|go|bash scripts/check-comment-budget.sh origin/dev..HEAD"
@@ -104,7 +103,6 @@ LANE=(
   # (see the note in it), so the row builds one first. `go` because of
   # that build.
   "library pin (bytes built)|go|d=\$(mktemp -d); trap 'rm -rf \"\$d\"' EXIT; go build -o \"\$d/net-dhcp\" ./cmd/net-dhcp && bash scripts/check-library-pin.sh --binary \"\$d/net-dhcp\""
-  "issue label map|-|bash scripts/check-issue-label-map.sh"
   "label taxonomy|-|bash scripts/check-label-taxonomy.sh --static"
   "release-notes symbols|-|bash scripts/check-release-notes-symbols.sh"
   "dockerfile pins|-|bash scripts/check-dockerfile-pins.sh"
@@ -118,19 +116,22 @@ LANE=(
   "license headers|-|bash scripts/check-license-headers.sh"
   "lock discipline|-|bash scripts/check-lock-discipline.sh"
   "proc-path discipline|-|bash scripts/check-proc-path-discipline.sh"
+  "netlink seam|-|bash scripts/check-netlink-seam.sh"
   "openat cloexec|-|bash scripts/check-openat-cloexec.sh"
+  "doc opener|-|bash scripts/check-doc-opener.sh"
+  "changed names in release notes|git|bash scripts/check-breaking-names.sh"
   "manager registration|-|bash scripts/check-manager-registration.sh"
-  "pi watchdog wiring|-|bash scripts/check-pi-watchdog-wiring.sh"
+  "pi watchdog wiring|-|bash scripts/check-pi-watchdog.sh --tree"
   "parent-gate accounting|-|bash scripts/check-parent-gate-accounting.sh"
   "doc invariants|-|bash scripts/check-doc-invariants.sh"
   "build-dir refs|-|bash scripts/check-build-dir-refs.sh"
+  "gate expiry|-|bash scripts/check-gate-expiry.sh"
   "build context|-|bash scripts/check-build-context.sh"
   "dockerignore parity|-|bash scripts/check-dockerignore-parity.sh"
   "registry login|-|bash scripts/check-registry-login.sh"
   "publish/verify parity|-|bash scripts/check-publish-verify-parity.sh"
   "registry name list|-|bash scripts/check-registry-name-list.sh"
   "runbook walkthrough|-|bash scripts/check-runbook-release-steps.sh"
-  "cosign docs|-|bash scripts/check-cosign-docs.sh"
   "dispatch-ref guard|-|bash scripts/check-dispatch-ref-guard.sh"
   "latest promotion order|-|bash scripts/check-latest-promotion.sh"
   # `go` rather than `-`: half of it is a measurement, not a scan -- it
@@ -206,13 +207,14 @@ OUT_OF_LANE=(
   "scripts/check-test-weakening.sh|same pull-request range and body, and its findings are waived by an issue reference in that body"
   "scripts/govulncheck-gate.sh|needs network access and a pinned govulncheck install; a local run would report a different vulnerability database than CI"
   "scripts/check-issue-ref.sh|needs the pull-request title and body plus a base..head range; none of the three exists locally, and the reference may legitimately live only in the body"
+  "scripts/check-pseudo-version-pin.sh|judges the PR's target branch and live draft flag, and asks the library's repository over the network whether a pinned commit is on its dev or main; run it by hand with --event push --target dev"
   "scripts/check-coverage-floor.sh|compares the baseline at the merge base against this branch's, so it needs the base the PR is opened against; a local guess at that ref would judge the wrong pair of blobs"
 )
 
 # "script|reason" for a check-*.sh no workflow runs by design, so the
-# orphan rule of check-local-lane.sh accepts it (#883).
+# orphan rule of check-local-lane.sh accepts it (#883). Empty since #745
+# renamed the one entry, a maintainer preflight, out of the check-* class.
 NOT_IN_CI=(
-  "scripts/check-release-tooling.sh|preflight for the release runbook's manual steps; it checks the maintainer's own cosign, gh and git signing key, which a runner does not have"
 )
 
 lane_scripts() {

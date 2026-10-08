@@ -26,13 +26,13 @@ signature unverified locally until afterwards.
 Twice is a class, so it has a check now. **Run this before step 1:**
 
 ```sh
-bash scripts/check-release-tooling.sh
+bash scripts/preflight-release-tooling.sh
 ```
 
 Exit 0 means every step below can actually be executed on this box. It
 verifies `gh`, `cosign` **major 3**, and a configured `user.signingkey`;
 `crane` is reported but optional. Its own table-driven tests run in CI
-([`scripts/test-check-release-tooling.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/test-check-release-tooling.sh)),
+([`scripts/test-preflight-release-tooling.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/test-preflight-release-tooling.sh)),
 so the check cannot rot into something that always passes.
 
 | Tool | Needed for | Install |
@@ -54,10 +54,12 @@ fails with `Error: bundle does not contain cert for verification, please
 provide public key`, which blames the artifact when the toolchain is the
 problem (#522). That string is now quoted on [Verifying
 releases](verifying-releases.md) so a search for it lands on the answer.
-[`scripts/check-cosign-docs.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/check-cosign-docs.sh)
-keeps every page that prints a cosign command naming the same major as
-[`scripts/check-release-tooling.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/check-release-tooling.sh)
-enforces.
+The `cosign-major-stated` entry of
+[`.github/doc-invariants.txt`](https://github.com/claymore666/docker-net-dhcp/blob/main/.github/doc-invariants.txt)
+keeps every page that prints a cosign command naming the major in
+[`scripts/release-tooling.env`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/release-tooling.env),
+the one place the major is written; `release.yml` and the preflight above
+read it too.
 
 Also needed, but already true on any box that has committed here: a
 git signing key, since step 9 tags with `-s`. Confirm with
@@ -211,6 +213,15 @@ have gone names the run that measured it and reports that it keeps no
 rows any more. Re-running the matrix on the tag records a fresh row and
 clears the second.
 
+**A tag's gate can wait up to 65 minutes (#1205).** The gate waits for
+the engine-matrix run of the tag's own commit. A tag push starts a second
+run of the commit the branch push already started, the two share one
+concurrency group, and the tag's run queues until the first one ends, so
+two lanes of 15 to 31 minutes each (measured 2026-10-03/04) can run back to back. The gate waits
+`ENGINE_WAIT_SECONDS` (3900) before refusing with "The engine-matrix run
+has not finished"; that refusal means the lane was slow, not that the tag
+is wrong, and rerunning the failed jobs once the lane reports clears it.
+
 **Use an rc tag instead.** [The rc dry-run](#pre-release-dry-run-rc-tags)
 runs the identical chain and touches no bare release tag and no
 `:latest`, which is what every recovery step in this file now points
@@ -239,9 +250,13 @@ a refusal, or deciding whether to dispatch anyway:
   is a tag whose registries and release page are mid-replacement.
   `integration-arm64.yml` groups the same way, on
   `integration-arm64-${{ github.ref }}`.
-- **Dispatching an older release is refused,** with a non-zero exit
-  and nothing published. This is the case that used to succeed
-  quietly and move `:latest` back with it.
+- **Dispatching an older release is refused at the promotion**, with a
+  non-zero exit from `promote-latest` before any floating tag moves.
+  The rest of the run is not refused. Both builds have already pushed
+  `:vOLD` and `:vOLD-arm64` again with new digests, and once the install
+  proofs pass, `github-release`, which does not wait for
+  `promote-latest`, uploads that release's assets again and rewrites its
+  notes. Moving `:latest` back is the case that used to succeed quietly.
 - **A genuine backport is refused too**: publishing v1.7.2 after v1.8.0
   exists. Deliberate: moving `:latest` to a backport is then an explicit
   manual `crane tag`, so it cannot happen by accident.
@@ -301,13 +316,16 @@ git checkout main && git pull --ff-only      # the release commit
 git tag -s v1.0.0-rc1 -m "v1.0.0-rc1" && git push origin v1.0.0-rc1
 ```
 
-Watch the run; every step including **verify-install**, since v1.7.0
+Watch the run; every job must be green: **resolve**, since #1014
+**production-shape** (both builds wait on it), **release** and
+**verify-install**, since v1.7.0
 **release-arm64** / **verify-install-arm64**, since #776
-**verify-install-hub** / **verify-install-hub-arm64**, and since #972
-**verify-install-hub-alias** / **verify-install-hub-alias-arm64** must
-be green, and since #736 **promote-latest**, which an rc now reaches. Its last step,
-*Assert a pre-release did not move :latest*, is the one that proves the
-dry-run stayed a dry-run.
+**verify-install-hub** / **verify-install-hub-arm64**, since #972
+**verify-install-hub-alias** / **verify-install-hub-alias-arm64**,
+since #736 **promote-latest**, which an rc now reaches, and
+**github-release**, which publishes an rc as a draft (#469). The last
+step of promote-latest, *Assert a pre-release did not move :latest*, is
+the one that proves the dry-run stayed a dry-run.
 
 **The rc tag also starts the arm64 integration lane** (#531): pushing
 it triggers `integration-arm64` on its own. Nothing to dispatch, and
@@ -405,9 +423,11 @@ The lane also runs on its own `push` trigger, over
 `.github/workflows/engine-matrix.yml`,
 `.github/engine-rows.txt`,
 `scripts/engine-baseline.sh`,
-`scripts/engine-floor.sh`
+`scripts/engine-floor.sh`,
+`docs/reference.md`,
+`pkg/plugin/engine_floor.go`
 and
-`pkg/plugin/engine_floor.go`.
+`go.mod`.
 That run is the measurement for any tree in which none of those paths
 has changed since, which is the ordinary case for a patch release: read
 it and dispatch nothing.
@@ -520,10 +540,16 @@ be true.
    versioned documentation site publishes for this tag, so the review
    *is* the site review; there's no separate wiki to reconcile.
 
+   **Check the version number against the contract.** Read the release
+   notes against [Versioning](reference.md#versioning): the number this
+   release takes is the one its largest change to the contract calls
+   for. A removed or renamed option, setting, Health field or tag is a
+   major, whatever the milestone says.
+
    **Read the pages whole, and aim at the ungated prose.** The
-   reference material defends itself: `check-option-docs.sh`,
-   `check-docs-drift.sh` and `check-version-pins.sh` gate every driver
-   option, health counter, plugin setting and image pin, so those tables
+   reference material defends itself: `check-docs-drift.sh` and
+   `check-version-pins.sh` gate every driver option, health counter,
+   plugin setting and image pin, so those tables
    are the *least* likely place to find drift. What rots is everything
    else: a walkthrough's shell snippet, a troubleshooting row, a
    sentence in a Behaviour section, a hand-maintained list. The v1.5.0
@@ -542,7 +568,7 @@ be true.
      operators through the plugin rootfs. A feature PR updates the
      section it is about; it rarely finds the other page that quietly
      depended on the old behaviour.
-   - **Syntax deprecated upstream.** Compose, Docker CLI and dhcpcd move
+   - **Syntax deprecated upstream.** Compose and the Docker CLI move
      on their own schedule. `docker compose -f <snippet> config` prints
      the deprecation warnings for anything in a Compose example.
    - **Restated lists that live somewhere else.** Required CI checks,
@@ -658,6 +684,22 @@ be true.
    `--diff` again: it must report that the entry matches. That
    confirmation is the point of the script, and the reason it has no
    push mode.
+
+   **Check the starter-task claims against the live tracker** (#748). The
+   README's Contributing section and the badge's `small_tasks` answer
+   assert that the `good first issue` label has open issues, or that it
+   has none and the README says so. Both decay without a commit, so run
+   the live half of the gate once, with `gh` signed in:
+
+   ```sh
+   bash scripts/check-good-first-issues.sh --live
+   ```
+
+   Exit 0 means the claims hold. Exit 1 names the side to fix: the README
+   link, `small_tasks_status`, or the issues the justification cites. Fix
+   it on the release branch with the rest of this step. Exit 2 means the
+   API could not be read; run it again rather than treating it as a pass.
+   The offline half already runs on every pull request.
 
    The work happens here, on the release branch. The rc dry-run (step 8)
    is the **enforcement gate**: the real `vX.Y.Z` tag does not ship
@@ -893,19 +935,32 @@ be true.
    once you know the shape of it.
 7. **Assemble the verification evidence, don't hand-write it.**
    ```sh
-   scripts/run-evidence.sh "$(git rev-parse 'HEAD^{tree}')"
+   sha=$(git rev-parse HEAD)   # or the commit a skipped run's gate names
+   for id in $(gh run list --workflow integration.yml --commit "$sha" --json databaseId -q '.[].databaseId'); do
+     gh run view "$id" --json databaseId,event,attempt,conclusion,url,jobs -q '"\(.databaseId) \(.event) attempt \(.attempt) \(.conclusion) \(.url)\n  suites: \([.jobs[] | select(.name | endswith("-suite")) | .conclusion] | group_by(.) | map("\(length) \(.[0])") | join(", "))"'
+     gate=$(gh run view "$id" --json jobs -q '.jobs[] | select(.name == "gate") | .databaseId')
+     gh run view "$id" --log --job "$gate" | grep -o -E 'gate decision: (run|skip)|docs-only diff|already passed integration at [0-9a-f]{40}' | sed 's/^/  gate: /'
+   done
    ```
-   Prints every integration run that tested exactly this tree, with its
-   window and what else was on the privileged pool at the time. Paste it
-   into the release PR. Do not reconstruct it from memory.
+   Lists every integration run on the release PR's head commit with its
+   attempt, its suite jobs by conclusion, and the gate's decision. Paste
+   the output into the release PR. Do not reconstruct it from memory. An
+   empty list is not evidence: wait for the run, or find out why none
+   started.
 
-   Read the overlap line literally. An overlap of `none`, printed with
-   `ran alone` after it, and an overlap of `unknown` are different
-   claims: the second means the concurrent-run list did
-   not reach back far enough to judge, which happens once the repo has
-   been busy since. Do not upgrade an `unknown` to "ran alone". The
-   v1.4.0 write-up asserted a concurrency caveat that the data did not
-   support, in both directions, which is what #432 was filed about.
+   A run whose suites read `skipped` executed nothing, even when the run
+   itself reads `success`: the gate skipped it (#311, #312). Its gate line
+   says where the code was tested. `already passed integration at <commit>`
+   means run the command again with `sha=<commit>`; `docs-only diff` means
+   run it with the PR's base, `gh pr view <N> --json baseRefOid -q
+   .baseRefOid`. Repeat until a run shows its suites `success`, and paste
+   every hop, so the reader can follow the chain from this head to the run
+   that tested the code.
+
+   The x86 pool runs each job in its own ephemeral container with its own
+   Docker daemon, so another run on the pool at the same time does not
+   share a daemon with this one. Do not add a concurrency caveat the data
+   does not show; #432 was filed about a write-up that did.
 
 8. **Merge the release PR.** Squash or merge commit, both fine;
    match what's in `git log`.
@@ -934,7 +989,9 @@ be true.
     <https://github.com/claymore666/docker-net-dhcp/actions/workflows/release.yml>.
     Expected steps, under the names the run shows. Tag resolution is its
     own job: **resolve** runs first and has one step, *Resolve release
-    tag*; a releaser watching the run sees two job rows. The **release**
+    tag*. Then **production-shape** reads the engine-matrix row recorded
+    for the tag's commit (#1014); both builds wait on it, so when it is
+    red nothing was built or published. The **release**
     job then runs, in this order: checkout → setup-go → Log in to GHCR →
     Log in to Docker Hub → **Both registries, or say why not** → Push to
     GHCR → Push to Docker Hub (or skip) → Sync Docker Hub description
@@ -977,10 +1034,15 @@ be true.
     manifest, not a second build (#267). The two Hub description steps
     are separate because the action PATCHes one repository at a time.
 
-    Since v1.7.0 the run carries a parallel arm64 chain (#507):
+    Since v1.7.0 the run carries an arm64 chain (#507):
     **release-arm64** (native `ubuntu-24.04-arm` build, pushes
     `vX.Y.Z-arm64`; per-arch tags, because a Docker plugin cannot
-    install from a manifest list) and **verify-install-arm64**.
+    install from a manifest list) and its three install proofs. The
+    chain runs beside the amd64 one: the build since #796, the proofs
+    since #799. They wait on **resolve** and **release-arm64**, never on
+    **release**, so an arm64 tag published beside a failed amd64 build
+    is still install-proven. The two chains meet at **promote-latest**
+    and **github-release**, which wait for both.
 
     Then, as separate jobs:
 
@@ -1010,7 +1072,8 @@ be true.
         asserts that dependency. It does not carry a list of proof names:
         it derives them from the workflow's own install-verifying jobs, so
         a ninth proof is required the moment it exists. Steps: *Refuse to
-        promote a floating tag backwards* → Install crane → the two logins
+        promote a floating tag backwards* → Install crane → Log in to GHCR →
+        Log in to Docker Hub
         → *Record what :latest resolves to before promotion* → *Promote the
         GHCR floating tags* → *Promote the Docker Hub floating tags* →
         *Promote the Hub alias floating tags* → *Verify the floating tags

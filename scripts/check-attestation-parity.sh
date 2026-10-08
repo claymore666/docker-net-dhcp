@@ -5,6 +5,9 @@
 # Pin the GHCR-only provenance asymmetry, and prove the pin is being
 # measured rather than assumed (#776).
 #
+# Expires-when: build provenance is attested for the Docker Hub image too,
+#   so the GHCR-only asymmetry #776 pins no longer exists.
+#
 # WHAT IS ACTUALLY WRONG. `actions/attest-build-provenance` names the GHCR
 # image only, in both the amd64 and arm64 paths, while cosign signs both
 # registries. Measured on the shipped v1.7.1:
@@ -59,6 +62,8 @@
 #         between this and a silent pass
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 REPO="${REPO:-}"
 GHCR_DIGEST="${GHCR_DIGEST:-}"
@@ -78,8 +83,9 @@ CONTROL_ATTEMPTS="${CONTROL_ATTEMPTS:-5}"
 CONTROL_SLEEP="${CONTROL_SLEEP:-10}"
 
 refuse() {
-    echo "::error title=Attestation parity cannot be judged::$*" >&2
-    exit 2
+
+    GATE_TITLE='Attestation parity cannot be judged' gate_refuse "$*"
+
 }
 
 is_digest() { [[ "$1" =~ ^sha256:[0-9a-f]{64}$ ]]; }

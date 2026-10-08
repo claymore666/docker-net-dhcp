@@ -17,9 +17,9 @@ import (
 	"time"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
-	docker "github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	docker "github.com/moby/moby/client"
 )
 
 const ifnameOpt = "com.docker.network.endpoint.ifname"
@@ -28,32 +28,29 @@ const ifnameOpt = "com.docker.network.endpoint.ifname"
 func runContainerWithIfname(t *testing.T, ctx context.Context, cli *docker.Client, netName, ctrName, ifname string) (string, string) {
 	t.Helper()
 	create, err := cli.ContainerCreate(ctx,
-		&container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}, Hostname: ctrName},
-		harness.HostConfig(),
-		&network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{
+		docker.ContainerCreateOptions{Config: &container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}, Hostname: ctrName}, HostConfig: harness.HostConfig(), NetworkingConfig: &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{
 			netName: {DriverOpts: map[string]string{ifnameOpt: ifname}},
-		}},
-		nil, ctrName)
+		}}, Name: ctrName})
 	if err != nil {
 		t.Fatalf("ContainerCreate: %v", err)
 	}
 	id := create.ID
 	t.Cleanup(func() {
 		bg := context.Background()
-		_ = cli.ContainerStop(bg, id, container.StopOptions{})
-		_ = cli.ContainerRemove(bg, id, container.RemoveOptions{Force: true})
+		_, _ = cli.ContainerStop(bg, id, docker.ContainerStopOptions{})
+		_, _ = cli.ContainerRemove(bg, id, docker.ContainerRemoveOptions{Force: true})
 	})
-	if err := cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
+	if _, err := cli.ContainerStart(ctx, id, docker.ContainerStartOptions{}); err != nil {
 		t.Fatalf("ContainerStart: %v", err)
 	}
 	deadline := time.Now().Add(harness.IPAcquisitionBudget)
 	for time.Now().Before(deadline) {
-		ins, err := cli.ContainerInspect(ctx, id)
+		ins, err := cli.ContainerInspect(ctx, id, docker.ContainerInspectOptions{})
 		if err != nil {
 			t.Fatalf("ContainerInspect: %v", err)
 		}
-		if ep := ins.NetworkSettings.Networks[netName]; ep != nil && ep.IPAddress != "" {
-			return id, ep.IPAddress
+		if ep := ins.Container.NetworkSettings.Networks[netName]; ep != nil && ep.IPAddress.IsValid() {
+			return id, harness.AddrString(ep.IPAddress)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -82,7 +79,7 @@ func TestInterfaceName_PluginHonorsOption(t *testing.T) {
 		}
 	})
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -91,7 +88,7 @@ func TestInterfaceName_PluginHonorsOption(t *testing.T) {
 	harness.CreateNetwork(t, ctx, netName, "macvlan", nil)
 
 	// The engine's version decides which statement is owed, asked of the engine and not the plugin (#670).
-	srv, err := cli.ServerVersion(ctx)
+	srv, err := cli.ServerVersion(ctx, docker.ServerVersionOptions{})
 	if err != nil {
 		t.Fatalf("ServerVersion: %v", err)
 	}
@@ -178,7 +175,7 @@ func TestInterfaceName_InvalidRejected(t *testing.T) {
 
 	netName := "dh-itest-ifbad"
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -187,22 +184,19 @@ func TestInterfaceName_InvalidRejected(t *testing.T) {
 	harness.CreateNetwork(t, ctx, netName, "macvlan", nil)
 
 	create, err := cli.ContainerCreate(ctx,
-		&container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}},
-		harness.HostConfig(),
-		&network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{
+		docker.ContainerCreateOptions{Config: &container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}}, HostConfig: harness.HostConfig(), NetworkingConfig: &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{
 			netName: {DriverOpts: map[string]string{ifnameOpt: "way-too-long-interface-name"}},
-		}},
-		nil, "dh-itest-ifbad-ctr")
+		}}, Name: "dh-itest-ifbad-ctr"})
 	if err != nil {
 		// Some engine versions validate at create, which is acceptable as long as the attach cannot succeed.
 		t.Logf("rejected at create: %v", err)
 		return
 	}
 	t.Cleanup(func() {
-		_ = cli.ContainerRemove(context.Background(), create.ID, container.RemoveOptions{Force: true})
+		_, _ = cli.ContainerRemove(context.Background(), create.ID, docker.ContainerRemoveOptions{Force: true})
 	})
 
-	err = cli.ContainerStart(ctx, create.ID, container.StartOptions{})
+	_, err = cli.ContainerStart(ctx, create.ID, docker.ContainerStartOptions{})
 	if err == nil {
 		t.Fatal("ContainerStart succeeded with a 27-byte interface_name; Join validation did not fire")
 	}
@@ -220,7 +214,7 @@ func TestInterfaceName_MultiNetworkDeterministic(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -258,21 +252,18 @@ func TestInterfaceName_MultiNetworkDeterministic(t *testing.T) {
 	})
 
 	create, err := cli.ContainerCreate(ctx,
-		&container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}},
-		harness.HostConfig(),
-		&network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{
+		docker.ContainerCreateOptions{Config: &container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}}, HostConfig: harness.HostConfig(), NetworkingConfig: &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{
 			netA: {DriverOpts: map[string]string{ifnameOpt: "wan0"}},
 			netB: {DriverOpts: map[string]string{ifnameOpt: "lan0"}},
-		}},
-		nil, "dh-itest-ifmulti-ctr")
+		}}, Name: "dh-itest-ifmulti-ctr"})
 	if err != nil {
 		t.Fatalf("ContainerCreate: %v", err)
 	}
 	id := create.ID
 	t.Cleanup(func() {
 		bg := context.Background()
-		_ = cli.ContainerStop(bg, id, container.StopOptions{})
-		_ = cli.ContainerRemove(bg, id, container.RemoveOptions{Force: true})
+		_, _ = cli.ContainerStop(bg, id, docker.ContainerStopOptions{})
+		_, _ = cli.ContainerRemove(bg, id, docker.ContainerRemoveOptions{Force: true})
 	})
 
 	macForName := func(name string) string {
@@ -298,7 +289,7 @@ func TestInterfaceName_MultiNetworkDeterministic(t *testing.T) {
 
 	var wanMAC, lanMAC string
 	for restart := 0; restart < 3; restart++ {
-		if err := cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
+		if _, err := cli.ContainerStart(ctx, id, docker.ContainerStartOptions{}); err != nil {
 			t.Fatalf("ContainerStart (round %d): %v", restart, err)
 		}
 		deadline := time.Now().Add(harness.IPAcquisitionBudget)
@@ -330,7 +321,7 @@ func TestInterfaceName_MultiNetworkDeterministic(t *testing.T) {
 				t.Errorf("round %d: name<->MAC mapping changed: wan0 %s->%s, lan0 %s->%s", restart, wanMAC, w, lanMAC, l)
 			}
 		}
-		if err := cli.ContainerStop(ctx, id, container.StopOptions{}); err != nil {
+		if _, err := cli.ContainerStop(ctx, id, docker.ContainerStopOptions{}); err != nil {
 			t.Fatalf("ContainerStop (round %d): %v", restart, err)
 		}
 	}

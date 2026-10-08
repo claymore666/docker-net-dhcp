@@ -16,7 +16,7 @@
 # because a cwd holding a match silently drops the
 # pattern-must-match-a-branch obligation.
 #
-# `check-missing-runs.sh` and `purge-workflow-runs.sh` were guarded with
+# The readers of the time were guarded with
 # `set -f` at each of their splitting sites, and the scope file's own prose
 # said so and counted them. `check-branch-refs.sh` was added later, split
 # the same value, and was not guarded -- and the count in the prose did not
@@ -147,6 +147,26 @@ if [ "$n_readers" -eq 0 ]; then
     exit 1
 fi
 
+# The scripts drive() has a recipe for and the scripts discovery found must
+# be the same set. Discovery greps prose, so a reworded comment can drop a
+# reader and leave the suite green on fewer scripts (#747); a recipe for a
+# deleted script is the same drift the other way.
+known=$(awk '/^drive\(\)/{f=1} f&&/^    esac/{exit} f&&/^        [A-Za-z0-9._-]+\.sh\)/{sub(/^ +/,""); sub(/\).*/,""); print}' "$0" | sort)
+[ -n "$known" ] || no "drive() lists no reader recipe; the agreement check below would compare nothing"
+while IFS= read -r k; do
+    if [ ! -f "$ROOT/scripts/$k" ]; then
+        no "drive() has a recipe for $k, which is not in scripts/ any more; delete the recipe"
+        drift=1
+    elif ! printf '%s\n' "$readers" | grep -x -- "$ROOT/scripts/$k" >/dev/null; then
+        no "$k has a recipe in drive() but discovery did not find it; the driven set shrank"
+        drift=1
+    fi
+done <<EOF
+$known
+EOF
+[ -n "$known" ] && [ -z "${drift:-}" ] &&
+    ok "drive()'s recipes and the discovered readers are the same set ($(printf '%s' "$known" | tr '\n' ' '))"
+
 # Run one reader from one directory. The recipe per reader is the minimum
 # that gets it past its transport; NOW_EPOCH and the fixed stubs keep two
 # runs comparable.
@@ -156,10 +176,6 @@ drive() { # <script> <cwd> -> "<rc>\n<output>"
         check-branch-refs.sh)
             out=$( cd "$dir" && BRANCH_REFS_HEADS_FILE="$WORK/heads.txt" \
                    BRANCH_REFS_SCOPE="$WORK/scope.env" bash "$script" 2>&1 )
-            rc=$? ;;
-        check-missing-runs.sh)
-            out=$( cd "$dir" && PATH="$WORK/bin:$PATH" GATE_REPO=claymore666/docker-net-dhcp \
-                   GATE_SCOPE_FILE="$WORK/scope.env" bash "$script" 2>&1 )
             rc=$? ;;
         branch-glob.sh)
             # A sourced library, so it is driven by calling the two functions

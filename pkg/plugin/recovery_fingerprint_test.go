@@ -9,9 +9,9 @@ import (
 	"sync"
 	"testing"
 
-	dTypes "github.com/docker/docker/api/types"
-	dContainer "github.com/docker/docker/api/types/container"
-	dNetwork "github.com/docker/docker/api/types/network"
+	dContainer "github.com/moby/moby/api/types/container"
+	dNetwork "github.com/moby/moby/api/types/network"
+	docker "github.com/moby/moby/client"
 )
 
 type lockedDocker struct {
@@ -20,41 +20,43 @@ type lockedDocker struct {
 	inspectErr error
 }
 
-func (d *lockedDocker) NetworkList(context.Context, dNetwork.ListOptions) ([]dNetwork.Summary, error) {
-	return nil, nil
+func (d *lockedDocker) NetworkList(context.Context, docker.NetworkListOptions) (docker.NetworkListResult, error) {
+	return docker.NetworkListResult{Items: nil}, nil
 }
 
-func (d *lockedDocker) NetworkInspect(context.Context, string, dNetwork.InspectOptions) (dNetwork.Inspect, error) {
-	return dNetwork.Inspect{}, errors.New("no network detail in this fixture")
+func (d *lockedDocker) NetworkInspect(context.Context, string, docker.NetworkInspectOptions) (docker.NetworkInspectResult, error) {
+	return docker.NetworkInspectResult{Network: dNetwork.Inspect{}}, errors.New("no network detail in this fixture")
 }
 
-func (d *lockedDocker) ContainerInspect(_ context.Context, id string) (dContainer.InspectResponse, error) {
+func (d *lockedDocker) ContainerInspect(_ context.Context, id string, _ docker.ContainerInspectOptions) (docker.ContainerInspectResult, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.inspectErr != nil {
-		return dContainer.InspectResponse{}, d.inspectErr
+		return docker.ContainerInspectResult{Container: dContainer.InspectResponse{}}, d.inspectErr
 	}
-	return d.containers[id], nil
+	return docker.ContainerInspectResult{Container: d.containers[id]}, nil
+}
+
+func (d *lockedDocker) ContainerList(context.Context, docker.ContainerListOptions) (docker.ContainerListResult, error) {
+	return docker.ContainerListResult{}, errors.New("no container list in this fixture")
 }
 
 func (d *lockedDocker) Close() error { return nil }
 
 // These fixtures skip the engine probe in NewPlugin, so the fake answers as an unreachable daemon.
-func (d *lockedDocker) Ping(context.Context) (dTypes.Ping, error) {
-	return dTypes.Ping{}, errors.New("no daemon in this fixture")
+func (d *lockedDocker) Ping(context.Context, docker.PingOptions) (docker.PingResult, error) {
+	return docker.PingResult{}, errors.New("no daemon in this fixture")
 }
 
-func (d *lockedDocker) ServerVersion(context.Context) (dTypes.Version, error) {
-	return dTypes.Version{}, errors.New("no daemon in this fixture")
+func (d *lockedDocker) ServerVersion(context.Context, docker.ServerVersionOptions) (docker.ServerVersionResult, error) {
+	return docker.ServerVersionResult{}, errors.New("no daemon in this fixture")
 }
 
 func (d *lockedDocker) ClientVersion() string { return "" }
 
 func withHostname(h string) dContainer.InspectResponse {
 	return dContainer.InspectResponse{
-		ContainerJSONBase: &dContainer.ContainerJSONBase{
-			State: &dContainer.State{Running: true, Status: "running", Pid: 4242},
-		},
+		State:  &dContainer.State{Running: true, Status: "running", Pid: 4242},
 		Config: &dContainer.Config{Hostname: h},
 	}
 }

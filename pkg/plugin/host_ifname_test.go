@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	log "github.com/sirupsen/logrus"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
@@ -848,5 +850,52 @@ func TestAfterAttach_TheContainerNameReachesTheLinkWhenTheLookupIsLate(t *testin
 	if got := p.hostIfnameFailures.Load(); got != 0 {
 		t.Errorf("host_ifname_failures = %d, want 0: the daemon answered with a name an interface may "+
 			"carry, and counting that as a failure points an operator at the container's name", got)
+	}
+}
+
+func TestRenameHostLink_EBUSYNamesTheKernelBeforeSixPointTwo(t *testing.T) {
+	m, p := aBridgeEndpoint(t, HostIfnameContainerName)
+	k := &fakeKernel{name: "dh-a1b2c3d4e5f6"}
+	withKernelSeams(t, k)
+	prevSet := nlLinkSetName
+	nlLinkSetName = func(netlink.Link, string) error { return unix.EBUSY }
+	t.Cleanup(func() { nlLinkSetName = prevSet })
+	hook := logtest.NewLocal(log.StandardLogger())
+	t.Cleanup(hook.Reset)
+
+	m.renameHostLink(true, "/web", "web-host")
+
+	if k.name != "dh-a1b2c3d4e5f6" || p.hostIfnameFailures.Load() != 1 {
+		t.Fatalf("link %q failures %d, want the generated name kept and one failure", k.name, p.hostIfnameFailures.Load())
+	}
+	var msgs []string
+	for _, e := range hook.AllEntries() {
+		msgs = append(msgs, e.Message)
+		if strings.Contains(e.Message, "6.2") && strings.Contains(e.Message, "keeps its generated name") {
+			return
+		}
+	}
+	t.Errorf("no log line names the kernel before 6.2 as the reason for EBUSY; lines: %q", msgs)
+}
+
+func TestRenameHostLink_ARefusalOtherThanEBUSYDoesNotBlameTheKernelVersion(t *testing.T) {
+	m, _ := aBridgeEndpoint(t, HostIfnameContainerName)
+	k := &fakeKernel{name: "dh-a1b2c3d4e5f6"}
+	withKernelSeams(t, k)
+	prevSet := nlLinkSetName
+	nlLinkSetName = func(netlink.Link, string) error { return unix.EPERM }
+	t.Cleanup(func() { nlLinkSetName = prevSet })
+	hook := logtest.NewLocal(log.StandardLogger())
+	t.Cleanup(hook.Reset)
+
+	m.renameHostLink(true, "/web", "web-host")
+
+	for _, e := range hook.AllEntries() {
+		if strings.Contains(e.Message, "6.2") {
+			t.Errorf("EPERM was blamed on the kernel version: %q", e.Message)
+		}
+	}
+	if len(hook.AllEntries()) == 0 {
+		t.Error("the refusal logged nothing")
 	}
 }

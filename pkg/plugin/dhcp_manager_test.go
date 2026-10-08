@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	dContainer "github.com/docker/docker/api/types/container"
-	dNetwork "github.com/docker/docker/api/types/network"
+	dContainer "github.com/moby/moby/api/types/container"
+	dNetwork "github.com/moby/moby/api/types/network"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 
@@ -703,9 +703,7 @@ func TestStart_SurvivesADaemonThatWillNotAnswer(t *testing.T) {
 				}},
 			},
 			containerResult: map[string]dContainer.InspectResponse{
-				ctrID: {ContainerJSONBase: &dContainer.ContainerJSONBase{
-					State: &dContainer.State{Pid: 1},
-				}, Config: &dContainer.Config{Hostname: "h"}},
+				ctrID: {State: &dContainer.State{Pid: 1}, Config: &dContainer.Config{Hostname: "h"}},
 			},
 			containerDelay: stall,
 		}

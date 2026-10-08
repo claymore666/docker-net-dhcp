@@ -4,6 +4,9 @@
 
 # THE SHARDS THE LANE SCHEDULES MUST COVER THE ROSTER EXACTLY ONCE.
 #
+# Expires-when: the integration suite is no longer split into shards, so
+#   there is no roster for the scheduled shards to cover (#877).
+#
 # WHY THIS EXISTS. Everything about the partition was checked except the
 # thing the lane actually does with it. scripts/integration-shard.sh is
 # proven to partition the roster at every count -- test-integration-shard.sh
@@ -76,6 +79,8 @@
 # 2 refused (the gate could not see its subject -- never silent).
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 # Pinned for the whole script, not per command (#554). Every comparison
 # below -- sort, uniq, comm, and the regex classes -- has to agree about
@@ -96,8 +101,7 @@ SUITE_DIR="$ROOT/test/integration"
 WORKFLOWS="integration.yml integration-hosted.yml"
 
 refuse() {
-    echo "::error title=$1::$2" >&2
-    exit 2
+    GATE_TITLE="$1" gate_refuse "$2"
 }
 
 [ -d "$WF" ] || refuse "No workflow directory" "$WF is not a directory, so no lane can be read."

@@ -4,6 +4,9 @@
 
 # Will this pull request be reachable from an issue after it merges (#718)?
 #
+# Expires-when: sync-issue-state-labels.sh no longer needs a merged PR to
+#   name its issue to set in-dev on it (#718).
+#
 # WHY THIS EXISTS
 #
 # `scripts/sync-issue-state-labels.sh` puts `in-dev` on an issue whose work
@@ -111,6 +114,8 @@
 # Exit: 0 reachable, 1 nothing references an issue, 2 cannot check.
 
 set -u
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SYNC="$HERE/sync-issue-state-labels.sh"

@@ -14,7 +14,8 @@ below decide what is in a release; this page follows them.
 | v2.3.0 | released | The host plumbing an operator does by hand today, and the gaps the IPAM shape still refuses | [milestone 31](https://github.com/claymore666/docker-net-dhcp/milestone/31) |
 | v2.3.1 | released | IPv6 routes at Join, the fixed-MAC hand-over in IPAM mode, and diagrams of the plugin and the lab | [milestone 38](https://github.com/claymore666/docker-net-dhcp/milestone/38) |
 | v2.4.0 | released | The rest of IPv6, and the DHCP options the client does not read yet | [milestone 34](https://github.com/claymore666/docker-net-dhcp/milestone/34) |
-| v2.5.0 | planned | CI consolidation and code debt, and DHCPv6 prefix delegation, designed first | [milestone 35](https://github.com/claymore666/docker-net-dhcp/milestone/35) |
+| v2.5.0 | released | CI consolidation and code debt, and DHCPv6 prefix delegation | [milestone 35](https://github.com/claymore666/docker-net-dhcp/milestone/35) |
+| v2.6.0 | planned | The CI consolidation tracking issue | [milestone 39](https://github.com/claymore666/docker-net-dhcp/milestone/39) |
 
 ### v2.3.0, released
 
@@ -71,9 +72,9 @@ below decide what is in a release; this page follows them.
   the lease
 - [#859], the whole DHCPv6 NTP server list, option 56, in the same log
   line, one entry per instance
-- [#1034], the vendor-specific options logged. The DHCPv6 half's library
-  side comes with the v1.4.0 pin ([#1177]): option 17 on the lease. The
-  plugin's log line for option 17 is [#1203], planned for v2.5.0
+- [#1034], the DHCPv4 vendor-specific options 43 and 125 logged. The
+  DHCPv6 half's library side comes with the v1.4.0 pin ([#1177]): option 17
+  on the lease
 - [#1038], an `ipv6_mode=auto` network remembers a silent DHCPv6 server
   for `DHCPV6_ABSENCE_MEMORY` (default ten minutes, `0` turns it off):
   further endpoints form their address from the advertised prefix without
@@ -82,14 +83,18 @@ below decide what is in a release; this page follows them.
 - [#926], DHCPv6 Rapid Commit, the two-message exchange
 - [#927], DHCPv6 temporary addresses (IA_TA)
 
-### v2.5.0
+### v2.5.0, released
 
-- [#214], DHCPv6 prefix delegation (IA_PD), designed first; only its Kea
-  DHCPv6 test fixture is in v2.4.0
-- [#733], the tracking issue for the CI consolidation programme
+- [#214], DHCPv6 prefix delegation (IA_PD): `-o ipv6_pd=<length>` asks
+  the server for a prefix beside the address and installs it in the
+  container as one unreachable route, for software there that routes; the
+  Kea DHCPv6 test fixture shipped in v2.4.0
+- [#1203], the DHCPv6 option 17 logged as `vendor_17`, the plugin half of
+  [#1034]
 - [#744], one subject discovery, one refusal and one collation in a
   shared shell library
-- [#745], six gates merged, and one proved removable
+- [#745], five gates merged into the gates that read the same files, and
+  the release preflight taken out of the gate class
 - [#746], the four integration lanes reduced to one reusable workflow
 - [#747], four detectors modelling one vendor scheduler collapsed into
   one
@@ -98,13 +103,14 @@ below decide what is in a release; this page follows them.
 - [#749], gate expiry, the premise rule turned on the gates themselves
 - [#798], a publisher outside the standard build-and-push shape is
   dropped from a gate's population
-- [#799], nothing observes the release runbook against the release
-  workflow
-- [#856], nothing checks the release notes' breaking-change table against
-  the code
-- [#861], nothing checks that a Go comment still describes its code
-- [#886], the canonical runner-pool facts are never compared to the live
-  runner count
+- [#799], the release runbook read against the release workflow by a
+  gate, and the arm64 install proofs no longer wait on the amd64 build
+- [#856], a gate that fails CI when a changed or removed metric, health
+  key or ledger kind is missing from the unreleased release notes
+- [#861], a gate that fails the lane when a Go doc block opens by naming
+  a different Test function
+- [#886], the runner-pool facts file compared with the registered runners
+  daily
 - [#680], a host AppArmor profile silently disables the kea fixture
 - [#690], what each capability in `config.json` buys, measured by a
   matrix job
@@ -113,6 +119,11 @@ below decide what is in a release; this page follows them.
 - [#674], what a version number promises, written down
 - [#178], the frozen `docker/docker` module replaced by the ones moby
   publishes
+
+### v2.6.0, planned
+
+- [#733], the tracking issue for the CI consolidation: factor the corpus,
+  and establish that a gate can be removed
 
 ## The release line
 
@@ -124,12 +135,13 @@ flowchart LR
     v23["v2.3<br/>host plumbing"]
     v24["v2.4<br/>the rest of IPv6"]
     v25["v2.5<br/>CI, code debt and<br/>prefix delegation"]
-    v20 --> v21 --> v22 --> v23 --> v24 --> v25
+    v26["v2.6<br/>CI consolidation<br/>tracking"]
+    v20 --> v21 --> v22 --> v23 --> v24 --> v25 --> v26
     classDef planned stroke-dasharray: 6 4
-    class v25 planned
+    class v26 planned
 ```
 
-v2.0 to v2.4 are released and v2.5 is planned; the planned one is the
+v2.0 to v2.5 are released and v2.6 is planned; the planned one is the
 dashed node. There are no dates. Every
 release, patches included, is in
 [the release notes](https://github.com/claymore666/docker-net-dhcp/blob/main/RELEASE_NOTES.md).

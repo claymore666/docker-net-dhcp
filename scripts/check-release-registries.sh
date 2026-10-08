@@ -4,6 +4,9 @@
 
 # A release from the canonical repository must reach BOTH registries.
 #
+# Expires-when: the project publishes to one registry only, so a release
+#   cannot silently skip the second (#972).
+#
 # WHY THIS EXISTS
 #
 # The Docker Hub push is conditional on DOCKERHUB_USERNAME and
@@ -55,10 +58,12 @@
 #       1 the canonical repository is about to publish to GHCR alone
 #       2 cannot judge (an input missing, or not the shape expected)
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 CANONICAL_REPO="${CANONICAL_REPO:-claymore666/docker-net-dhcp}"
 
-refuse() { echo "check-release-registries: $*" >&2; exit 2; }
+refuse() { gate_refuse "$*"; }
 
 REPO="${REPO:-}"
 HAS_HUB_CREDS="${HAS_HUB_CREDS:-}"

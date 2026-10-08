@@ -10,7 +10,7 @@ name: Release back-merge
 # THIS CANNOT BE A PR CHECK. The step it watches happens after the last
 # CI-visible event of a release — the release PR merges green, the tag
 # builds green, and then nothing runs. There is no run to fail, so it
-# needs a clock, exactly like missing-runs.yml (#418).
+# needs a clock, like run-retention.yml.
 #
 # fetch-depth: 0 IS LOAD-BEARING. The check computes reachability; the
 # default depth of 1 makes that unanswerable. The script refuses to give

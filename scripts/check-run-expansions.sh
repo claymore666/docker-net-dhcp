@@ -5,6 +5,9 @@
 # Assert that no attacker-influenced expression is expanded into a
 # `run:` body (#737).
 #
+# Expires-when: never: a ${{ }} expression is substituted before bash parses
+#   the step (#737), a platform fact; ends if Actions quotes it.
+#
 # THE FAILURE THIS PREVENTS. `${{ ... }}` is substituted into the step
 # script BEFORE bash parses it. A value carrying a quote and a semicolon
 # therefore becomes commands, and validating it on the next line is too
@@ -56,6 +59,8 @@
 #        2 the check could not run (missing dir, nothing discovered)
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
@@ -73,6 +78,11 @@ if [ "${#files[@]}" -eq 0 ]; then
          "This check would otherwise pass having examined nothing." >&2
     exit 2
 fi
+
+# A composite action's run: is substituted the same way, and the lanes
+# install the plugin through them (#746): read the actions beside $DIR.
+files+=("$(dirname "$DIR")"/actions/*/action.yml "$(dirname "$DIR")"/actions/*/action.yaml)
+label() { case "$1" in */actions/*/action.y*ml) echo "${1#"$(dirname "$DIR")"/}" ;; *) basename "$1" ;; esac; }
 
 # Every dispatch input, the head ref, and any event field whose value is
 # free text a stranger can write. Extended regex, matched against the
@@ -149,9 +159,9 @@ for f in "${files[@]}"; do
         fi
         expansions=$((expansions + 1))
         if [[ "$expr" =~ $UNTRUSTED ]]; then
-            findings+=("$(basename "$f")	$line	$expr")
+            findings+=("$(label "$f")	$line	$expr")
         elif [[ "$expr" =~ $SECRET ]]; then
-            secret_findings+=("$(basename "$f")	$line	$expr")
+            secret_findings+=("$(label "$f")	$line	$expr")
         fi
     done < <(scan_file "$f")
 done

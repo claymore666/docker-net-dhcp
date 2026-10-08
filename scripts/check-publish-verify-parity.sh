@@ -5,6 +5,9 @@
 # Every published {registry x architecture} must have an install
 # verifier and a floating-tag promotion (#833).
 #
+# Expires-when: never: a registry or architecture with no install verifier
+#   shipped 20 unproven tags (#833); a standing release invariant.
+#
 # WHAT WENT WRONG. Docker Hub dual-publish began 2026-05-05. Hub
 # install-verification landed 2026-08-22 (#777). In between, 20 tags
 # shipped a Docker Hub artifact that nothing proved installable -- and
@@ -155,12 +158,15 @@
 #       2 CANNOT JUDGE -- the workflow is unreadable or a set came out
 #         empty, which would make every universal below vacuously true
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 WORKFLOW="${1:-.github/workflows/release.yml}"
 
 refuse() {
-    echo "::error title=Publish/verify parity cannot be judged::$*" >&2
-    exit 2
+
+    GATE_TITLE='Publish/verify parity cannot be judged' gate_refuse "$*"
+
 }
 
 [ -f "$WORKFLOW" ] || refuse "no workflow at '$WORKFLOW'; there is no publish set to derive from."

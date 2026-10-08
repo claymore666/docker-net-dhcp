@@ -1,0 +1,201 @@
+name: Capability matrix
+
+# What each capability in config.json buys, measured (#690): the tree's
+# plugin installed with the full set and with each capability removed in
+# turn, one hosted cell each, eight scenarios per cell judged on outside
+# evidence by scripts/capability-cell.sh. A cell records; only the
+# reconcile job judges, against the table in docs/reference.md.
+# A pull request into dev or main, and the push after its merge, measure
+# what runs in the plugin and the table judged against, so a change that
+# starts needing another capability fails here (#690). A draft pull request
+# is where the first measurement is taken: a `?` is red once it is ready.
+on:
+  pull_request:
+    branches: [dev, main]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - 'config.json'
+      - 'cmd/**'
+      - 'pkg/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Dockerfile'
+      - 'Makefile'
+      - 'docs/reference.md'
+      - '.github/workflows/capability-matrix.yml'
+      - '.github/actions/install-plugin/action.yml'
+      - '.github/actions/teardown-plugin/action.yml'
+      - 'scripts/capability-cell.sh'
+      - 'scripts/capability-checks.sh'
+      - 'scripts/capability-matrix.sh'
+  push:
+    branches: [dev, main]
+    paths:
+      - 'config.json'
+      - 'cmd/**'
+      - 'pkg/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Dockerfile'
+      - 'Makefile'
+      - 'docs/reference.md'
+      - '.github/workflows/capability-matrix.yml'
+      - '.github/actions/install-plugin/action.yml'
+      - '.github/actions/teardown-plugin/action.yml'
+      - 'scripts/capability-cell.sh'
+      - 'scripts/capability-checks.sh'
+      - 'scripts/capability-matrix.sh'
+  workflow_dispatch:
+
+concurrency:
+  group: capability-matrix-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  cells:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      list: ${{ steps.list.outputs.list }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: list
+        run: |
+          set -euo pipefail
+          list="$(bash scripts/capability-matrix.sh --cells-json)"
+          echo "cells: $list"
+          echo "list=$list" >> "$GITHUB_OUTPUT"
+
+  cell:
+    needs: cells
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      HAS_HUB_CREDS: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+      CELL: ${{ matrix.cell }}
+      PLUGIN_REF: ghcr.io/claymore666/docker-net-dhcp:capability
+    strategy:
+      fail-fast: false
+      matrix:
+        cell: ${{ fromJSON(needs.cells.outputs.list) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Log in to Docker Hub
+        if: env.HAS_HUB_CREDS == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Install the DHCP server
+        # A hosted mirror hang held six cells at the 30-minute cap on one
+        # evening; the install takes under a minute when the mirror answers (#1266).
+        timeout-minutes: 6
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends dnsmasq-base
+
+      - name: Build the plugin
+        run: make PLUGIN_NAME=ghcr.io/claymore666/docker-net-dhcp PLUGIN_TAG=capability plugin
+
+      - name: Remove the cell's capability from the manifest
+        id: strip
+        run: |
+          set -euo pipefail
+          if [ "$CELL" != none ]; then
+            bash scripts/capability-matrix.sh --strip "$CELL" plugin/config.json > config.cell.json
+            mv config.cell.json plugin/config.json
+          fi
+          echo "caps=$(jq -c .linux.capabilities plugin/config.json)" >> "$GITHUB_OUTPUT"
+
+      # A cell whose enable is refused is a measurement, not a failed job (#690).
+      - name: Install the plugin
+        id: install
+        continue-on-error: true
+        uses: ./.github/actions/install-plugin
+        with:
+          ref: ${{ env.PLUGIN_REF }}
+          dir: plugin
+
+      - name: Run the cell
+        continue-on-error: true
+        shell: bash
+        env:
+          WANT_CAPS: ${{ steps.strip.outputs.caps }}
+        run: |
+          set -o pipefail
+          sudo bash scripts/capability-cell.sh "$CELL" "$PLUGIN_REF" "$WANT_CAPS" 2>&1 | tee cell.log
+
+      - name: Record the row
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p rows
+          touch cell.log
+          grep '^CAP_MATRIX_ROW ' cell.log > "rows/${CELL}.row" || {
+            echo "::error::the cell produced no verdict line for ${CELL}"
+            printf 'CAP_MATRIX_ROW removed=%s result=no-verdict\n' "$CELL" > "rows/${CELL}.row"
+          }
+          cat "rows/${CELL}.row" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the row
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: capability-row-${{ matrix.cell }}
+          # A rerun after a cancelled cell replaces the earlier attempt's row;
+          # download-artifact dedupes by name and took the stale one (#1266).
+          overwrite: true
+          path: |
+            rows/
+            cell.log
+          retention-days: 30
+
+      - name: Tear down the plugin
+        if: always()
+        uses: ./.github/actions/teardown-plugin
+        with:
+          ref: ${{ env.PLUGIN_REF }}
+
+  reconcile:
+    needs: [cells, cell]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: capability-row-*
+          path: downloaded
+
+      # An unmeasured "?" in the table is red where a merge happens and a
+      # warning naming the value to commit elsewhere. Whether the pull
+      # request is a draft is read when this step runs, not taken from the
+      # event payload, which can predate the ready click (#690).
+      - name: Reconcile the cells against docs/reference.md
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number || 0 }}
+        run: |
+          set -o pipefail
+          DRAFT="$(bash scripts/capability-matrix.sh --draft-now "$EVENT" "$REPO" "$PR")" || exit 2
+          strict=()
+          mode="$(bash scripts/capability-matrix.sh --strictness "$EVENT" "$REF" "$DRAFT")" || exit 2
+          echo "unmeasured table cells are $mode here"
+          [ "$mode" = strict ] && strict=(--strict)
+          bash scripts/capability-matrix.sh --reconcile "${strict[@]}" downloaded | tee -a "$GITHUB_STEP_SUMMARY"

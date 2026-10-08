@@ -4,6 +4,10 @@
 
 # Dockerfile base-image pin gate (#633).
 #
+# Expires-when: never: an unpinned FROM lets a base image change under a
+#   released tag, which Scorecard reported (#633); a standing supply-chain
+#   rule.
+#
 # Every `FROM` the repository tracks must name its image by digest.
 # Scorecard reported `test/arm64-netboot/Dockerfile` as unpinned (alert
 # 95) while every other FROM in the tree carried a digest — including
@@ -34,6 +38,8 @@
 #                        discovery (the seam the self-test drives).
 # Exit:  0 every FROM is pinned, 1 one or more are not, 2 cannot check.
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 ROOT="${1:-.}"
 

@@ -28,7 +28,11 @@ The parts and what passes between them are drawn in
    host end is named `dh-` plus twelve hex digits here, whatever the
    network asked for: the container's name is not known at this point,
    so a network that set `host_ifname` gets its rename at step 7, where
-   the daemon's answer already is.
+   the daemon's answer already is. On a network without IPv6 the
+   container end is brought up with `disable_ipv6=1`, so the host takes
+   no SLAAC address and no default route through a link that is about to
+   leave it; the macvlan and ipvlan children, the IPAM reservation link
+   and the `validate_dhcp` probe link are treated the same (v2.5.0, #1247).
 3. A one-shot DHCP acquisition runs on the container end (still in the
    host namespace). The plugin provides the initial IP address to Docker.
 4. Docker moves the container end of the `veth` pair into the
@@ -78,7 +82,9 @@ The parts and what passes between them are drawn in
    reason. Between the two calls nothing on the host answers to the
    `dh-` name, so those lookups go through one reader that waits for a
    rename in flight; the rename's own lookup is the exception and runs
-   inside it.
+   inside it. The link is up at that point, so a kernel before 6.2
+   refuses the rename with `EBUSY` and the link keeps its `dh-` name
+   (#1248).
 8. The client keeps running, renewing the lease when required, until the
    container shuts down.
 
@@ -334,7 +340,12 @@ window is real. `purgeRouterAdvertRoutes` closes it: after the knobs
 take, every `RTPROT_RA` route on the link is deleted. Failures there
 fold into `router_advert_guard_failures` beside the sysctl ones, because
 they are one obligation seen twice. The address the kernel may have
-formed in the same window is NOT touched; that is #818's.
+formed in the same window is NOT touched on an `eui64` network; that is
+#818's. On `ipv6_iid=stable-privacy` it is the address the option exists
+to avoid, and `purgeKernelEUI64Addrs` deletes it after the knobs take,
+counted the same way (#1268). It matches both identifiers the kernel
+forms from the MAC: the modified EUI-64, and on an ipvlan child the form
+with the link's `dev_id` in place of `ff:fe` and no U/L flip.
 
 It all runs in `prepareIPv6Link`, in one namespace entry. That placement
 is a deviation from where the design put it, inside the client's own
@@ -821,11 +832,16 @@ kinds of restart. Their *observable* behaviour is documented in the
 Two more files in `STATE_DIR` are kept by the plugin and not by the
 mechanisms above. The lease record `lease-records.jsonl` is compacted on
 the 15-second sweep, so it stops growing by about 5 KB per container
-lifecycle (v2.4.0, #1182); the rule and the crash behaviour are in the
+lifecycle (v2.4.0, #1182), and a live record stops growing per renewal
+(v2.5.0, #1192); the rule and the crash behaviour are in the
 [driver reference](reference.md#state-persistence). At start, a saved
 network file whose network Docker answers is gone is removed together with
 its pool binding and held records, and `stale_networks_dropped` counts it
 (v2.4.0, #1174); a slow or unreachable daemon leaves everything as it is.
+The drop runs the host side of `DeleteNetwork` as well: held
+`release_lease=on_remove` leases are released, and the VLAN sub-interface
+or the plugin-made bridge is removed unless another network uses it
+(v2.5.0, #1251).
 `ipv6-iid-secret` holds the 32-byte secret behind `ipv6_iid=stable-privacy`
 (v2.4.0, #1032), mode 0600, created on first use.
 
@@ -964,6 +980,42 @@ fails CI if that file lists fewer gates than the workflow runs; a local
 target that hand-listed them would quietly cover less the first time a
 gate was added (#636, the same shape as #542).
 
+Every gate sources
+[`scripts/gatelib.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/gatelib.sh)
+first (#744). The library does three things each gate used to do its own
+way. It runs the gate under `LC_ALL=C.UTF-8`, the locale the hosted CI
+lanes use, so `sort`, `comm` and `join` order file names by code point
+on a desktop with a German or English locale too, and `grep` and `awk`
+read a character such as `→` as one character, not as bytes. A machine
+without that locale gets a refusal. It has one refusal, `gate_refuse`, which prints an `::error`
+annotation naming the gate and the reason and exits 2, so a gate that
+cannot judge never reads as a pass or a finding. And it lists the files
+a gate judges with `gate_subjects <array> <class> [<dir>]`: git's view
+of the tree (tracked files, plus untracked files that are not ignored),
+narrowed to a class such as `go-src`, `md` or `docs`. The classes and
+their exceptions, such as test files and `testdata/`, are one table in
+the library, and a class that matches nothing refuses unless the gate
+passes `--may-be-empty`. `scripts/test-gatelib.sh` checks the contract
+and that every `check-*.sh` sources the library.
+
+Every gate also says when it should be removed (#749). Its leading
+comment block carries one `# Expires-when:` line, continued on lines
+indented two or more spaces, that names the condition and cites the issue
+it comes from; a gate that guards a standing invariant says `never` and
+why. The gates are every `scripts/check-*.sh` and every `scripts/*-gate.sh`.
+[`scripts/check-gate-expiry.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/check-gate-expiry.sh)
+fails a pull request whose gate has no such line, or one that is empty, a
+placeholder, under six words, without an issue reference, longer than four
+lines, or copied from another gate. From the v2.5.0 release on, the Gate
+expiry workflow lists every gate with its condition in the job summary
+once a quarter, for a person to re-read; it never decides that a
+condition holds. GitHub runs a scheduled workflow only from the default
+branch, so until that release `bash scripts/check-gate-expiry.sh --list`
+prints the same list locally. To add a gate: source
+`gatelib.sh`, write the `Expires-when` line, add a `scripts/test-check-<name>.sh`
+self-test, and wire it into the `policy-gates` job of `test.yaml` and into
+`scripts/local-lane.sh`.
+
 Everything it does **not** do is declared and never merely absent.
 `scripts/local-lane.sh --list-exempt` prints the list with reasons, and
 that is the place to read it instead of a count written here, which has
@@ -998,6 +1050,21 @@ proves the two partitions together cover the roster exactly once.
 The partitioner itself refuses, naming the file and line, a test under
 `test/integration/` that is neither on the roster nor in a package the
 shard target runs whole (#866).
+
+The self-hosted pool these jobs run on is declared in
+[`.github/ci-pool.json`](https://github.com/claymore666/docker-net-dhcp/blob/main/.github/ci-pool.json),
+and `scripts/check-pool-facts.sh` keeps every statement of its size in
+the tree equal to that file. Once a day the Pool live count workflow
+compares the file with the runners registered on the repository (#886),
+using the read-only administration token that Scorecard also uses,
+because the workflow token cannot list runners. It counts registered
+runners, online or not, and sees a resize up to a day late. That the
+token can read the runners list is taken from GitHub's permission table
+and was not measured: no run has read it yet, so the scheduled path stays
+unproven until its first run on the default branch. It runs on
+its own from the v2.5.0 release on; until then, and at any time,
+`bash scripts/check-pool-facts.sh --live` with a token that has admin
+access to the repository runs the same comparison.
 
 Use `integration-local`.
 

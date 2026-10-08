@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	dNetwork "github.com/docker/docker/api/types/network"
+	dNetwork "github.com/moby/moby/api/types/network"
 )
 
 func backfillPlugin(opts map[string]string) *Plugin {

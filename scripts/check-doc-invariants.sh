@@ -5,6 +5,9 @@
 # Every documentation invariant declared in .github/doc-invariants.txt
 # must still be present in every file that declares it (#579).
 #
+# Expires-when: .github/doc-invariants.txt is empty: each entry is an
+#   operator precondition with no code fact another gate could check (#579).
+#
 # WHY THIS EXISTS
 #
 # The STATE_DIR install precondition — `sudo mkdir -p /var/lib/net-dhcp`
@@ -15,9 +18,9 @@
 # anywhere that names the directory.
 #
 # Nothing could see it. check-version-pins judges image pins,
-# check-docs-drift judges counters and settings, check-option-docs
-# judges driver-opts — the block is a standing operator instruction with
-# no code fact to reconcile against, so it fell between all three. And
+# check-docs-drift judges counters, settings and driver-opts — the block
+# is a standing operator instruction with no code fact to reconcile
+# against, so it fell between both. And
 # its text names a version, which makes it read as stale the moment a
 # later one ships: a release documentation pass is the likeliest place
 # for it to be deleted, in good faith, with nothing going red.
@@ -39,14 +42,33 @@
 # as protecting documentation invites the belief that documentation is
 # therefore correct.
 #
+# Three optional declarations widen an entry (#745; the cosign-version
+# rule used to be a gate of its own):
+#   scope: <ERE>      the entry's files are every tracked Markdown file
+#                     with a line matching the regex, discovered rather
+#                     than listed, so a new page that copies the snippet
+#                     is judged the moment it lands. No match is exit 2.
+#   var: NAME=<path>  NAME's value is read from the `NAME=<n>` line of
+#                     <path>: its leading digits, whatever follows ignored,
+#                     the same read release.yml and the preflight make of
+#                     scripts/release-tooling.env (#745). `${NAME}` in a
+#                     marker becomes that number.
+#                     A missing file, a missing line or an unresolved
+#                     `${NAME}` is exit 2, never an empty substitution.
+#   match: text       markers match case-insensitively with Markdown
+#                     emphasis and code ticks stripped. Default is raw.
+#
 # Usage: check-doc-invariants.sh [--root <dir>] [--manifest <file>]
 # Exit:  0 all invariants present
 #        1 an invariant is violated — a marker is gone, or a declared
 #          file does not exist
-#        2 the gate cannot see: no manifest, no root, or a manifest
-#          that declares nothing
+#        2 the gate cannot see: no manifest, no root, a manifest that
+#          declares nothing, or an entry whose scope or variable
+#          resolves to nothing (1 wins when both happen)
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(dirname "$HERE")"
@@ -73,6 +95,7 @@ if [ ! -f "$MANIFEST" ]; then
 fi
 
 fail=0
+blind=0
 entries=0
 markers_checked=0
 
@@ -83,6 +106,62 @@ check_entry() {
     local id="$1"
     [ -n "$id" ] || return 0
     entries=$((entries + 1))
+
+    local -a files=("${files[@]}") markers=("${markers[@]}")
+    local v name vpath val i found
+    case "$matchmode" in
+        raw|text) ;;
+        *)
+            echo "BLIND $id: match: $matchmode is not raw or text"
+            blind=1
+            return 0
+            ;;
+    esac
+    for v in "${vars[@]}"; do
+        name="${v%%=*}"
+        vpath="${v#*=}"
+        if [[ ! "$name" =~ ^[A-Z][A-Z0-9_]*$ ]] || [ "$name" = "$v" ]; then
+            echo "BLIND $id: var: $v is not NAME=<path>"
+            blind=1
+            return 0
+        fi
+        val=""
+        if [ -f "$ROOT/$vpath" ]; then
+            val="$(sed -n "s/^${name}=\([0-9][0-9]*\).*/\1/p" "$ROOT/$vpath" | head -1)"
+        fi
+        if [ -z "$val" ]; then
+            echo "BLIND $id: no ${name}=<value> line in $vpath, so the marker cannot be built."
+            echo "      That line is this entry's source of truth; restore it rather than"
+            echo "      hardcoding the value in the marker."
+            blind=1
+            return 0
+        fi
+        for i in "${!markers[@]}"; do
+            markers[i]="${markers[i]//\$\{$name\}/$val}"
+        done
+    done
+    if [ "${#vars[@]}" -gt 0 ]; then
+        for i in "${!markers[@]}"; do
+            if [[ "${markers[i]}" =~ \$\{[A-Z_][A-Z0-9_]*\} ]]; then
+                echo "BLIND $id: marker still holds an unresolved variable: ${markers[i]}"
+                blind=1
+                return 0
+            fi
+        done
+    fi
+
+    if [ -n "$scope" ]; then
+        local -a md=() hits=()
+        gate_subjects md md "$ROOT"
+        mapfile -t hits < <(grep -lE -- "$scope" "${md[@]}" 2>/dev/null | sed "s|^${ROOT%/}/||")
+        if [ "${#hits[@]}" -eq 0 ]; then
+            echo "BLIND $id: no tracked Markdown page matches scope: $scope"
+            echo "      That is almost certainly a broken search, not a real state."
+            blind=1
+            return 0
+        fi
+        files+=("${hits[@]}")
+    fi
 
     if [ "${#files[@]}" -eq 0 ]; then
         echo "FAIL  $id declares no file: — an invariant that names no file is checked against nothing"
@@ -116,7 +195,12 @@ check_entry() {
         fi
         for m in "${markers[@]}"; do
             markers_checked=$((markers_checked + 1))
-            if ! grep -Fq -- "$m" "$path"; then
+            if [ "$matchmode" = text ]; then
+                found="$(tr -d '*`' < "$path" | grep -iFc -- "$m")"
+            else
+                found="$(grep -Fc -- "$m" "$path")"
+            fi
+            if [ "${found:-0}" -eq 0 ]; then
                 echo "FAIL  $id: $f no longer contains: $m"
                 echo "      This is a standing operator instruction, not a description of the"
                 echo "      current version. Restore it, or — if the behaviour it describes has"
@@ -131,6 +215,9 @@ check_entry() {
 id=""
 files=()
 markers=()
+vars=()
+scope=""
+matchmode=raw
 justified=0
 
 while IFS= read -r line || [ -n "$line" ]; do
@@ -144,6 +231,9 @@ while IFS= read -r line || [ -n "$line" ]; do
         id="${line%%[[:space:]]*}"
         files=()
         markers=()
+        vars=()
+        scope=""
+        matchmode=raw
         justified=0
         continue
     fi
@@ -162,6 +252,20 @@ while IFS= read -r line || [ -n "$line" ]; do
             value="${trimmed#marker:}"
             value="${value#"${value%%[![:space:]]*}"}"
             [ -n "$value" ] && markers+=("$value")
+            ;;
+        scope:*)
+            scope="${trimmed#scope:}"
+            scope="${scope#"${scope%%[![:space:]]*}"}"
+            ;;
+        var:*)
+            value="${trimmed#var:}"
+            value="${value#"${value%%[![:space:]]*}"}"
+            vars+=("$value")
+            ;;
+        match:*)
+            value="${trimmed#match:}"
+            value="${value#"${value%%[![:space:]]*}"}"
+            matchmode="$value"
             ;;
         *)
             justified=1
@@ -182,6 +286,9 @@ fi
 
 if [ "$fail" -ne 0 ]; then
     exit 1
+fi
+if [ "$blind" -ne 0 ]; then
+    exit 2
 fi
 
 echo "doc invariants: OK — $entries invariant(s), $markers_checked marker/file check(s) passed."

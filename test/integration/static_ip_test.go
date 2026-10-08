@@ -13,9 +13,9 @@ import (
 	"time"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
-	docker "github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	docker "github.com/moby/moby/client"
 )
 
 // dnsmasq hashes the client identity across the whole range, so an unreserved high address drew .89 and .12 on one
@@ -38,7 +38,7 @@ func TestStaticIP_DriverOpt(t *testing.T) {
 
 	harness.CreateNetwork(t, ctx, netName, "macvlan", nil)
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -46,49 +46,44 @@ func TestStaticIP_DriverOpt(t *testing.T) {
 
 	// harness.RunContainer takes no per-endpoint DriverOpts.
 	create, err := cli.ContainerCreate(ctx,
-		&container.Config{
+		docker.ContainerCreateOptions{Config: &container.Config{
 			Image: harness.TestImage,
 			Cmd:   []string{"sleep", "infinity"},
 			// The hostname only makes the dnsmasq log readable; the reservation keys on the MAC (#425).
 			Hostname: harness.StaticTestHostname,
-		},
-		harness.HostConfig(),
-		&network.NetworkingConfig{
+		}, HostConfig: harness.HostConfig(), NetworkingConfig: &network.NetworkingConfig{
 			EndpointsConfig: map[string]*network.EndpointSettings{
 				netName: {
 					DriverOpts: map[string]string{"ip": wantIP},
 					// Must match the fixture's --dhcp-host reservation (#425).
-					MacAddress: harness.StaticTestMAC,
+					MacAddress: harness.MustMAC(harness.StaticTestMAC),
 				},
 			},
-		},
-		nil,
-		ctrName,
-	)
+		}, Name: ctrName})
 	if err != nil {
 		t.Fatalf("ContainerCreate: %v", err)
 	}
 	id := create.ID
 	t.Cleanup(func() {
 		bg := context.Background()
-		_ = cli.ContainerStop(bg, id, container.StopOptions{})
-		_ = cli.ContainerRemove(bg, id, container.RemoveOptions{Force: true})
+		_, _ = cli.ContainerStop(bg, id, docker.ContainerStopOptions{})
+		_, _ = cli.ContainerRemove(bg, id, docker.ContainerRemoveOptions{Force: true})
 	})
 
-	if err := cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
+	if _, err := cli.ContainerStart(ctx, id, docker.ContainerStartOptions{}); err != nil {
 		t.Fatalf("ContainerStart: %v", err)
 	}
 
 	deadline := time.Now().Add(harness.IPAcquisitionBudget)
 	var gotIP string
 	for time.Now().Before(deadline) {
-		ins, err := cli.ContainerInspect(ctx, id)
+		ins, err := cli.ContainerInspect(ctx, id, docker.ContainerInspectOptions{})
 		if err != nil {
 			t.Fatalf("ContainerInspect: %v", err)
 		}
-		for _, ep := range ins.NetworkSettings.Networks {
-			if ep.IPAddress != "" {
-				gotIP = ep.IPAddress
+		for _, ep := range ins.Container.NetworkSettings.Networks {
+			if ep.IPAddress.IsValid() {
+				gotIP = harness.AddrString(ep.IPAddress)
 			}
 		}
 		if gotIP != "" {

@@ -5,6 +5,9 @@
 # `docker plugin set` requires the plugin DISABLED. Every snippet that
 # sets a value must disable first and enable after.
 #
+# Expires-when: never: the daemon refuses docker plugin set on an enabled
+#   plugin, an engine fact (#763); ends only if the engine allows it.
+#
 # WHY THIS EXISTS
 #
 # The daemon refuses the call outright:
@@ -61,6 +64,8 @@
 # Usage: check-plugin-set-order.sh [<file>...]   (default: tracked *.md)
 # Exit:  0 every snippet is in the right order, 1 one is not.
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 if [ "$#" -gt 0 ]; then
     files=("$@")

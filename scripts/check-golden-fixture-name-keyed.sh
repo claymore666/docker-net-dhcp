@@ -5,6 +5,9 @@
 # The metrics golden must move ONLY for the series that actually
 # changed (#651).
 #
+# Expires-when: the metrics golden is removed or written per series by the
+#   test itself, so index keying cannot come back (#651).
+#
 # fixtureSnapshot used to number HealthResponse by field INDEX --
 # (n-i)*10 -- which couples every field's value to every other field's
 # position. Adding one field shifted n and reindexed everything below
@@ -48,6 +51,8 @@
 # Exit 0 pass, 1 the fixture is index-coupled, 2 cannot judge.
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 ROOT="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 SRC="$ROOT/pkg/plugin/endpoints.go"
@@ -62,7 +67,7 @@ PROBES=(
     "ZZGoldenFixtureRenderedProbe|zz_golden_fixture_rendered_probe|carries a real json name, so it moves the RENDERED field index"
 )
 
-refuse() { echo "CANNOT JUDGE: $*" >&2; exit 2; }
+refuse() { gate_refuse "$*"; }
 
 [ -f "$SRC" ] || refuse "no $SRC"
 [ -f "$GOLDEN" ] || refuse "no $GOLDEN"

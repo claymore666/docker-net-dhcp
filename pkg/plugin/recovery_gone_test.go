@@ -12,8 +12,8 @@ import (
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
-	dContainer "github.com/docker/docker/api/types/container"
-	dNetwork "github.com/docker/docker/api/types/network"
+	dContainer "github.com/moby/moby/api/types/container"
+	dNetwork "github.com/moby/moby/api/types/network"
 
 	"encoding/json"
 )
@@ -24,17 +24,13 @@ func notFoundErr() error {
 
 func running() dContainer.InspectResponse {
 	return dContainer.InspectResponse{
-		ContainerJSONBase: &dContainer.ContainerJSONBase{
-			State: &dContainer.State{Running: true, Status: "running", Pid: 4242},
-		},
+		State: &dContainer.State{Running: true, Status: "running", Pid: 4242},
 	}
 }
 
 func stopped(status string) dContainer.InspectResponse {
 	return dContainer.InspectResponse{
-		ContainerJSONBase: &dContainer.ContainerJSONBase{
-			State: &dContainer.State{Running: false, Status: status},
-		},
+		State: &dContainer.State{Running: false, Status: dContainer.ContainerState(status)},
 	}
 }
 
@@ -85,7 +81,7 @@ func TestContainerGone(t *testing.T) {
 			name: "a container with no State is gone",
 			id:   "c1",
 			fake: &fakeDocker{containerResult: map[string]dContainer.InspectResponse{
-				"c1": {ContainerJSONBase: &dContainer.ContainerJSONBase{}},
+				"c1": {},
 			}},
 			want:   true,
 			reason: "a response carrying no state cannot be reporting a running container",
@@ -123,10 +119,11 @@ func TestContainerGone_EmptyIDSkipsTheDaemon(t *testing.T) {
 func recoverAndAwaitCounter(t *testing.T, f *fakeDocker, containerID string) *Plugin {
 	t.Helper()
 	p := &Plugin{
-		docker:         f,
-		joinHints:      make(map[string]joinHint),
-		persistentDHCP: make(map[string]*dhcpManager),
-		awaitTimeout:   150 * time.Millisecond,
+		docker:               f,
+		joinHints:            make(map[string]joinHint),
+		persistentDHCP:       make(map[string]*dhcpManager),
+		endpointFingerprints: make(map[string]endpointFingerprint),
+		awaitTimeout:         150 * time.Millisecond,
 	}
 
 	if _, err := p.recoverOneEndpoint(t.Context(), containerID, "net-1", "ep-1",

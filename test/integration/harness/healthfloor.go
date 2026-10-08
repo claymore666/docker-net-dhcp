@@ -39,6 +39,15 @@ type EndpointHealth struct {
 	LastEventAt          string `json:"last_event_at,omitempty"`
 	ConflictCheck        string `json:"conflict_check"`
 	ACDPhase             string `json:"acd_phase"`
+	// DelegatedPrefixes are the IA_PD prefixes the lease holds and PrefixOverlap marks one another endpoint holds (#214).
+	DelegatedPrefixes []DelegatedPrefixHealth `json:"delegated_prefixes,omitempty"`
+	PrefixOverlap     bool                    `json:"prefix_overlap,omitempty"`
+}
+
+type DelegatedPrefixHealth struct {
+	Prefix         string `json:"prefix"`
+	PreferredUntil string `json:"preferred_until,omitempty"`
+	ExpiresAt      string `json:"expires_at,omitempty"`
 }
 
 // HealthFieldSeries names the series for health fields not exposed as net_dhcp_<tag> or net_dhcp_<tag>_total.
@@ -115,10 +124,11 @@ type HealthResponse struct {
 	JoinAttachMsMax      int32 `json:"join_attach_ms_max"`
 
 	// RestartLinkUpWaited counts child links that came up only after the departing link released the address (#408, #422).
-	RestartLinkUpWaited     int32 `json:"restart_link_up_waited"`
-	RestartLinkUpTimeouts   int32 `json:"restart_link_up_timeouts"`
-	JoinAbortedEndpointLeft int32 `json:"join_aborted_endpoint_left"`
-	TombstoneWriteFailures  int32 `json:"tombstone_write_failures"`
+	RestartLinkUpWaited      int32 `json:"restart_link_up_waited"`
+	RestartLinkUpTimeouts    int32 `json:"restart_link_up_timeouts"`
+	JoinAbortedEndpointLeft  int32 `json:"join_aborted_endpoint_left"`
+	JoinAbortedLinkWithdrawn int32 `json:"join_aborted_link_withdrawn"`
+	TombstoneWriteFailures   int32 `json:"tombstone_write_failures"`
 	// TombstoneQuarantines counts unparseable tombstone files moved aside, which is healthy-affecting (#724).
 	TombstoneQuarantines int32 `json:"tombstone_quarantines"`
 	// TombstonesConsumed counts addresses preserved by replaying a tombstone (#386).
@@ -222,7 +232,10 @@ type HealthResponse struct {
 	RouterAdvertGuardFailures int32 `json:"router_advert_guard_failures"`
 
 	// IPv6RouterWithdrawn counts default routes removed for a Router Lifetime of 0 (RFC 4861 section 4.2, #821).
-	IPv6RouterWithdrawn int32 `json:"ipv6_router_withdrawn"`
+	IPv6RouterWithdrawn       int32 `json:"ipv6_router_withdrawn"`
+	IPv6PrefixRoutesInstalled int32 `json:"ipv6_prefix_routes_installed"`
+	IPv6PrefixRoutesWithdrawn int32 `json:"ipv6_prefix_routes_withdrawn"`
+	IPv6PrefixOverlaps        int32 `json:"ipv6_prefix_overlaps"`
 
 	// RouterSolicitsSent and RouterAdvertsSeen are the library's RFC 4861 router-discovery counters (#814).
 	RouterSolicitsSent         int32 `json:"router_solicits_sent"`

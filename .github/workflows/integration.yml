@@ -211,9 +211,9 @@ on:
 # shorter at the same time. A job queued behind a full pool waits for a
 # running suite to release its runner, and that wait is now bounded by
 # the suite's own wall clock — which D41 takes from ~9m30 to under five
-# minutes. The watchdog's 600s queue budget cleared the old number and
-# clears the new one with more room, not less. It also names a shortage
-# as a shortage (#513) rather than letting it read as a suite failure.
+# minutes. A job no runner ever takes is cancelled by GitHub after 24
+# hours in the queue, and the per-ref group below means it holds only
+# its own ref meanwhile; nothing here cancels it sooner (#747).
 concurrency:
   # Branch pushes key on the COMMIT (#617): a merge burst into dev used to
   # evict the queued run, leaving a commit nothing ever tested. PR events
@@ -367,6 +367,9 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: integration-plugin
+          # A rerun replaces the earlier attempt's archive; download-artifact
+          # dedupes by name and took the stale copy in the matrix lanes (#1266).
+          overwrite: true
           path: integration-plugin.tar.gz
           # One day: this exists to travel between jobs of one run, and
           # a copy that outlives the run is a copy somebody can install
@@ -377,87 +380,6 @@ jobs:
           # about a missing artifact rather than about the build that
           # produced none.
           if-no-files-found: error
-
-  # Queue watchdog (#392). Runs alongside the suites on a hosted runner,
-  # so it is never queued behind the shortage it exists to report.
-  #
-  # timeout-minutes does not apply to a job no runner has picked up, so
-  # a pool shortage otherwise shows as a run that looks busy forever:
-  # the required `integration` context sits on Expected, the PR blocks,
-  # and the selfhosted-privileged concurrency group stays held. That
-  # happened on 2026-07-31 and was caught only by somebody looking.
-  #
-  # Deliberately NOT part of the `integration` aggregator's needs: this
-  # reports on a run that is failing to progress, and gating the
-  # aggregator on it would make the aggregator wait for the very thing
-  # that is stuck.
-  #
-  # That independence is also why the watchdog had no say in whether a
-  # PR could merge — it is not a required context, and the required
-  # aggregator does not read it. Since #477 it does not need one: it
-  # CANCELS the stuck run, and the cancellation reaches the aggregator
-  # through the suite rollup it already reads. The verdict travels by
-  # changing the run's state rather than by being asked for.
-  #
-  # Making `watchdog` a required context instead would not work: it is
-  # conditional on the gate's decision, so on a gate-skipped PR it never
-  # reports at all. The one always-present aggregator stays the single
-  # name branch protection knows.
-  watchdog:
-    needs: gate
-    if: needs.gate.outputs.decision == 'run'
-    runs-on: ubuntu-latest
-    # actions:write is what lets the watchdog CANCEL the run it condemns
-    # rather than only reporting it (#477). Reporting alone left the run
-    # holding the selfhosted-privileged concurrency group for hours after
-    # the check went red. Job-scoped rather than raised at the top level:
-    # this is the only job that needs to write, and the top-level block
-    # stays read-only for the other five (Scorecard #160).
-    permissions:
-      contents: read
-      actions: write
-    # Comfortably longer than the stuck budget below, so the watchdog
-    # gets to report rather than being killed mid-verdict.
-    timeout-minutes: 20
-    steps:
-      # No `ref:`, same reason as the gate (#593): this job runs
-      # scripts/ci-queue-watchdog.sh, which reports on the RUN — how
-      # long its jobs have been unassigned and why — and has no
-      # interest in the tree under test. Nothing it reads comes from
-      # the dispatched ref, so there is no reason to materialize it.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # It also classifies WHY nothing picked the job up and says so in
-      # an annotation, a step summary and the `starved` output (#513) —
-      # a capacity red and a suite failure looked identical in the
-      # checks UI, and the third concurrent run's red was routinely read
-      # as a broken dependency bump. `actions: write` above already
-      # covers the read of other in-flight runs the classifier needs.
-      - name: Fail if a suite job never gets a runner
-        id: watchdog
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GATE_REPO: ${{ github.repository }}
-        # 10 minutes, and the budget is a QUEUE budget: it bounds how
-        # long a job may sit with no runner, not how long one may run.
-        # The floor it has to clear is therefore one suite generation —
-        # a job queued behind a full pool waits for a running suite to
-        # release its runner. MEASURED 2026-09-06 in run 34064155841, the
-        # last run before D41: the longest suite job was 568s (9m28). D41
-        # takes that under 300s, so the floor this budget has to clear
-        # HALVES.
-        #
-        # Deliberately NOT tightened alongside D41's shorter suites, and
-        # the reason is the same one #877 gave. Firing this watchdog
-        # CANCELS the run, and D41 also takes the per-run privileged job
-        # ci-pool: integration-pool-jobs=11 ci-pool: pool-runners=16
-        # count from six to eleven against a pool of 16 — so where two
-        # runs used to fit, one does, and the SECOND run's jobs now
-        # genuinely queue rather than starting immediately. Tightening a
-        # destructive timeout at the moment the demand on the pool rises
-        # is how a capacity wobble becomes a cancelled run. 600s against
-        # a ~300s suite generation leaves a full generation of headroom;
-        # retune it against a measured pool, not against this change.
-        run: bash scripts/ci-queue-watchdog.sh "${{ github.run_id }}" 600 30
 
   # The suites. Identical except for the make target and log name, so a
   # matrix rather than near-duplicate job bodies — the previous single
@@ -606,46 +528,11 @@ jobs:
       # exposure than the note at the top of this file describes and not
       # a larger one.
 
-      # The Go toolchain (go.mod's version) is baked into the dhcp-ci
-      # runner image, so actions/setup-go is skipped. Fail loudly if
-      # it's ever missing — that means the runner image drifted from
-      # go.mod and needs a rebuild (ci/runner-image/).
-      - name: Verify Go toolchain
-        run: |
-          if ! command -v go >/dev/null; then
-            echo "go not in PATH — dhcp-ci runner image is stale vs go.mod; rebuild ci/runner-image/"
-            exit 1
-          fi
-          go version
-
-      # The same staleness check for the fixtures' own dependencies.
-      #
-      # Publishing a new runner image does NOT put it on the runners:
-      # the orchestrator and the runner host are separate machines, and
-      # a host that already has a `:latest` will keep using it until
-      # something pulls. So "the Dockerfile installs it" and "the
-      # runners have it" are different claims, and only the second one
-      # matters here.
-      #
-      # Without this step a stale image surfaces ~2 minutes into the
-      # suite as a fixture readiness timeout with the real cause —
-      # `exec of "…/kea-dhcp4" failed: No such file or directory` —
-      # buried in a captured server log. That cost a full CI round trip
-      # on #449. Fail in five seconds and name the fix instead.
-      - name: Verify fixture dependencies
-        run: |
-          missing=""
-          for tool in dnsmasq kea-dhcp4 kea-dhcp6 ip iptables; do
-            command -v "$tool" >/dev/null || missing="$missing $tool"
-          done
-          if [ -n "$missing" ]; then
-            echo "::error::dhcp-ci runner image is missing:$missing"
-            echo "The integration fixtures need these (see ci/runner-image/Dockerfile)."
-            echo "The image is published by the runner-image workflow, but the runner"
-            echo "host caches it — pull ghcr.io/claymore666/dhcp-ci-runner:latest there."
-            exit 1
-          fi
-          echo "fixture deps present: dnsmasq $(dnsmasq --version 2>/dev/null | head -1 | awk '{print $3}'), kea $(kea-dhcp4 -v 2>/dev/null)"
+      # The runner image bakes go.mod's Go and the fixtures' servers; a stale
+      # image fails here in seconds instead of minutes into the suite (#449).
+      # One copy for this lane and integration-arm64.yml (#746).
+      - name: Verify the runner image
+        uses: ./.github/actions/verify-runner-image
 
       # The replayed request fixtures (#644) are a recording of ONE
       # engine. This is the only host that knows which engine the suite
@@ -683,7 +570,7 @@ jobs:
         with:
           name: integration-plugin
 
-      - name: Install the plugin this run built
+      - name: Unpack the plugin this run built
         shell: bash
         run: |
           set -euo pipefail
@@ -694,22 +581,14 @@ jobs:
           rm -rf "${GITHUB_WORKSPACE}/plugin"
           mkdir -p "${GITHUB_WORKSPACE}/plugin"
           tar -xzf integration-plugin.tar.gz -C "${GITHUB_WORKSPACE}/plugin"
-          docker plugin rm -f "${INTEGRATION_PLUGIN_REF}" 2>/dev/null || true
-          # STATE_DIR is bind-mounted from the host since #440, and the
-          # daemon does NOT create a missing bind source — `plugin enable`
-          # fails with "failed to fulfil mount request". Every place that
-          # installs the plugin has to make it first.
-          mkdir -p /var/lib/net-dhcp
-          # `plugin`, not the absolute path: scripts/check-plugin-bind-sources.sh
-          # maps this argument to the manifest the Makefile copies into
-          # it, and the map is keyed on the build directory's NAME. The
-          # job's working directory is the workspace, so the two spell
-          # the same place.
-          docker plugin create "${INTEGRATION_PLUGIN_REF}" plugin
-          # Trace logging is test-only; released images ship
-          # config.json's defaults.
-          docker plugin set "${INTEGRATION_PLUGIN_REF}" LOG_LEVEL=trace
-          docker plugin enable "${INTEGRATION_PLUGIN_REF}"
+
+      # One install for all four lanes (#746): bind sources derived from the
+      # manifest the directory carries (#666), trace logging, enable.
+      - name: Enable the plugin this run built
+        uses: ./.github/actions/install-plugin
+        with:
+          ref: ${{ env.INTEGRATION_PLUGIN_REF }}
+          dir: plugin
 
       # THE PLUGIN NOW RUNNING IS THE COMMIT THIS RUN BUILT (O-4, D41).
       #
@@ -794,9 +673,9 @@ jobs:
       # leave global state behind.
       - name: Tear down integration plugin
         if: always()
-        run: |
-          docker plugin disable "${INTEGRATION_PLUGIN_REF}" 2>/dev/null || true
-          docker plugin rm -f "${INTEGRATION_PLUGIN_REF}" 2>/dev/null || true
+        uses: ./.github/actions/teardown-plugin
+        with:
+          ref: ${{ env.INTEGRATION_PLUGIN_REF }}
 
   # The required check. Collapses the whole suite matrix into the single
   # context branch protection knows about (see the topology note at the

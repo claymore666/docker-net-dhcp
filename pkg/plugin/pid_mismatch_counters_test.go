@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	dContainer "github.com/docker/docker/api/types/container"
-	dNetwork "github.com/docker/docker/api/types/network"
+	dContainer "github.com/moby/moby/api/types/container"
+	dNetwork "github.com/moby/moby/api/types/network"
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 )
@@ -88,9 +88,7 @@ func dnsPropagationManager(ctrID string) (*dhcpManager, *Plugin) {
 				}},
 			},
 			containerResult: map[string]dContainer.InspectResponse{
-				ctrID: {ContainerJSONBase: &dContainer.ContainerJSONBase{
-					State: &dContainer.State{Running: true, Status: "running", Pid: os.Getpid()},
-				}},
+				ctrID: {State: &dContainer.State{Running: true, Status: "running", Pid: os.Getpid()}},
 			},
 		},
 	}, p

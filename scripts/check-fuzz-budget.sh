@@ -5,6 +5,11 @@
 # Assert the CI fuzz budget is expressed in EXECUTIONS, not wall clock
 # (#324), and that each fuzz invocation carries a bounding -timeout.
 #
+# Expires-when: never as a whole. The #324 race is fixed upstream from
+#   go1.27.0 on (golang/go#75804), but an execution budget also fuzzes
+#   the same amount on every runner, and the -timeout and target-name
+#   checks guard a step that exits 0 having fuzzed nothing (#1010).
+#
 # Why this is a gate and not a comment:
 #
 # `go test -fuzz -fuzztime <duration>` installs a deadline context in
@@ -62,6 +67,8 @@
 #        to no target, or a target is not smoked; 2 cannot see.
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 WORKFLOW="${FUZZ_WORKFLOW:-.github/workflows/test.yaml}"
 LANE="${FUZZ_LANE:-scripts/local-lane.sh}"
@@ -206,9 +213,16 @@ done
 # upstream, which only makes this stricter.
 SCORECARD_FUZZ_RE='func[[:space:]]+Fuzz[_[:alnum:]]+[[:space:]]*\([_[:alnum:]]+[[:space:]]+\*testing\.F\)'
 
+# Scorecard reads the repository, so git's view of it is the subject set (#744).
+testfiles=()
+gate_subjects --may-be-empty testfiles go-test "$TREE_ROOT"
+tree_hits=""
+if [ "${#testfiles[@]}" -gt 0 ]; then
+    tree_hits="$(grep -hoE -- "$SCORECARD_FUZZ_RE" "${testfiles[@]}")"
+    [ $? -le 1 ] || gate_refuse "grep failed over the *_test.go files under $TREE_ROOT"
+fi
 mapfile -t TREE_TARGETS < <(
-    find "$TREE_ROOT" -name '*_test.go' -not -path '*/.git/*' -not -path '*/testdata/*' -print0 |
-        xargs -0 -r grep -hoE -- "$SCORECARD_FUZZ_RE" 2>/dev/null |
+    printf '%s\n' "$tree_hits" | grep -v '^$' |
         sed -E 's/^func[[:space:]]+(Fuzz[_[:alnum:]]+).*/\1/' |
         sort -u
 )

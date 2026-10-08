@@ -5,6 +5,9 @@
 # The published registry names are bound ONCE, and everything that has
 # to mean the same name derives from that binding (#972).
 #
+# Expires-when: the registry names are bound in one place no job can
+#   transcribe, for example one reusable release workflow (#972).
+#
 # WHAT WENT WRONG. `GHCR_NAME`, `HUB_NAME` and `HUB_ALIAS` were
 # transcribed into five job-level `env:` blocks. Every gate downstream
 # keys a cell on the VARIABLE NAME, because that is what a job's step
@@ -53,12 +56,15 @@
 #        1 a rebinding, a stray literal, or a Hub name a consumer misses
 #        2 CANNOT JUDGE -- the workflow is unreadable or the list is empty
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 WORKFLOW="${1:-.github/workflows/release.yml}"
 
 refuse() {
-    echo "::error title=The registry name list cannot be judged::$*" >&2
-    exit 2
+
+    GATE_TITLE='The registry name list cannot be judged' gate_refuse "$*"
+
 }
 
 [ -f "$WORKFLOW" ] || refuse "no workflow at '$WORKFLOW'; there is no name list to derive from."

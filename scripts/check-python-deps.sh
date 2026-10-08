@@ -4,6 +4,9 @@
 
 # Python dependency-reachability gate (#535).
 #
+# Expires-when: the tree carries no Python requirements file, so no declared
+#   distribution can be unreachable (#535).
+#
 # `scripts/requirements.txt` declared two third-party distributions for
 # `scripts/common.py`, the manifest-list helper inherited from upstream.
 # Nothing installed the file and nothing imported the module: the
@@ -45,6 +48,8 @@
 # Exit:  0 clean, 1 something is unreachable, 2 cannot check.
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="${PYDEPS_ROOT:-$(cd "$HERE/.." && pwd)}"

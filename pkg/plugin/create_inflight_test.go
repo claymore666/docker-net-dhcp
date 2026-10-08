@@ -6,6 +6,7 @@ package plugin
 import (
 	"context"
 	"errors"
+	docker "github.com/moby/moby/client"
 	"net"
 	"runtime"
 	"strings"
@@ -14,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	dNetwork "github.com/docker/docker/api/types/network"
+	dNetwork "github.com/moby/moby/api/types/network"
 	"github.com/vishvananda/netlink"
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
@@ -44,7 +45,7 @@ func newGatedList() *gatedList {
 	return &gatedList{fakeDocker: &fakeDocker{}, entered: make(chan struct{}), release: make(chan struct{})}
 }
 
-func (g *gatedList) NetworkList(ctx context.Context, o dNetwork.ListOptions) ([]dNetwork.Summary, error) {
+func (g *gatedList) NetworkList(ctx context.Context, o docker.NetworkListOptions) (docker.NetworkListResult, error) {
 	switch n := g.calls.Add(1); {
 	case n == 1:
 		close(g.entered)
@@ -53,7 +54,7 @@ func (g *gatedList) NetworkList(ctx context.Context, o dNetwork.ListOptions) ([]
 		close(g.secondEntered)
 		<-g.holdSecond
 	case g.laterErr != nil:
-		return nil, g.laterErr
+		return docker.NetworkListResult{Items: nil}, g.laterErr
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()

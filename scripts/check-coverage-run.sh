@@ -4,6 +4,9 @@
 
 # Coverage-run presence gate (#504).
 #
+# Expires-when: GitHub reports a required check with no run as failing
+#   instead of pending, or coverage stops being required on main (#504).
+#
 # `coverage` is the one required context on main that is not required on
 # dev — it IS the release ratchet. On the v1.5.0 release PR it was not
 # red, not queued, not failed: no run existed at all, and `gh pr checks`
@@ -57,6 +60,8 @@
 # NOT fail-open. This exists because a silence was read as health; an
 # unreadable API is reported, never treated as clean.
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 SHA="${1:-}"
 WAIT_MIN="${2:-75}"

@@ -4,6 +4,9 @@
 
 # The release run must judge the notes BEFORE it publishes anything.
 #
+# Expires-when: scripts/release-body.sh no longer refuses a tag, or the
+#   notes are judged in the same job before any publish step (#914).
+#
 # WHY THIS EXISTS
 #
 # `scripts/release-body.sh` refuses a tag whose `RELEASE_NOTES.md` section
@@ -94,14 +97,17 @@
 #        2 the check could not run (no file, no publisher, no judgement, no
 #          pre-flight judge)
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(dirname "$HERE")"
 WF="${1:-$ROOT/.github/workflows/release.yml}"
 
 refuse() {
-    echo "::error title=Release refusal order cannot be judged::$*" >&2
-    exit 2
+
+    GATE_TITLE='Release refusal order cannot be judged' gate_refuse "$*"
+
 }
 
 command -v python3 >/dev/null 2>&1 || refuse "python3 is required to read the job graph."

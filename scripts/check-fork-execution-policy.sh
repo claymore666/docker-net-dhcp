@@ -5,6 +5,9 @@
 # The three settings that stand between a fork PR and root on the
 # self-hosted pool (#830).
 #
+# Expires-when: no workflow an outsider can trigger places jobs on the
+#   self-hosted pool, so these settings guard nothing (#830).
+#
 # WHAT IS ACTUALLY AT STAKE. TWO workflows trigger on something an
 # outsider can cause AND place jobs off the GitHub-hosted images:
 # `coverage.yml` and `integration.yml`. Neither carries a fork guard --
@@ -88,12 +91,15 @@
 #         none of the documented values
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 REPO="${REPO:-claymore666/docker-net-dhcp}"
 
 refuse() {
-    echo "::error title=Fork-execution policy cannot be judged::$*" >&2
-    exit 2
+
+    GATE_TITLE='Fork-execution policy cannot be judged' gate_refuse "$*"
+
 }
 
 # THE ENUMERATION NEEDS A WATCHER, OR IT IS A RULE ENFORCED BY READING.

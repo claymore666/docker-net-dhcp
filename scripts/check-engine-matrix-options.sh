@@ -11,8 +11,13 @@
 # Env seams (the self-test's): ENGINE_OPTIONS_DOC, the document;
 # ENGINE_OPTIONS_STEPS_CMD, prints `<option>|<kind>|<observer>` lines.
 # Exit: 0 every documented option has a valid line, 1 one has not, 2 cannot check.
+#
+# Expires-when: the engine matrix lane runs on every pull request, so a
+#   documented option with no matrix line goes red there first (#1015).
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 cd "$(dirname "$0")/.." || exit 2
 

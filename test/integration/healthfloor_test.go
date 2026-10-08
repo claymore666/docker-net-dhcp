@@ -11,8 +11,6 @@ import (
 	"os"
 	"time"
 
-	docker "github.com/docker/docker/client"
-
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
@@ -36,7 +34,7 @@ func checkHealthFloor(suite time.Duration) int {
 	ctx, cancel := context.WithTimeout(context.Background(), healthFloorBudget+15*time.Second)
 	defer cancel()
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "HEALTH FLOOR: docker client:", err)
 		return 1
@@ -149,7 +147,7 @@ func printFloorEvidence(ctx context.Context) {
 	fmt.Fprint(os.Stderr, harness.FloorEvidence(data, floorEvidenceTailLines))
 }
 
-// The main suite recycles the plugin three times, so a run can carry a dozen Join-start failures and report a
+// Many tests in the main suite recycle the plugin, so a run can carry a dozen Join-start failures and report a
 // single-digit counter; sizing the Join budget needs the real number (#385, #401). One read serves both censuses.
 
 // printCensuses reports the whole run's Join-start failures and other healthy-affecting faults from the plugin log.

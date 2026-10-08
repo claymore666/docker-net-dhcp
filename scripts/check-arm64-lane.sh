@@ -4,6 +4,9 @@
 
 # arm64 lane presence gate (#531).
 #
+# Expires-when: integration-arm64 runs on hosted arm64 runners, so an rc's
+#   arm64 job cannot sit queued for a host that is powered off (#531).
+#
 # The rc tag is the human gate of a release. Everything an rc proves has
 # to follow from that tag on its own — integration-arm64 fires on
 # `v*-rc*` rather than waiting for someone to remember `gh workflow run`.
@@ -45,6 +48,8 @@
 # NOT fail-open. An unreadable API is reported as unreadable; it is
 # never allowed to look like a runner that showed up.
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 RUN_ID="${1:-}"
 WAIT_MIN="${2:-25}"

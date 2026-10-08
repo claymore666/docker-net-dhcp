@@ -352,6 +352,7 @@ SHAPE=bare
 # MESSAGE as well as the code — a mutant refused by a different guard
 # is not evidence about this one.
 cp "$HERE/workflow-shell-lines.sh" "$TMP/workflow-shell-lines.sh"
+cp "$HERE/gatelib.sh" "$TMP/gatelib.sh"
 
 mut_no_untagged="$TMP/mut-untagged.sh"
 awk '/^if \[ "\$untagged" -eq 0 \]; then$/{skip=1} skip&&/^fi$/{skip=0;next} !skip' \

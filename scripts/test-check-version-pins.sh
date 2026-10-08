@@ -17,6 +17,7 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 CHECK="$DIR/check-version-pins.sh"
 BUMP="$DIR/bump-version.sh"
 guarded_tmpdir TMP
+git init -q "$TMP"
 
 IMAGE="ghcr.io/claymore666/docker-net-dhcp"
 

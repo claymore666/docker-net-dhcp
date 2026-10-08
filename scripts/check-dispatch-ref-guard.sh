@@ -5,6 +5,9 @@
 # Assert that no `workflow_dispatch` input reaches an `actions/checkout`
 # `ref:` without having been constrained first (#593, #738).
 #
+# Expires-when: no workflow_dispatch workflow takes an input that reaches an
+#   actions/checkout ref, so there is nothing left to constrain (#593).
+#
 # WHY THIS EXISTS SEPARATELY FROM THE GUARDS THEMSELVES. A guard is
 # worth exactly its coverage. check-dispatch-ref.sh can be perfect and
 # still protect nothing the moment a new job — or a new matrix leg, or a
@@ -77,6 +80,8 @@
 #        2 the check could not run (missing dir, nothing discovered)
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"

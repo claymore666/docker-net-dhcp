@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	dNetwork "github.com/docker/docker/api/types/network"
+	dNetwork "github.com/moby/moby/api/types/network"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 

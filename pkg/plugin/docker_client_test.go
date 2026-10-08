@@ -8,16 +8,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
 
-	dTypes "github.com/docker/docker/api/types"
-	dContainer "github.com/docker/docker/api/types/container"
-	dNetwork "github.com/docker/docker/api/types/network"
+	dContainer "github.com/moby/moby/api/types/container"
+	dNetwork "github.com/moby/moby/api/types/network"
+	docker "github.com/moby/moby/client"
 )
 
 const testDHCPDriver = "claymore666/docker-net-dhcp:latest"
@@ -30,6 +32,8 @@ type fakeDocker struct {
 	inspectResult      map[string]dNetwork.Inspect
 	inspectErr         error
 	inspectErrFromCall int
+	// inspectFrom answers in place of inspectResult, for a body only the real client can decode (#178).
+	inspectFrom func(id string) (docker.NetworkInspectResult, error)
 
 	containerResult map[string]dContainer.InspectResponse
 	containerErr    error
@@ -37,10 +41,14 @@ type fakeDocker struct {
 	// (#406).
 	containerDelay time.Duration
 
+	runningResult []dContainer.Summary
+	runningErr    error
+	runningOpts   []docker.ContainerListOptions
+
 	closeErr error
 
 	pingErr       error
-	versionResult dTypes.Version
+	versionResult docker.ServerVersionResult
 	versionErr    error
 	clientVersion string
 
@@ -51,18 +59,18 @@ type fakeDocker struct {
 	versionCalls   int
 }
 
-func (f *fakeDocker) Ping(_ context.Context) (dTypes.Ping, error) {
+func (f *fakeDocker) Ping(_ context.Context, _ docker.PingOptions) (docker.PingResult, error) {
 	f.pingCalls++
 	if f.pingErr != nil {
-		return dTypes.Ping{}, f.pingErr
+		return docker.PingResult{}, f.pingErr
 	}
-	return dTypes.Ping{APIVersion: f.clientVersion}, nil
+	return docker.PingResult{APIVersion: f.clientVersion}, nil
 }
 
-func (f *fakeDocker) ServerVersion(_ context.Context) (dTypes.Version, error) {
+func (f *fakeDocker) ServerVersion(_ context.Context, _ docker.ServerVersionOptions) (docker.ServerVersionResult, error) {
 	f.versionCalls++
 	if f.versionErr != nil {
-		return dTypes.Version{}, f.versionErr
+		return docker.ServerVersionResult{}, f.versionErr
 	}
 	return f.versionResult, nil
 }
@@ -70,35 +78,46 @@ func (f *fakeDocker) ServerVersion(_ context.Context) (dTypes.Version, error) {
 // ClientVersion is the negotiated version, so the fake lets it disagree with ServerVersion, a case the floor answers.
 func (f *fakeDocker) ClientVersion() string { return f.clientVersion }
 
-func (f *fakeDocker) NetworkList(_ context.Context, _ dNetwork.ListOptions) ([]dNetwork.Summary, error) {
+func (f *fakeDocker) NetworkList(_ context.Context, _ docker.NetworkListOptions) (docker.NetworkListResult, error) {
 	f.listCalls++
 	if f.listErr != nil && (f.listErrUntil == 0 || f.listCalls < f.listErrUntil) {
-		return nil, f.listErr
+		return docker.NetworkListResult{Items: nil}, f.listErr
 	}
-	return f.listResult, nil
+	return docker.NetworkListResult{Items: f.listResult}, nil
 }
 
-func (f *fakeDocker) NetworkInspect(_ context.Context, id string, _ dNetwork.InspectOptions) (dNetwork.Inspect, error) {
+func (f *fakeDocker) NetworkInspect(_ context.Context, id string, _ docker.NetworkInspectOptions) (docker.NetworkInspectResult, error) {
 	f.inspectCalls++
 	if f.inspectErr != nil && (f.inspectErrFromCall == 0 || f.inspectCalls >= f.inspectErrFromCall) {
-		return dNetwork.Inspect{}, f.inspectErr
+		return docker.NetworkInspectResult{Network: dNetwork.Inspect{}}, f.inspectErr
 	}
-	return f.inspectResult[id], nil
+	if f.inspectFrom != nil {
+		return f.inspectFrom(id)
+	}
+	return docker.NetworkInspectResult{Network: f.inspectResult[id]}, nil
 }
 
-func (f *fakeDocker) ContainerInspect(ctx context.Context, id string) (dContainer.InspectResponse, error) {
+func (f *fakeDocker) ContainerInspect(ctx context.Context, id string, _ docker.ContainerInspectOptions) (docker.ContainerInspectResult, error) {
 	f.containerCalls++
 	if f.containerDelay > 0 {
 		select {
 		case <-time.After(f.containerDelay):
 		case <-ctx.Done():
-			return dContainer.InspectResponse{}, ctx.Err()
+			return docker.ContainerInspectResult{Container: dContainer.InspectResponse{}}, ctx.Err()
 		}
 	}
 	if f.containerErr != nil {
-		return dContainer.InspectResponse{}, f.containerErr
+		return docker.ContainerInspectResult{Container: dContainer.InspectResponse{}}, f.containerErr
 	}
-	return f.containerResult[id], nil
+	return docker.ContainerInspectResult{Container: f.containerResult[id]}, nil
+}
+
+func (f *fakeDocker) ContainerList(_ context.Context, o docker.ContainerListOptions) (docker.ContainerListResult, error) {
+	f.runningOpts = append(f.runningOpts, o)
+	if f.runningErr != nil {
+		return docker.ContainerListResult{}, f.runningErr
+	}
+	return docker.ContainerListResult{Items: f.runningResult}, nil
 }
 
 func (f *fakeDocker) Close() error { return f.closeErr }
@@ -356,7 +375,7 @@ func TestLookupEndpointMAC(t *testing.T) {
 			name: "endpoint_not_found",
 			f: &fakeDocker{inspectResult: map[string]dNetwork.Inspect{
 				netID: {Containers: map[string]dNetwork.EndpointResource{
-					"c1": {EndpointID: "other", MacAddress: "aa:bb:cc:dd:ee:ff"},
+					"c1": {EndpointID: "other", MacAddress: engineMAC("aa:bb:cc:dd:ee:ff")},
 				}},
 			}},
 			wantErr: true,
@@ -365,7 +384,7 @@ func TestLookupEndpointMAC(t *testing.T) {
 			name: "found",
 			f: &fakeDocker{inspectResult: map[string]dNetwork.Inspect{
 				netID: {Containers: map[string]dNetwork.EndpointResource{
-					"c1": {EndpointID: epID, MacAddress: "aa:bb:cc:dd:ee:ff"},
+					"c1": {EndpointID: epID, MacAddress: engineMAC("aa:bb:cc:dd:ee:ff")},
 				}},
 			}},
 			wantMAC: "aa:bb:cc:dd:ee:ff",
@@ -520,4 +539,34 @@ func TestInitialDHCPHostname_RefusalIsNotAnAbsence(t *testing.T) {
 			}
 		})
 	}
+}
+
+// engineMAC builds the typed hardware address the engine JSON decodes to.
+func engineMAC(s string) dNetwork.HardwareAddr {
+	mac, err := net.ParseMAC(s)
+	if err != nil {
+		panic(err)
+	}
+	return dNetwork.HardwareAddr(mac)
+}
+
+// inspectThroughClient decodes an engine network-inspect body with the real client, which decides what an unreadable
+// field becomes before the plugin sees it (#178).
+func inspectThroughClient(t *testing.T, body string) (docker.NetworkInspectResult, error) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Api-Version", "1.45")
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/_ping") {
+			return
+		}
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+	cli, err := newDockerClient("tcp://"+srv.Listener.Addr().String(), nil)
+	if err != nil {
+		t.Fatalf("newDockerClient: %v", err)
+	}
+	defer cli.Close()
+	return cli.NetworkInspect(context.Background(), "net", docker.NetworkInspectOptions{})
 }

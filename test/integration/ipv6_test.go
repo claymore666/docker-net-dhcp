@@ -21,21 +21,20 @@ import (
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
-	docker "github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	docker "github.com/moby/moby/client"
 )
 
 // inspectV6 returns the endpoint's GlobalIPv6Address from docker inspect, or "".
 func inspectV6(t *testing.T, ctx context.Context, cli *docker.Client, ctrID, netName string) string {
 	t.Helper()
-	ins, err := cli.ContainerInspect(ctx, ctrID)
+	ins, err := cli.ContainerInspect(ctx, ctrID, docker.ContainerInspectOptions{})
 	if err != nil {
 		t.Fatalf("ContainerInspect: %v", err)
 	}
-	if ep := ins.NetworkSettings.Networks[netName]; ep != nil {
-		return ep.GlobalIPv6Address
+	if ep := ins.Container.NetworkSettings.Networks[netName]; ep != nil {
+		return harness.AddrString(ep.GlobalIPv6Address)
 	}
 	return ""
 }
@@ -130,24 +129,24 @@ func TestIPv6_AcceptedAtCreate(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
 	defer func() { _ = cli.Close() }()
 
 	const netName = "dhcptest-ipv6-accepted"
-	_, err = cli.NetworkCreate(ctx, netName, network.CreateOptions{
+	_, err = cli.NetworkCreate(ctx, netName, docker.NetworkCreateOptions{
 		Driver:  harness.DriverName,
 		IPAM:    &network.IPAM{Driver: "null"},
 		Options: map[string]string{"mode": "macvlan", "parent": harness.HostVeth, "ipv6": "true"},
 	})
-	t.Cleanup(func() { _ = cli.NetworkRemove(context.Background(), netName) })
+	t.Cleanup(func() { _, _ = cli.NetworkRemove(context.Background(), netName, docker.NetworkRemoveOptions{}) })
 	if err != nil {
 		t.Fatalf("an ipv6=true network was refused: %v", err)
 	}
 
-	if _, err := cli.NetworkInspect(ctx, netName, network.InspectOptions{}); err != nil {
+	if _, err := cli.NetworkInspect(ctx, netName, docker.NetworkInspectOptions{}); err != nil {
 		t.Errorf("the create was accepted and the network does not exist: %v", err)
 	}
 }
@@ -197,7 +196,7 @@ func testLifecycleMacvlanIPv6GoldenPath(t *testing.T, at v6Attach, netName strin
 		}
 	})
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -209,30 +208,27 @@ func testLifecycleMacvlanIPv6GoldenPath(t *testing.T, at v6Attach, netName strin
 
 	// Neither client releases (#800), so the test sequences the stop.
 	create, err := cli.ContainerCreate(ctx,
-		&container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}, Hostname: ctrName},
-		harness.HostConfig(),
-		&network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{netName: {}}},
-		nil, ctrName)
+		docker.ContainerCreateOptions{Config: &container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}, Hostname: ctrName}, HostConfig: harness.HostConfig(), NetworkingConfig: &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{netName: {}}}, Name: ctrName})
 	if err != nil {
 		t.Fatalf("ContainerCreate: %v", err)
 	}
 	id := create.ID
 	t.Cleanup(func() {
-		_ = cli.ContainerRemove(context.Background(), id, container.RemoveOptions{Force: true})
+		_, _ = cli.ContainerRemove(context.Background(), id, docker.ContainerRemoveOptions{Force: true})
 	})
-	if err := cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
+	if _, err := cli.ContainerStart(ctx, id, docker.ContainerStartOptions{}); err != nil {
 		t.Fatalf("ContainerStart: %v", err)
 	}
 
 	var v4 string
 	deadline := time.Now().Add(harness.IPAcquisitionBudget)
 	for time.Now().Before(deadline) {
-		ins, err := cli.ContainerInspect(ctx, id)
+		ins, err := cli.ContainerInspect(ctx, id, docker.ContainerInspectOptions{})
 		if err != nil {
 			t.Fatalf("ContainerInspect: %v", err)
 		}
-		if ep := ins.NetworkSettings.Networks[netName]; ep != nil && ep.IPAddress != "" {
-			v4 = ep.IPAddress
+		if ep := ins.Container.NetworkSettings.Networks[netName]; ep != nil && ep.IPAddress.IsValid() {
+			v4 = harness.AddrString(ep.IPAddress)
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -264,7 +260,7 @@ func testLifecycleMacvlanIPv6GoldenPath(t *testing.T, at v6Attach, netName strin
 	assertLeasedV6IsInstalledWithNODAD(t, ctx, id, liveV6, fixture.DnsmasqLog())
 	assertRouterAdvertsAreBeingProcessed(t, ctx, id, liveV6, fixture.DnsmasqLog())
 
-	if err := cli.ContainerStop(ctx, id, container.StopOptions{}); err != nil {
+	if _, err := cli.ContainerStop(ctx, id, docker.ContainerStopOptions{}); err != nil {
 		t.Fatalf("ContainerStop: %v", err)
 	}
 	before, after := w.End()
@@ -331,7 +327,7 @@ func TestTombstoneRestart_PreservesIPv6(t *testing.T) {
 		}
 	})
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -346,7 +342,7 @@ func TestTombstoneRestart_PreservesIPv6(t *testing.T) {
 	}
 	t.Logf("before restart: v4=%s v6=%s mac=%s", v4Before, v6Before, macBefore)
 
-	if err := cli.ContainerRestart(ctx, id, container.StopOptions{}); err != nil {
+	if _, err := cli.ContainerRestart(ctx, id, docker.ContainerRestartOptions{}); err != nil {
 		t.Fatalf("ContainerRestart: %v", err)
 	}
 
@@ -355,13 +351,13 @@ func TestTombstoneRestart_PreservesIPv6(t *testing.T) {
 		t.Fatalf("container did not re-acquire a global IPv6 within %v after restart", harness.IPAcquisitionBudget)
 	}
 	insV6 := inspectV6(t, ctx, cli, id, netName)
-	ins, err := cli.ContainerInspect(ctx, id)
+	ins, err := cli.ContainerInspect(ctx, id, docker.ContainerInspectOptions{})
 	if err != nil {
 		t.Fatalf("ContainerInspect: %v", err)
 	}
 	var v4After, macAfter string
-	if ep := ins.NetworkSettings.Networks[netName]; ep != nil {
-		v4After, macAfter = ep.IPAddress, ep.MacAddress
+	if ep := ins.Container.NetworkSettings.Networks[netName]; ep != nil {
+		v4After, macAfter = harness.AddrString(ep.IPAddress), ep.MacAddress.String()
 	}
 	t.Logf("after restart:  v4=%s v6=%s (inspect v6=%s) mac=%s", v4After, v6After, insV6, macAfter)
 
@@ -508,9 +504,9 @@ func TestLeaseRenewIPv6_HonorsT1(t *testing.T) {
 	}
 }
 
-// resolv.conf is last-writer-wins between the families, so the v6 nameserver's appearance is polled.
+// The v6 nameserver is written from the v6 bound event, after Join returns, so its appearance is polled; the v4 one stays beside it (#1250).
 
-// TestIPv6_DNS6Propagation checks that propagate_dns=true writes the DHCPv6 option-23 server into resolv.conf.
+// TestIPv6_DNS6Propagation checks that propagate_dns=true writes the DHCPv6 option-23 server into resolv.conf beside the DHCPv4 one.
 func TestIPv6_DNS6Propagation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -533,12 +529,13 @@ func TestIPv6_DNS6Propagation(t *testing.T) {
 		var out string
 		for time.Now().Before(deadline) {
 			out = harness.ExecOutput(t, ctx, id, "cat", "/etc/resolv.conf")
-			if strings.Contains(out, harness.TestDNS6Server) {
+			if strings.Contains(out, harness.TestDNS6Server) && strings.Contains(out, harness.TestDNSServer) {
 				return
 			}
 			time.Sleep(500 * time.Millisecond)
 		}
-		t.Errorf("DHCPv6 DNS server %s never appeared in resolv.conf\nlast contents:\n%s", harness.TestDNS6Server, out)
+		t.Errorf("DHCPv6 DNS server %s and DHCPv4 DNS server %s never both appeared in resolv.conf\nlast contents:\n%s",
+			harness.TestDNS6Server, harness.TestDNSServer, out)
 	})
 
 	t.Run("default leaves resolv.conf alone", func(t *testing.T) {
@@ -580,7 +577,7 @@ func testDUIDPersistsAcrossPluginRestart(t *testing.T, at v6Attach, netName stri
 		}
 	})
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -613,7 +610,7 @@ func TestIPvlan_DHCPv6IdentityIsPerEndpointAndSurvivesARestart(t *testing.T) {
 		}
 	})
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -675,7 +672,7 @@ func TestDHCPv6_ADuplicateOnTheSegmentIsRefused(t *testing.T) {
 		}
 	})
 
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	cli, err := harness.NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -708,7 +705,7 @@ func TestDHCPv6_ADuplicateOnTheSegmentIsRefused(t *testing.T) {
 
 	declinesBefore := countLogToken(t, fixture.DnsmasqLog(), "DHCPDECLINE")
 
-	if err := cli.ContainerRestart(ctx, id, container.StopOptions{}); err != nil {
+	if _, err := cli.ContainerRestart(ctx, id, docker.ContainerRestartOptions{}); err != nil {
 		t.Fatalf("ContainerRestart: %v", err)
 	}
 	after := linkGlobalV6(t, ctx, id, 2*harness.IPAcquisitionBudget)
@@ -797,19 +794,19 @@ func assertDUIDStableAcrossAPluginRestart(t *testing.T, ctx context.Context, cli
 	// Re-enable is registered before the disable, so a failed assertion cannot leave the plugin off.
 	t.Cleanup(func() {
 		bg := context.Background()
-		if err := cli.PluginEnable(bg, harness.PluginRef, types.PluginEnableOptions{Timeout: 30}); err != nil {
+		if _, err := cli.PluginEnable(bg, harness.PluginRef, docker.PluginEnableOptions{Timeout: 30}); err != nil {
 			if !strings.Contains(err.Error(), "already enabled") {
 				t.Logf("WARN: cleanup PluginEnable: %v", err)
 			}
 		}
 	})
-	if err := cli.PluginDisable(ctx, harness.PluginRef, types.PluginDisableOptions{Force: true}); err != nil {
+	if _, err := cli.PluginDisable(ctx, harness.PluginRef, docker.PluginDisableOptions{Force: true}); err != nil {
 		t.Fatalf("PluginDisable: %v", err)
 	}
 	if err := harness.WaitPluginEnabled(ctx, cli, false, 30*time.Second); err != nil {
 		t.Fatalf("plugin did not reach disabled state: %v", err)
 	}
-	if err := cli.PluginEnable(ctx, harness.PluginRef, types.PluginEnableOptions{Timeout: 30}); err != nil {
+	if _, err := cli.PluginEnable(ctx, harness.PluginRef, docker.PluginEnableOptions{Timeout: 30}); err != nil {
 		t.Fatalf("PluginEnable: %v", err)
 	}
 	if err := harness.WaitPluginEnabled(ctx, cli, true, 30*time.Second); err != nil {

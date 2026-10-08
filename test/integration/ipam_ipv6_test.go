@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
-	docker "github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	docker "github.com/moby/moby/client"
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
@@ -127,7 +127,7 @@ func TestIPAMv6_ASingleRestartChangesTheMACAndKeepsDUIDIAIDAndAddress(t *testing
 	}
 	replies := countDHCPv6Replies(t, fixture.DnsmasqLog(), addr1)
 
-	if err := cli.ContainerRestart(ctx, id, container.StopOptions{}); err != nil {
+	if _, err := cli.ContainerRestart(ctx, id, docker.ContainerRestartOptions{}); err != nil {
 		t.Fatalf("ContainerRestart: %v", err)
 	}
 	_, mac2 := ipamNetworkAddress(t, ctx, cli, id, netName)
@@ -175,12 +175,12 @@ func TestIPAMv6_TwoRestartedTogetherIsTheDocumentedLimit(t *testing.T) {
 		_, duids[n] = ipam6Lease(t, fixture.LeaseFile(), ipam6Addr(t, ctx, cli, id, netName))
 	}
 	for _, n := range []string{"a", "b"} {
-		if err := cli.ContainerStop(ctx, ids[n], container.StopOptions{}); err != nil {
+		if _, err := cli.ContainerStop(ctx, ids[n], docker.ContainerStopOptions{}); err != nil {
 			t.Fatalf("ContainerStop %s: %v", n, err)
 		}
 	}
 	for _, n := range []string{"a", "b"} {
-		if err := cli.ContainerStart(ctx, ids[n], container.StartOptions{}); err != nil {
+		if _, err := cli.ContainerStart(ctx, ids[n], docker.ContainerStartOptions{}); err != nil {
 			t.Fatalf("ContainerStart %s: %v", n, err)
 		}
 	}
@@ -204,14 +204,14 @@ func TestIPAMv6_DashDashIPv6IsRefusedNamingTheOptionsThatSwitchIPv6On(t *testing
 	const netName = "dh-itest-ipam6-flag"
 	cli := ipamDockerClient(t)
 	on := true
-	res, err := cli.NetworkCreate(ctx, netName, network.CreateOptions{
+	res, err := cli.NetworkCreate(ctx, netName, docker.NetworkCreateOptions{
 		Driver:     harness.DriverName,
 		EnableIPv6: &on,
 		IPAM:       &network.IPAM{Driver: harness.DriverName},
 		Options:    map[string]string{"mode": "macvlan", "parent": harness.HostVeth},
 	})
 	if err == nil {
-		_ = cli.NetworkRemove(context.Background(), res.ID)
+		_, _ = cli.NetworkRemove(context.Background(), res.ID, docker.NetworkRemoveOptions{})
 		t.Fatal("docker network create --ipv6 was accepted on a network with this plugin as its IPAM driver")
 	}
 	for _, want := range []string{"the plugin allocates no IPv6 pool", "drop --ipv6", "`-o ipv6=true`", "`-o ipv6_mode=<mode>`"} {
@@ -253,7 +253,7 @@ func TestIPAMv6_OnStopSendsOneReleasePerFamily(t *testing.T) {
 		v6: fixture.CountLogLines("DHCPRELEASE", keys[v6]),
 	}
 
-	if err := cli.ContainerStop(ctx, id, container.StopOptions{}); err != nil {
+	if _, err := cli.ContainerStop(ctx, id, docker.ContainerStopOptions{}); err != nil {
 		t.Fatalf("ContainerStop: %v", err)
 	}
 	for _, addr := range []string{v4, v6} {
@@ -293,7 +293,7 @@ func TestIPAMv6_OnRemoveHandsBothFamiliesBack(t *testing.T) {
 	}
 
 	stopped := time.Now()
-	if err := cli.ContainerStop(ctx, id, container.StopOptions{}); err != nil {
+	if _, err := cli.ContainerStop(ctx, id, docker.ContainerStopOptions{}); err != nil {
 		t.Fatalf("ContainerStop: %v", err)
 	}
 	time.Sleep(onRemoveHeldProbe)
@@ -362,7 +362,7 @@ func TestIPAMv6_ASLAACAddressFollowsTheFreshMACAndMacAddressPinsIt(t *testing.T)
 		name string
 		mac  string
 	}{{netName + "-fresh", ""}, {netName + "-pinned", pinned}} {
-		if err := ipamRunContainerErr(t, ctx, cli, netName, c.name, &network.EndpointSettings{MacAddress: c.mac}); err != nil {
+		if err := ipamRunContainerErr(t, ctx, cli, netName, c.name, &network.EndpointSettings{MacAddress: harness.MustMAC(c.mac)}); err != nil {
 			t.Fatalf("start %s: %v", c.name, err)
 		}
 		_, mac1 := ipamNetworkAddress(t, ctx, cli, c.name, netName)
@@ -371,7 +371,7 @@ func TestIPAMv6_ASLAACAddressFollowsTheFreshMACAndMacAddressPinsIt(t *testing.T)
 			t.Fatalf("%s holds %q, want %s from its MAC %s", c.name, got, want1, mac1)
 		}
 
-		if err := cli.ContainerRestart(ctx, c.name, container.StopOptions{}); err != nil {
+		if _, err := cli.ContainerRestart(ctx, c.name, docker.ContainerRestartOptions{}); err != nil {
 			t.Fatalf("ContainerRestart %s: %v", c.name, err)
 		}
 		_, mac2 := ipamNetworkAddress(t, ctx, cli, c.name, netName)
@@ -410,19 +410,16 @@ func TestIPAMv6_ASilentManagedServerFailsTheStartInsideAMinute(t *testing.T) {
 	const netName = "dh-itest-ipam6-silent"
 	onV6IPAMBridge.createNet(t, ctx, netName, map[string]string{"bridge": f.Bridge(), "ipv6": "true"})
 	create, err := cli.ContainerCreate(ctx,
-		&container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}},
-		harness.HostConfig(),
-		&network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{netName: {}}},
-		nil, netName+"-ctr")
+		docker.ContainerCreateOptions{Config: &container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}}, HostConfig: harness.HostConfig(), NetworkingConfig: &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{netName: {}}}, Name: netName + "-ctr"})
 	if err != nil {
 		t.Fatalf("ContainerCreate: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = cli.ContainerRemove(context.Background(), create.ID, container.RemoveOptions{Force: true})
+		_, _ = cli.ContainerRemove(context.Background(), create.ID, docker.ContainerRemoveOptions{Force: true})
 	})
 
 	start := time.Now()
-	err = cli.ContainerStart(ctx, create.ID, container.StartOptions{})
+	_, err = cli.ContainerStart(ctx, create.ID, docker.ContainerStartOptions{})
 	elapsed := time.Since(start)
 	t.Logf("wall clock: docker start failed after %.1fs: %v", elapsed.Seconds(), err)
 	if err == nil {

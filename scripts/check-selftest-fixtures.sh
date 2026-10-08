@@ -4,6 +4,9 @@
 
 # Git-fixture hygiene gate.
 #
+# Expires-when: the self-tests stop building throwaway git repositories, or
+#   git stops reading the developer's global config for them (#564).
+#
 # A gate self-test that builds a throwaway repository has to commit into
 # it, and `git commit` reads the DEVELOPER'S global config. On a machine
 # that signs commits with a hardware key, that is not a failure — it is
@@ -44,6 +47,8 @@
 # Exit:  0 clean, 1 a fixture inherits the developer's config, 2 cannot check.
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="${FIXTURE_ROOT:-$(cd "$HERE/.." && pwd)}"

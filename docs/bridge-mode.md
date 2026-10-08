@@ -53,7 +53,7 @@ reads the policy and cannot see the rule:
 
 ```bash
 sudo iptables -I DOCKER-USER -i lan0 -o lan0 -j ACCEPT
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.4.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.5.0 \
   --ipam-driver null -o bridge=lan0 -o parent=eth1 -o force_create=true lan-dhcp
 ```
 
@@ -330,7 +330,7 @@ default 34 s `lease_timeout` look for that line in the plugin log: the error
 ```bash
 # On arm64 use the -arm64 tag. A network stores this exact reference
 # as its driver, so it must name the plugin you installed.
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.4.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.5.0 \
   --ipam-driver null -o bridge=my-bridge my-dhcp-net
 ```
 
@@ -343,7 +343,7 @@ same day).
 
 ```bash
 # arm64: the -arm64 tag here too.
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.4.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.5.0 \
   --ipam-driver null -o bridge=my-bridge -o ipv6_mode=dhcp my-dhcp-net
 ```
 
@@ -425,7 +425,7 @@ services:
 networks:
   dhcp:
     # arm64: the -arm64 tag, matching the plugin you installed.
-    driver: ghcr.io/claymore666/docker-net-dhcp:v2.4.0
+    driver: ghcr.io/claymore666/docker-net-dhcp:v2.5.0
     driver_opts:
       bridge: my-bridge
       ipv6_mode: 'dhcp'

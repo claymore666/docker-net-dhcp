@@ -237,6 +237,7 @@ ipv6|step|fresh DHCPv6 reply in the server log for the address the container hol
 ipv6_mode|step|dhcp: fresh DHCPv6 reply for the held address; slaac: fresh router advertisement, the container holds and Docker reports an address in the ra-only prefix; both: an IPv6 default route via the router link-local address; control off: no global address; bad value refused
 ipv6_main_prefix|step|two advertised prefixes: Docker reports the address in the named prefix, both ways round; refused with ipv6_mode=dhcp
 ipv6_temporary|step|a range 2^32 + 1 wide: the container holds two addresses in the prefix, Docker reports one of them, the server logged a DHCPv6 reply for each; control without it: one address; refused with ipv6_mode=slaac and off
+ipv6_pd|step|ipv6_mode=dhcp against a server that delegates nothing: the container holds its address and no unreachable route; refused with ipv6_mode=slaac and off and above 128
 ipv6_iid|step|ipv6_mode=slaac on a container with a fixed MAC: the held address is not the modified EUI-64 of the MAC and Docker reports it; control without it: the EUI-64 address; refused with ipv6_mode=dhcp and off, and with a value that is not a mode
 ipv6_auto_strict|step|managed-flag advertisement with a silent DHCPv6 server: true fails docker run, false holds an address in the autonomous prefix
 lease_timeout|step|server-less bridge: docker run fails within the short timeout and not within the long one; a value under the probe window refused
@@ -974,6 +975,12 @@ v6_in() {
         | awk -v P="$2" '$1 == "inet6" && index($2, P) == 1 { sub(/\/.*/, "", $2); print $2; exit }'
 }
 
+# v6_all_in CONTAINER PREFIX prints every address CONTAINER holds in PREFIX, one per line (#1268).
+v6_all_in() {
+    d docker exec "$1" ip -6 addr 2>/dev/null \
+        | awk -v P="$2" '$1 == "inet6" && index($2, P) == 1 { sub(/\/.*/, "", $2); print $2 }'
+}
+
 wait_v6() {
     local _
     V6=""
@@ -1210,17 +1217,30 @@ opt_ipv6_mode() {
 }
 
 # The MAC is fixed so the modified EUI-64 identifier it would form is known: 02:..:e0:11 is ::ff:fe00:e011 (#1032).
+# An advertisement before the plugin's guard lets the kernel form that address, which the plugin then removes; LEASE_TIME
+# is its valid lifetime, so an address still held after the 30 s bound was kept (#1268).
 opt_ipv6_iid() {
-    local got
+    local _ got held
     v6_server "--dhcp-range=$V6_PREFIX_A,ra-only,$LEASE_TIME --enable-ra"
     opt_net em-o-v6 -o bridge="$V6_BRIDGE" -o ipv6_mode=slaac -o ipv6_iid=stable-privacy
     opt_run em-c-v6 em-o-v6 --mac-address 02:00:00:00:e0:11
     wait_v6 em-c-v6 "$V6_PREFIX_A"
-    case "$V6" in
-        *ff:fe00:e011) fail "ipv6_iid=stable-privacy: the container holds $V6, the modified EUI-64 of its MAC" ;;
-    esac
     got="$(inspect_v6 em-c-v6 em-o-v6)"
-    [ "$got" = "$V6" ] || fail "ipv6_iid=stable-privacy: the container holds $V6 and Docker reports '$got'"
+    for _ in $(seq 1 30); do
+        held=" $(v6_all_in em-c-v6 "$V6_PREFIX_A" | tr '\n' ' ')"
+        case "$held" in
+            *ff:fe00:e011\ *) ;;
+            *" $got "*) [ -n "$got" ] && break ;;
+        esac
+        sleep 1
+    done
+    case "$held" in
+        *ff:fe00:e011\ *) fail "ipv6_iid=stable-privacy: the container holds$held in $V6_PREFIX_A, among them the modified EUI-64 of its MAC" ;;
+    esac
+    case "$held" in
+        *" $got "*) [ -n "$got" ] || fail "ipv6_iid=stable-privacy: the container holds$held and Docker reports no address" ;;
+        *) fail "ipv6_iid=stable-privacy: the container holds$held in $V6_PREFIX_A and Docker reports '$got'" ;;
+    esac
     opt_down em-o-v6 em-c-v6
     opt_net em-o-v6 -o bridge="$V6_BRIDGE" -o ipv6_mode=slaac
     opt_run em-c-v6 em-o-v6 --mac-address 02:00:00:00:e0:11
@@ -1285,6 +1305,23 @@ opt_ipv6_temporary() {
     opt_down em-o-v6 em-c-v6
     opt_refused "ipv6_temporary" -o bridge="$V6_BRIDGE" -o ipv6_mode=slaac -o ipv6_temporary=true
     opt_refused "ipv6_temporary" -o bridge="$V6_BRIDGE" -o ipv6_mode=off -o ipv6_temporary=true
+}
+
+# dnsmasq delegates no prefixes, so the step is the option's acceptance and its refusals; the delegation itself runs
+# against Kea in the integration lane (#214).
+opt_ipv6_pd() {
+    local n
+    v6_server "--dhcp-range=${V6_PREFIX_A}10,${V6_PREFIX_A}99,$LEASE_TIME --enable-ra"
+    opt_net em-o-v6 -o bridge="$V6_BRIDGE" -o ipv6_mode=dhcp -o ipv6_pd=64
+    opt_run em-c-v6 em-o-v6
+    wait_v6 em-c-v6 "$V6_PREFIX_A"
+    sleep 3
+    n="$(d docker exec em-c-v6 ip -6 route 2>/dev/null | grep -c '^unreachable' || true)"
+    [ "$n" -eq 0 ] || fail "ipv6_pd=64 against a server that delegates nothing: the container has $n unreachable route(s)"
+    opt_down em-o-v6 em-c-v6
+    opt_refused "ipv6_pd" -o bridge="$V6_BRIDGE" -o ipv6_mode=slaac -o ipv6_pd=64
+    opt_refused "ipv6_pd" -o bridge="$V6_BRIDGE" -o ipv6_mode=off -o ipv6_pd=64
+    opt_refused "ipv6_pd" -o bridge="$V6_BRIDGE" -o ipv6_mode=dhcp -o ipv6_pd=129
 }
 
 # The managed flag with a server that ignores every DHCPv6 message stands

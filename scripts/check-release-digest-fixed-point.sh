@@ -5,6 +5,9 @@
 # The release lane must have a reachable passing state, and the tree must
 # describe the manifest it actually publishes (#910, reviews r2 and r3).
 #
+# Expires-when: the release stops comparing anything committed in the tree
+#   against the manifest it builds and publishes (#910).
+#
 # WHAT WENT WRONG. Through 1.x this repository carried a per-release
 # block of binary digests in docs/verifying-releases.md, and the release
 # workflow compared it against the binaries it had just built. Its
@@ -138,13 +141,15 @@
 # Usage: check-release-digest-fixed-point.sh [TREE] [WORKFLOW] [DOC] [DOCKERFILE]
 # Exit:  0 pass, 1 a claim is violated, 2 cannot run.
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 TREE="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 WF="${2:-$TREE/.github/workflows/release.yml}"
 DOC="${3:-$TREE/docs/verifying-releases.md}"
 DOCKERFILE="${4:-$TREE/Dockerfile}"
 
-die() { echo "check-release-digest-fixed-point: $*" >&2; exit 2; }
+die() { gate_refuse "$*"; }
 note() { echo "FAIL  $*" >&2; failed=1; }
 failed=0
 

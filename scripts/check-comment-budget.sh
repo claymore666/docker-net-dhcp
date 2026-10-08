@@ -8,18 +8,23 @@
 # when PR_BODY has a "Comments-only: yes" line, require unchanged code tokens.
 # --whole applies the block rules to every line of the named Go files.
 #
+# Expires-when: never: the comment rule of #1056 is a standing review policy
+#   for Go code; this ends only if the maintainer retires that rule.
+#
 # Usage: check-comment-budget.sh [<base>..<head>]
 #        check-comment-budget.sh --prove <base> <head>
 #        check-comment-budget.sh --prove-marked [<base> <head>]
 #        check-comment-budget.sh --whole <rev> [<path>...]
 # Exit:  0 clean or no range to judge, 1 fail, 2 cannot check.
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=scripts/tmpdir-guard.sh
 . "$HERE/tmpdir-guard.sh"
 
-die2() { echo "FAIL  cannot check: $*" >&2; exit 2; }
+die2() { gate_refuse "$*"; }
 
 # git archive from a subdirectory would extract only that subtree.
 if top=$(git rev-parse --show-toplevel 2>/dev/null); then cd "$top" || die2 "cannot enter $top"; fi

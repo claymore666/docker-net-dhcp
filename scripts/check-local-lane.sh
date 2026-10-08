@@ -4,6 +4,9 @@
 
 # The local lane must not test less than CI does (#636).
 #
+# Expires-when: scripts/local-lane.sh is generated from test.yaml instead of
+#   listing the gates by hand (#636).
+#
 # WHY THIS EXISTS
 #
 # `scripts/local-lane.sh` lets a developer run the fast CI lane before
@@ -53,7 +56,7 @@
 #
 # A mention is not an invocation: a comment, an `echo` argument, a step
 # `name:` or an `if:` naming a script counted as running it until #883,
-# which hid check-release-tooling.sh as wired while no workflow ran it.
+# which hid a release preflight as wired while no workflow ran it.
 # Invocations are the words shell_command_words finds in command position.
 #
 # WHAT IT CANNOT DO
@@ -66,6 +69,8 @@
 # Usage: check-local-lane.sh [<workflow>] [<lane script>] [<scripts dir>]
 # Exit: 0 in sync, 1 drift, 2 cannot check.
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 cd "$(dirname "$0")/.." || exit 2
 
@@ -172,7 +177,9 @@ all_wf_invoked=$(workflow_shell_lines --raw "$WF_DIR" | shell_command_words \
     | sed 's|.*/||' \
     | grep -E '^[A-Za-z0-9_.-]+\.sh$' \
     | sort -u)
-on_disk=$(find "$SCRIPTS_DIR" -maxdepth 1 -name 'check-*.sh' -printf '%f\n' 2>/dev/null | sort -u)
+gatefiles=()
+gate_subjects --may-be-empty gatefiles gates "$SCRIPTS_DIR"
+on_disk=$(printf '%s\n' ${gatefiles[@]+"${gatefiles[@]##*/}"} | grep -v '^$' | sort -u)
 if [ -z "$on_disk" ]; then
     echo "check-local-lane: no ${SCRIPTS_DIR}/check-*.sh found — cannot judge orphans." >&2
     exit 2

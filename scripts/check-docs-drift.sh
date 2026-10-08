@@ -2,18 +2,22 @@
 # Copyright the docker-net-dhcp contributors.
 # SPDX-License-Identifier: GPL-3.0-only
 
-# Documentation-drift check (#345). Companion to check-option-docs.sh,
-# which already covers driver options. This covers the two other things
-# the code exposes to operators, plus the failure mode that let a whole
-# section rot unnoticed:
+# Documentation-drift check (#345, #745). What the code exposes to
+# operators, plus the failure mode that let a whole section rot unnoticed:
 #
 #   1. every /Plugin.Health field is documented in the reference
+#   1b. every driver-option key the code parses is documented in the
+#      reference (#132, merged here by #745): the DHCPNetworkOptions
+#      fields, and the literals indexing an options map
 #   2. every settable plugin env var is documented in the reference
 #   2b. every settable env var that exists ONLY on the coverage-
 #      instrumented manifest is exempt from the reference BY NAME, and
 #      documented in the contributor page instead
 #   3. no option, counter, or setting is documented in a *second*
 #      docs page
+#
+# Expires-when: the reference is generated from the code, so a health field
+#   or driver option cannot exist undocumented (#345).
 #
 # (3) is the one that matters most. Before #345 the reference and the
 # macvlan page each carried a full copy of the options table and the
@@ -59,6 +63,8 @@
 #
 # Exit: 0 clean, 1 drift found, 2 cannot check (bad usage/inputs).
 set -u
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 PKG_DIR="${1:-pkg/plugin}"
 DOCS_DIR="${2:-docs}"
@@ -70,6 +76,36 @@ if [ ! -d "$PKG_DIR" ] || [ ! -d "$DOCS_DIR" ] || [ ! -f "$DOC" ]; then
     echo "missing: $PKG_DIR, $DOCS_DIR or $DOC" >&2
     exit 2
 fi
+
+# Non-test Go sources only, for both option rules: tests synthesize option
+# maps freely, and the reference promises "every driver-option key the
+# code parses" (#745; docs-drift used to read *_test.go too, option-docs
+# did not). An empty package refuses inside gate_subjects (#744).
+src_files=()
+gate_subjects --shallow src_files go-src "$PKG_DIR"
+
+# The one parser for the DHCPNetworkOptions struct (#745): the mapstructure
+# tag when present, the lowercased field name otherwise (mapstructure's
+# case-insensitive default match). Rule 1b and rule 3 both read it.
+options=$(awk '
+    /type DHCPNetworkOptions struct \{/ { in_struct = 1; next }
+    in_struct && /^\}/                  { in_struct = 0 }
+    in_struct {
+        line = $0
+        sub(/^[ \t]+/, "", line)
+        if (line ~ /^\/\// || line == "") next
+        if (match(line, /^[A-Z][A-Za-z0-9]*/)) {
+            name = substr(line, RSTART, RLENGTH)
+            if (match(line, /mapstructure:"[^"]+"/)) {
+                tag = substr(line, RSTART, RLENGTH)
+                gsub(/mapstructure:"|"/, "", tag)
+                print tag
+            } else {
+                print tolower(name)
+            }
+        }
+    }
+' "${src_files[@]}")
 
 fail=0
 
@@ -95,6 +131,28 @@ for c in $counters; do
         echo "PASS  counter $c documented"
     else
         echo "FAIL  counter $c is returned by /Plugin.Health but absent from $DOC"
+        fail=1
+    fi
+done
+
+# ---- 1b. driver options -------------------------------------------------
+# A parser that finds no struct has not found "no options": it has lost
+# the struct, and a gate that goes quiet when the code moves is the failure
+# this exists to prevent.
+if [ -z "$options" ]; then
+    echo "FAIL  DHCPNetworkOptions struct not found in $PKG_DIR — moved/renamed? Update $0 deliberately." >&2
+    exit 1
+fi
+
+# Per-endpoint options: string literals indexing an options map.
+endpoint_keys=$(grep -hoE '[Oo]ptions\["[a-z0-9_]+"\]' "${src_files[@]}" \
+    | sed -E 's/.*\["([a-z0-9_]+)"\].*/\1/' | sort -u)
+
+for key in $(printf '%s\n%s\n' "$options" "$endpoint_keys" | sort -u); do
+    if grep -qF "\`$key\`" "$DOC"; then
+        echo "PASS  option $key documented"
+    else
+        echo "FAIL  option $key is parsed by the code but not documented in $DOC"
         fail=1
     fi
 done
@@ -167,33 +225,13 @@ fi
 # Prose mentions and cross-links match neither, which is deliberate —
 # the other pages should keep pointing at the reference.
 #
-# Driver options join the counters and settings here. check-option-docs.sh
-# proves each option is documented *somewhere*; this proves it isn't
-# documented twice.
+# Driver options join the counters and settings here. Rule 1b proves each
+# option is documented *somewhere*; this proves it isn't documented twice.
 #
 # Cover-only settings are deliberately absent from this set: their one
 # home is the contributor page, and rule 2b is what holds them to it.
 # Listing them here would make the very page that documents them the
 # duplicate.
-options=$(awk '
-    /type DHCPNetworkOptions struct \{/ { in_struct = 1; next }
-    in_struct && /^\}/                  { in_struct = 0 }
-    in_struct {
-        line = $0
-        sub(/^[ \t]+/, "", line)
-        if (line ~ /^\/\// || line == "") next
-        if (match(line, /^[A-Z][A-Za-z0-9]*/)) {
-            name = substr(line, RSTART, RLENGTH)
-            if (match(line, /mapstructure:"[^"]+"/)) {
-                tag = substr(line, RSTART, RLENGTH)
-                gsub(/mapstructure:"|"/, "", tag)
-                print tag
-            } else {
-                print tolower(name)
-            }
-        }
-    }
-' "$PKG_DIR"/*.go)
 
 names="$counters $envs $options"
 ref_base=$(basename "$DOC")

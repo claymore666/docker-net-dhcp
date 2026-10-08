@@ -144,11 +144,14 @@ jobs:
           # load-bearing for the reason above, which never depended on
           # the cleanup.
           path: .resolver
-          # Two files, both OURS: the resolver, and the release-body
-          # extractor the pre-flight below runs against the tag's notes.
+          # Four files, all OURS: the resolver, the release-body
+          # extractor the pre-flight below runs against the tag's notes,
+          # and the pin gate with the library it sources (#1228).
           sparse-checkout: |
             scripts/resolve-dispatch-ref.sh
             scripts/release-body.sh
+            scripts/check-pseudo-version-pin.sh
+            scripts/gatelib.sh
           sparse-checkout-cone-mode: false
 
       # The dispatch input reaches the shell as DATA, through env, and is
@@ -283,6 +286,30 @@ jobs:
           bash .resolver/scripts/release-body.sh "$TAG" notes-under-judgement.md >/dev/null
           echo "Release notes for $TAG assemble; nothing has been published yet."
 
+      # A release ships on a tagged library release, never on a commit
+      # (#1228): any pseudo-version in the tag's go.mod stops the run
+      # here, before anything is published. A `resolve` step because
+      # every publishing job descends from it. Same treatment as the
+      # notes above: our script, and the tag's go.mod read out of the
+      # object database, never checked out. setup-go is for the parser;
+      # `go mod edit` is what reads the file.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27.1'
+          cache: false
+
+      - name: Refuse a tag that pins a library commit
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          REF: ${{ steps.tag.outputs.ref }}
+        run: |
+          set -euo pipefail
+          git -C .resolver fetch --depth=1 --no-tags origin \
+            "+${REF}:refs/pin-under-judgement"
+          bash .resolver/scripts/check-pseudo-version-pin.sh \
+            --event "$GITHUB_EVENT_NAME" --target "$TAG" \
+            --tree .resolver --ref refs/pin-under-judgement
+
   # THE ENGINE THE DEPLOYMENT RUNS, BEFORE THE IMAGES GO OUT (#1014).
   #
   # v2.2.0 passed the integration suite, the arm64 suite and the engine
@@ -334,7 +361,13 @@ jobs:
   production-shape:
     needs: resolve
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Two serialised lanes of the slowest measured length, plus ten
+    # minutes for the steps around the wait (#1205). The check that holds
+    # these two numbers to that rule is in
+    # scripts/test-pick-engine-matrix-run.sh.
+    timeout-minutes: 75
+    env:
+      ENGINE_WAIT_SECONDS: '3900'
     permissions:
       contents: read
       actions: read         # list another workflow's runs, download its rows
@@ -368,12 +401,14 @@ jobs:
           fi
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
-      # BOUNDED, and a timeout is a refusal that says which one it is.
-      # The matrix lane takes about two and a half minutes when it is
-      # not queued; the bound is for pool contention, not for the lane.
-      # "Still running" and "never ran" are different refusals on
-      # purpose: one is a rerun of this job, the other is a tag nobody
-      # measured.
+      # BOUNDED: "still running" is a rerun of this job, "never ran" is
+      # a tag nobody measured. THE BOUND IS TWO LANES (#1205). Runs
+      # 37116339090 to 37195980909 (2026-10-03/04) took 15 to 31 min
+      # unqueued. A tag push starts a second run of the branch push's
+      # commit; both share a concurrency group keyed on the sha, so the
+      # tag's run queues until the branch run ends. v2.4.0-rc1 (run
+      # 37167600922): 16 min queued, 16 min running, finished 83 s
+      # after the 1800 s gate step failed. Two 31 min lanes = 62 min.
       - name: Find the engine-matrix run that measured this commit
         id: run
         env:
@@ -381,7 +416,7 @@ jobs:
           SHA: ${{ steps.commit.outputs.sha }}
         run: |
           set -euo pipefail
-          deadline=$(( $(date +%s) + 1800 ))
+          deadline=$(( $(date +%s) + ENGINE_WAIT_SECONDS ))
           while : ; do
             # ASKED FOR BY COMMIT, not filtered out of a page. Listing
             # the workflow's newest hundred runs would be a window of
@@ -410,7 +445,7 @@ jobs:
               break
             fi
             if [ "$(date +%s)" -ge "$deadline" ]; then
-              echo "::error title=The engine-matrix run has not finished::Run $id measured this commit but was still $status when this gate gave up waiting. Nothing is wrong with the tag; rerun this job once that lane reports." >&2
+              echo "::error title=The engine-matrix run has not finished::Run $id measured this commit but was still $status after this gate waited ${ENGINE_WAIT_SECONDS} s. Nothing is wrong with the tag; rerun this job once that lane reports." >&2
               exit 1
             fi
             sleep 30
@@ -700,7 +735,11 @@ jobs:
         run: |
           set -euo pipefail
           want=$(sed -n 's/^COSIGN_MAJOR=\([0-9][0-9]*\).*/\1/p' \
-                   scripts/check-release-tooling.sh | head -1)
+                   scripts/release-tooling.env | head -1)
+          if [ -z "$want" ]; then
+            echo "::error::no COSIGN_MAJOR=<n> line in scripts/release-tooling.env" >&2
+            exit 1
+          fi
           got=$(cosign version 2>/dev/null \
                   | sed -n 's/.*GitVersion:[[:space:]]*v\{0,1\}\([0-9][0-9.]*\).*/\1/p' \
                   | head -1)
@@ -716,7 +755,7 @@ jobs:
           fi
           if [ "${got%%.*}" != "$want" ]; then
             echo "::error::cosign major ${got%%.*} installed, but the docs and" \
-                 "scripts/check-release-tooling.sh describe major ${want}." \
+                 "scripts/release-tooling.env name major ${want}." \
                  "Update both before releasing — see #522." >&2
             exit 1
           fi
@@ -805,7 +844,7 @@ jobs:
       # SPDX and CycloneDX in one pass; both are attached to the release
       # and folded into the signed checksum manifest below.
       - name: Install syft
-        uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
 
       - name: Generate SBOM (SPDX + CycloneDX)
         run: |
@@ -1160,7 +1199,7 @@ jobs:
           scripts/publish-hub-alias.sh --expect-digest "${HUB_DIGEST}" "docker.io/${HUB_NAME}:${ARM_TAG}" "docker.io/${HUB_ALIAS}:${ARM_TAG}"
 
       - name: Install syft
-        uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
 
       # Arch-suffixed filenames throughout: these land on the SAME
       # GitHub Release as the amd64 set, and `sbom.spdx.json` twice on
@@ -1322,15 +1361,20 @@ jobs:
   # Install mechanics only — enable proves the binary starts. Functional
   # proof on real hardware is the rc-time integration-arm64 run (#531);
   # a hosted VM cannot replace it, but it can catch a 500 on install.
+  #
+  # The three arm64 proofs need resolve, not release (#799): the tag is
+  # resolve's output, which release only passes through, so an amd64
+  # failure no longer skips the proof of an arm64 tag already published.
+  # scripts/check-runbook-release-steps.sh fails if one names release.
   verify-install-arm64:
-    needs: [release, release-arm64]
+    needs: [resolve, release-arm64]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     permissions:
       contents: read
       packages: read
     env:
-      TAG: ${{ needs.release.outputs.tag }}-arm64
+      TAG: ${{ needs.resolve.outputs.tag }}-arm64
     steps:
       - name: Log in to GHCR
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
@@ -1450,13 +1494,13 @@ jobs:
   # The Hub half for arm64, on an arm64 host. Same reasoning as
   # verify-install-hub throughout, including why it is its own job.
   verify-install-hub-arm64:
-    needs: [release, release-arm64]
+    needs: [resolve, release-arm64]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     permissions:
       contents: read
     env:
-      TAG: ${{ needs.release.outputs.tag }}-arm64
+      TAG: ${{ needs.resolve.outputs.tag }}-arm64
       # From release-arm64, not from release: the arm64 Hub image is a
       # separate push and a separate tag, and the amd64 job's answer says
       # nothing about whether this one exists.
@@ -1474,8 +1518,8 @@ jobs:
       #   the two forms, and a green from it settles nothing here.
       #
       #   MEASURED, adjacent context: a hyphenated dereference RESOLVES
-      #   on GitHub in the `inputs.` context. A workflow_dispatch of
-      #   missing-runs.yml with grace-minutes=7 ran
+      #   on GitHub in the `inputs.` context. A workflow_dispatch of a
+      #   scheduled run detector (#418, deleted in #747) with grace-minutes=7 ran
       #   `${{ inputs.grace-minutes || '20' }}` and the script echoed a
       #   7m grace, not the 20m default.
       #
@@ -1595,13 +1639,13 @@ jobs:
   # the hyphenated `needs.` dereference as verify-install-hub-arm64,
   # where the measurement behind that choice is written down.
   verify-install-hub-alias-arm64:
-    needs: [release, release-arm64]
+    needs: [resolve, release-arm64]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     permissions:
       contents: read
     env:
-      TAG: ${{ needs.release.outputs.tag }}-arm64
+      TAG: ${{ needs.resolve.outputs.tag }}-arm64
       HUB_PUSHED: ${{ needs['release-arm64'].outputs.hub_pushed }}
       HAS_HUB_CREDS: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
     steps:

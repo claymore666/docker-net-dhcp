@@ -58,7 +58,7 @@ func TestTranslate_AStopIsNotALeaseLoss(t *testing.T) {
 				l = lease.Lease{SLAAC: true, Addr: v6, Addrs: []lease.Addr6{{Addr: v6}}}
 			}
 			out, emit, _ := translateOne(
-				lease.Event{Kind: lease.Lost, Reason: tc.reason, Lease: l}, now, time.Time{}, netip.Prefix{})
+				lease.Event{Kind: lease.Lost, Reason: tc.reason, Lease: l}, now, renewalMark{}, netip.Prefix{})
 			if emit != tc.wantEmit {
 				t.Fatalf("Lost{%v}: emit=%v, want %v. A stop reported as a loss makes every "+
 					"successful container start look like a lease failure; a real loss "+
@@ -83,7 +83,7 @@ func TestTranslate_ARenewalIsNotCountedTwice(t *testing.T) {
 	now := time.Now()
 	l := lease.Lease{Addr: netip.MustParsePrefix("192.168.99.7/24")}
 
-	_, emit, renewedAt := translateOne(lease.Event{Kind: lease.Renewed, Lease: l}, now, time.Time{}, netip.Prefix{})
+	_, emit, renewedAt := translateOne(lease.Event{Kind: lease.Renewed, Lease: l}, now, renewalMark{}, netip.Prefix{})
 	if !emit {
 		t.Fatal("a Renewed emitted nothing; the plugin would never see a renewal at all")
 	}
@@ -100,6 +100,84 @@ func TestTranslate_ARenewalIsNotCountedTwice(t *testing.T) {
 		t.Error("a Changed well outside the window was swallowed. That is a re-acquisition on a " +
 			"different address — a NAK and a new lease — and the container is left configured " +
 			"with the old one.")
+	}
+}
+
+// dhcp-golib v1.4.2 (#65) emits a Changed of its own when a binding's valid lifetime ends while bound, and one can
+// land inside the window after an unrelated Renewed (#214).
+func TestTranslate_ABindingEndingJustAfterARenewalStillReachesThePlugin(t *testing.T) {
+	now := time.Now()
+	at := now.Add(coalesceWindow / 2)
+	for _, ends := range []string{"fd00:98::11/128", "fd00:98::99/128", "fd00:98:0:2::/64"} {
+		t.Run(ends, func(t *testing.T) {
+			a6 := func(p string) lease.Addr6 {
+				if p == ends {
+					return lease.Addr6{Addr: netip.MustParsePrefix(p), Valid: at}
+				}
+				return lease.Addr6{Addr: netip.MustParsePrefix(p), Valid: now.Add(time.Hour)}
+			}
+			main := a6("fd00:98::10/128")
+			renewed := lease.Lease{Addr: main.Addr, Expire: main.Valid,
+				Addrs:     []lease.Addr6{main, a6("fd00:98::11/128")},
+				TempAddrs: []lease.Addr6{a6("fd00:98::99/128")},
+				Prefixes:  []lease.Addr6{a6("fd00:98:0:1::/64"), a6("fd00:98:0:2::/64")}}
+			_, emit, mark := translateOne(lease.Event{Kind: lease.Renewed, Lease: renewed}, now, renewalMark{}, netip.Prefix{})
+			if !emit {
+				t.Fatal("a Renewed emitted nothing")
+			}
+			after := renewed
+			keep := func(in []lease.Addr6) []lease.Addr6 {
+				return slices.DeleteFunc(slices.Clone(in), func(a lease.Addr6) bool { return a.Addr.String() == ends })
+			}
+			after.Addrs, after.TempAddrs, after.Prefixes = keep(renewed.Addrs), keep(renewed.TempAddrs), keep(renewed.Prefixes)
+
+			out, emit, _ := translateOne(lease.Event{Kind: lease.Changed, Lease: after}, at, mark, netip.Prefix{})
+			if !emit {
+				t.Fatal("the expiry's Changed was swallowed as the Renewed's twin; the ended binding stays on the " +
+					"container until the next lease event")
+			}
+			var got []string
+			for _, a := range slices.Concat(out.Data.Addrs, out.Data.TempAddrs, out.Data.DelegatedPrefixes) {
+				got = append(got, a.IP)
+			}
+			if out.Type != "renew" || len(got) != 4 || slices.Contains(got, ends) {
+				t.Errorf("Changed translated to %q carrying %v, want \"renew\" with the four bindings other than %s",
+					out.Type, got, ends)
+			}
+		})
+	}
+}
+
+// A Changed inside the window that names a different address than the Renewed is a re-acquisition, even when it
+// holds as many bindings (#214).
+func TestTranslate_AChangedNamingADifferentBindingIsNeverTheRenewalsTwin(t *testing.T) {
+	now := time.Now()
+	valid := now.Add(time.Hour)
+	a6 := func(p string) lease.Addr6 { return lease.Addr6{Addr: netip.MustParsePrefix(p), Valid: valid} }
+	renewed := lease.Lease{Addr: netip.MustParsePrefix("192.168.99.7/24"),
+		Addrs:     []lease.Addr6{a6("fd00:98::10/128"), a6("fd00:98::11/128")},
+		TempAddrs: []lease.Addr6{a6("fd00:98::99/128")},
+		Prefixes:  []lease.Addr6{a6("fd00:98:0:1::/64")}}
+	_, _, mark := translateOne(lease.Event{Kind: lease.Renewed, Lease: renewed}, now, renewalMark{}, netip.Prefix{})
+	at := now.Add(coalesceWindow / 2)
+
+	for name, mutate := range map[string]func(*lease.Lease){
+		"another IPv4 address": func(l *lease.Lease) { l.Addr = netip.MustParsePrefix("192.168.99.8/24") },
+		"another address":      func(l *lease.Lease) { l.Addrs = []lease.Addr6{a6("fd00:98::10/128"), a6("fd00:98::12/128")} },
+		"another temporary":    func(l *lease.Lease) { l.TempAddrs = []lease.Addr6{a6("fd00:98::98/128")} },
+		"another prefix":       func(l *lease.Lease) { l.Prefixes = []lease.Addr6{a6("fd00:98:0:2::/64")} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := renewed
+			mutate(&changed)
+			if _, emit, _ := translateOne(lease.Event{Kind: lease.Changed, Lease: changed}, at, mark, netip.Prefix{}); !emit {
+				t.Errorf("a Changed with %s was coalesced into the Renewed; the container keeps what the lease replaced", name)
+			}
+		})
+	}
+
+	if _, emit, _ := translateOne(lease.Event{Kind: lease.Changed, Lease: renewed}, at, mark, netip.Prefix{}); emit {
+		t.Error("the Changed holding the Renewed's own bindings was emitted as a second renewal")
 	}
 }
 

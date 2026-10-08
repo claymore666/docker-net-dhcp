@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+# The capability matrix's cell list and its reconciliation against the
+# table in docs/reference.md (#690).
+#
+# Usage: capability-matrix.sh --cells-json
+#        capability-matrix.sh --columns
+#        capability-matrix.sh --dhcp-count <log> <after-line> <mac> <TYPE>
+#        capability-matrix.sh --strictness <event> <ref> <draft>
+#        capability-matrix.sh --draft-now <event> <repo> <pr-number>
+#        capability-matrix.sh --strip <capability> <config.json>
+#        capability-matrix.sh --reconcile [--strict] <rows-dir>
+# Exit:  0 agrees, 1 disagrees, 2 cannot check.
+set -euo pipefail
+
+ROOT="${CAP_MATRIX_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+CONFIG="${CAP_MATRIX_CONFIG:-$ROOT/config.json}"
+DOC="${CAP_MATRIX_DOC:-$ROOT/docs/reference.md}"
+# One declaration of the columns: capability-cell.sh prints these keys and
+# the docs table carries them as its header, in this order (#690).
+COLUMNS=(enables capeff mount bridge macvlan dns user dns_user renew renew_user restart)
+SCENARIOS=(bridge macvlan dns user dns_user renew renew_user restart)
+
+die() { echo "::error title=capability matrix::$*" >&2; exit 2; }
+
+capabilities() {
+    local caps
+    caps="$(jq -r '.linux.capabilities[]?' "$CONFIG")" || die "cannot read $CONFIG"
+    [ -n "$caps" ] || die "$CONFIG declares no capabilities"
+    printf '%s\n' "$caps"
+}
+
+cells() { echo none; capabilities; }
+
+# dhcp_count prints how many dnsmasq log lines after line N carry a TYPE(
+# message for exactly that MAC as a whole field (#690 D7, D8).
+dhcp_count() {
+    [ -r "$1" ] || die "cannot read $1"
+    awk -v n="$2" -v mac="$3" -v t="$4(" '
+        NR <= n { next }
+        { ty = 0; m = 0
+          for (i = 1; i <= NF; i++) {
+              if (index($i, t) == 1) ty = 1
+              if ($i == mac) m = 1
+          }
+          if (ty && m) c++ }
+        END { print c + 0 }' "$1"
+}
+
+# A `?` is red where a merge happens: a push to dev or main, and a pull
+# request that is not a draft. A draft or another branch is where the
+# first measurement is taken, so there it is a warning (#690).
+strictness() {
+    case "$1:$2:$3" in
+        pull_request:*:false) echo strict ;;
+        pull_request:*:true) echo lenient ;;
+        push:refs/heads/dev:* | push:refs/heads/main:*) echo strict ;;
+        workflow_dispatch:refs/heads/dev:* | workflow_dispatch:refs/heads/main:*) echo strict ;;
+        push:*|workflow_dispatch:*) echo lenient ;;
+        *) die "no strictness for event '$1' ref '$2' draft '$3'" ;;
+    esac
+}
+
+# draft_now prints whether the pull request is a draft at this moment. The
+# event payload is a snapshot from when the event fired: a push and a ready
+# click seconds apart gave the run on the final head `draft: true` and no
+# strict run of it (#690, run 37301682056). Any other event prints false.
+# An answer that is not true or false cannot be judged and is refused.
+draft_now() {
+    local live
+    [ "$1" = pull_request ] || { echo false; return 0; }
+    live="$(gh api "repos/$2/pulls/$3" --jq .draft)" || die "cannot read whether pull request $3 is a draft"
+    case "$live" in
+        true | false) echo "$live" ;;
+        *) die "pull request $3 draft state read as '$live', want true or false" ;;
+    esac
+}
+
+allowed() {
+    case "$1" in
+        enables) [[ "$2" =~ ^(yes|no)$ ]] ;;
+        capeff) [[ "$2" =~ ^(n/a|held|dropped)$ ]] ;;
+        mount) [[ "$2" =~ ^[a-z,]+$ ]] ;;
+        *) [[ "$2" =~ ^(pass|fail)$ ]] ;;
+    esac
+}
+
+# table_rows prints "removed|col1|col2|..." per table row, backticks and
+# padding stripped; the header line is checked against COLUMNS (#690).
+table_rows() {
+    local block header want
+    block="$(sed -n '/<!-- capability-matrix: begin -->/,/<!-- capability-matrix: end -->/p' "$DOC")"
+    [ -n "$block" ] || die "$DOC carries no capability-matrix block"
+    block="$(printf '%s\n' "$block" | grep '^|' | tr -d '` ' | sed 's/^|//; s/|$//')"
+    header="$(printf '%s\n' "$block" | sed -n 1p)"
+    want="removed$(printf '|%s' "${COLUMNS[@]}")"
+    [ "$header" = "$want" ] || die "table header '$header' is not '$want'"
+    printf '%s\n' "$block" | sed -n '3,$p'
+}
+
+row_value() { printf '%s\n' "$1" | tr ' ' '\n' | sed -n "s/^$2=//p"; }
+
+reconcile() {
+    local strict=0 dir rc=0 cell table measured line tv mv i n
+    if [ "${1:-}" = --strict ]; then strict=1; shift; fi
+    dir="${1:-}"
+    [ -d "$dir" ] || die "rows directory '$dir' does not exist"
+    table="$(table_rows)"
+    mapfile -t all_cells < <(cells)
+    printf '| removed |%s\n|---|' "$(printf ' %s |' "${COLUMNS[@]}")"
+    printf -- '---|%.0s' "${COLUMNS[@]}"; echo
+    for cell in "${all_cells[@]}"; do
+        measured="$(find "$dir" -name '*.row' -exec cat {} + 2>/dev/null | grep -E "^CAP_MATRIX_ROW removed=$cell( |$)" || true)"
+        n="$(printf '%s' "$measured" | grep -c . || true)"
+        if [ "$n" -ne 1 ]; then
+            echo "::error title=capability matrix::cell $cell produced $n rows, want 1"
+            rc=1; continue
+        fi
+        if [ "$(row_value "$measured" result)" != ok ]; then
+            echo "::error title=capability matrix::cell $cell result=$(row_value "$measured" result): no measurement"
+            rc=1; continue
+        fi
+        line="$(printf '%s\n' "$table" | awk -F'|' -v c="$cell" '$1 == c')"
+        if [ "$(printf '%s' "$line" | grep -c . || true)" -ne 1 ]; then
+            echo "::error title=capability matrix::docs table has no single row for $cell"
+            rc=1
+        fi
+        printf '| %s |' "$cell"
+        i=2
+        for col in "${COLUMNS[@]}"; do
+            mv="$(row_value "$measured" "$col")"
+            tv="$(printf '%s' "$line" | cut -d'|' -f"$i")"
+            i=$((i + 1))
+            printf ' %s |' "$mv"
+            if ! allowed "$col" "$mv"; then
+                echo "::error title=capability matrix::cell $cell $col='$mv' is not a measured value" >&2
+                rc=1
+            elif [ "$tv" = '?' ]; then
+                if [ "$strict" -eq 1 ]; then
+                    echo "::error title=capability matrix::cell $cell $col is unmeasured in the docs table, measured $mv" >&2
+                    rc=1
+                else
+                    echo "::warning title=capability matrix::cell $cell $col is unmeasured in the docs table, measured $mv" >&2
+                fi
+            elif [ -n "$line" ] && [ "$tv" != "$mv" ]; then
+                echo "::error title=capability matrix::cell $cell $col measured $mv, docs table says $tv" >&2
+                rc=1
+            fi
+        done
+        echo
+        if [ "$cell" = none ]; then
+            [ "$(row_value "$measured" enables)" = yes ] || { echo "::error title=capability matrix::the full set did not enable" >&2; rc=1; }
+            for col in "${SCENARIOS[@]}"; do
+                [ "$(row_value "$measured" "$col")" = pass ] \
+                    || { echo "::error title=capability matrix::the full set failed $col" >&2; rc=1; }
+            done
+        fi
+    done
+    while IFS='|' read -r cell _; do
+        [ -z "$cell" ] && continue
+        printf '%s\n' "${all_cells[@]}" | grep -xF "$cell" >/dev/null \
+            || { echo "::error title=capability matrix::docs table row $cell names no cell of config.json" >&2; rc=1; }
+    done <<<"$table"
+    return "$rc"
+}
+
+case "${1:-}" in
+    --cells-json) cells | jq -R . | jq -cs . ;;
+    --columns) printf '%s\n' "${COLUMNS[@]}" ;;
+    --dhcp-count)
+        [ $# -eq 5 ] && [[ "$3" =~ ^[0-9]+$ ]] || die "--dhcp-count <log> <after-line> <mac> <TYPE>"
+        dhcp_count "$2" "$3" "$4" "$5" ;;
+    --strictness)
+        [ $# -eq 4 ] || die "--strictness <event> <ref> <draft>"
+        strictness "$2" "$3" "$4" ;;
+    --draft-now)
+        [ $# -eq 4 ] && [[ "$4" =~ ^[0-9]+$ ]] || die "--draft-now <event> <repo> <pr-number>"
+        draft_now "$2" "$3" "$4" ;;
+    --strip)
+        [ $# -eq 3 ] || die "--strip <capability> <config.json>"
+        capabilities | grep -xF "$2" >/dev/null || die "$2 is not requested by $CONFIG"
+        jq --arg c "$2" '.linux.capabilities -= [$c]' "$3" ;;
+    --reconcile) shift; reconcile "$@" ;;
+    *) die "usage: --cells-json | --columns | --dhcp-count <log> <line> <mac> <TYPE> | --strictness <event> <ref> <draft> | --draft-now <event> <repo> <pr-number> | --strip <capability> <config.json> | --reconcile [--strict] <rows-dir>" ;;
+esac

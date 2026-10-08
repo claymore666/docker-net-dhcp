@@ -5,6 +5,9 @@
 # An upstream-blocked issue must not be described as waiting on a Docker
 # engine version (#673).
 #
+# Expires-when: the roadmap's "Blocked upstream" table, which this gate
+#   reads its issue list from, is gone for good (#673).
+#
 # WHY THIS EXISTS
 #
 # #673 corrected the claim that engine ">= 28" unblocks #125. It does
@@ -68,6 +71,8 @@
 #          blocked-upstream table declares nothing
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(dirname "$HERE")"

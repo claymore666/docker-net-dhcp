@@ -23,11 +23,12 @@ import (
 
 	"github.com/claymore666/dhcp-golib/proto"
 	cerrdefs "github.com/containerd/errdefs"
-	dNetwork "github.com/docker/docker/api/types/network"
 	"github.com/gorilla/handlers"
 	"github.com/mitchellh/mapstructure"
+	dNetwork "github.com/moby/moby/api/types/network"
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
@@ -226,6 +227,8 @@ type DHCPNetworkOptions struct {
 	IPv6MainPrefix string `mapstructure:"ipv6_main_prefix"`
 	// IPv6Temporary puts an IA_TA (RFC 8415 section 21.5) beside the IA_NA in every Solicit and Request (#927).
 	IPv6Temporary bool `mapstructure:"ipv6_temporary"`
+	// IPv6PD asks for an IA_PD prefix of this length beside the address, 0 for none (RFC 8415 section 21.21, #214).
+	IPv6PD int `mapstructure:"ipv6_pd"`
 	// IPv6IID is how SLAAC forms the interface identifier: eui64 (unset) from the MAC, or stable-privacy per RFC 7217
 	// from a secret in STATE_DIR (#1032).
 	IPv6IID      string        `mapstructure:"ipv6_iid"`
@@ -456,6 +459,12 @@ type Plugin struct {
 	// manager (#46).
 	endpointFingerprints map[string]endpointFingerprint
 
+	// handBackMu guards handingBack, the held records a deferred release has taken, and runningOnHeld; a leaf lock
+	// (#1237).
+	handBackMu    sync.Mutex
+	handingBack   map[string]chan struct{}
+	runningOnHeld map[string]bool
+
 	// vlanMu serialises a vlan sub-interface's create, adoption and removal, and guards vlanPending, the creates
 	// between their ensure and their save; it is never held with mu (#902).
 	vlanMu      sync.Mutex
@@ -464,6 +473,8 @@ type Plugin struct {
 	// bridgeMu and bridgePending do the same for a bridge this plugin makes from parent (#903).
 	bridgeMu      sync.Mutex
 	bridgePending map[string]int
+	// bridgeTaken holds the bridges whose parent an in-flight create enslaved again and no other call has relied on since (#1242).
+	bridgeTaken map[string]bool
 
 	// createMu guards creating, the CreateNetwork calls not yet returned, in no network list; a leaf lock (#1187).
 	createMu  sync.Mutex
@@ -552,6 +563,9 @@ type Plugin struct {
 
 	// joinAbortedEndpointLeft counts attaches cancelled by Leave (#406); not healthy-affecting.
 	joinAbortedEndpointLeft atomic.Int32
+
+	// joinAbortedLinkWithdrawn counts attaches whose located link left the sandbox (#1236); not healthy-affecting.
+	joinAbortedLinkWithdrawn atomic.Int32
 
 	// unsafeHostnamesRejected counts hostnames with a control character dropped before option 12 (#692); a legitimate
 	// hostname has none, so non-zero means someone is trying.
@@ -822,6 +836,11 @@ type Plugin struct {
 	// counting removals since a shutting-down router sends several (section 6.2.5) (#821). Not healthy-affecting.
 	ipv6RouterWithdrawn atomic.Int32
 
+	// The delegated prefix aggregates put into and taken out of containers, and overlapping endpoints (#214).
+	ipv6PrefixRoutesInstalled atomic.Int32
+	ipv6PrefixRoutesWithdrawn atomic.Int32
+	ipv6PrefixOverlaps        atomic.Int32
+
 	// displacedStops tracks Join's goroutines stopping a displaced manager so Close waits for them (#338), unbounded
 	// to keep Join free of head-of-line blocking; a displacement sends no release (#962).
 	displacedStops      sync.WaitGroup
@@ -945,6 +964,11 @@ type endpointFingerprint struct {
 	Ifname string
 	// Released records that the lease actually went back at Leave, so DeleteEndpoint offers no tombstone (#962).
 	Released bool
+	// Prefixes is the IA_PD prefixes of the last v6 lease event, carried to the tombstone (#214).
+	Prefixes []string
+	// RecordKey is the key the endpoint's lease records were filed under, so release_lease=on_remove reaches an
+	// endpoint with no MAC to tombstone: ipvlan, passthru recovery, a recovery with no hostname (#1249).
+	RecordKey net.HardwareAddr
 }
 
 // dhcpHostname is a hostname with its trust bit, one value because safeHostname's "" means both refused and absent,
@@ -959,17 +983,29 @@ type dhcpHostname struct {
 // trusted reports whether name may narrow a tombstone match; an absent hostname is trusted and matches network-wide.
 func (h dhcpHostname) trusted() bool { return !h.refused }
 
-// rememberEndpoint stashes a created endpoint's fingerprint for DeleteEndpoint's tombstone; a no-op with no MAC.
+// rememberEndpoint stashes a created endpoint's fingerprint for DeleteEndpoint; a no-op with no MAC and no record key.
 // The hostname is a dhcpHostname parameter so the trust bit cannot be dropped: a bool parameter let `true` restore
 // #726 with the package green, and TestHostnameTrustIsWired refuses a laundered value.
 func (p *Plugin) rememberEndpoint(endpointID string, fp endpointFingerprint, h dhcpHostname) {
 	fp.Hostname = h.name
 	fp.HostnameRefused = h.refused
-	if fp.MAC == "" {
+	if fp.MAC == "" && len(fp.RecordKey) == 0 {
 		return
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.endpointFingerprints[endpointID] = fp
+}
+
+// updateEndpointPrefixes overwrites the fingerprint's delegated prefixes, an empty list included (#214).
+func (p *Plugin) updateEndpointPrefixes(endpointID string, prefixes []string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	fp, ok := p.endpointFingerprints[endpointID]
+	if !ok {
+		return
+	}
+	fp.Prefixes = prefixes
 	p.endpointFingerprints[endpointID] = fp
 }
 
@@ -1031,7 +1067,7 @@ func (p *Plugin) takeEndpoint(endpointID string) (endpointFingerprint, bool) {
 
 // addTombstone records a deleted endpoint's MAC and addresses for the next CreateEndpoint within tombstoneTTL;
 // a disk failure is logged and loses only that restart's stability (#46).
-func (p *Plugin) addTombstone(networkID, hostname, mac, ipv4, ipv6 string) {
+func (p *Plugin) addTombstone(networkID, hostname, mac, ipv4, ipv6 string, prefixes ...string) {
 	if mac == "" {
 		return
 	}
@@ -1039,7 +1075,7 @@ func (p *Plugin) addTombstone(networkID, hostname, mac, ipv4, ipv6 string) {
 	if isLinkLocalV4String(ipv4) {
 		ipv4 = ""
 	}
-	if err := p.tombstones.add(networkID, hostname, mac, ipv4, ipv6); err != nil {
+	if err := p.tombstones.add(networkID, hostname, mac, ipv4, ipv6, prefixes...); err != nil {
 		p.tombstoneWriteFailures.Add(1)
 		log.WithError(err).Warn("Failed to persist tombstone; container restart may pick a new MAC/IP")
 	}
@@ -1067,7 +1103,7 @@ func (p *Plugin) consumeTombstone(networkID string, h dhcpHostname) (mac, ipv4, 
 func (p *Plugin) listNetworksWhenReady(ctx context.Context) ([]dNetwork.Summary, error) {
 	var lastErr error
 	for {
-		nets, err := p.docker.NetworkList(ctx, dNetwork.ListOptions{})
+		nets, err := listNetworks(ctx, p.docker)
 		if err == nil {
 			return nets, nil
 		}
@@ -1112,7 +1148,7 @@ func (p *Plugin) recoverEndpoints(ctx context.Context, daemonWait time.Duration)
 		}
 		// Per-network deadline so one hung call cannot consume recoveryBudget (#76).
 		netCtx, netCancel := context.WithTimeout(ctx, recoveryPerNetworkTimeout)
-		netInfo, err := p.docker.NetworkInspect(netCtx, n.ID, dNetwork.InspectOptions{})
+		netInfo, err := inspectNetwork(netCtx, p.docker, n.ID)
 		if err != nil {
 			netCancel()
 			if cerrdefs.IsNotFound(err) {
@@ -1142,7 +1178,7 @@ func (p *Plugin) recoverEndpoints(ctx context.Context, daemonWait time.Duration)
 			if strings.HasPrefix(cid, "ep-") {
 				continue
 			}
-			adopted, err := p.recoverOneEndpoint(ctx, cid, n.ID, info.EndpointID, info.MacAddress, info.IPv4Address, info.IPv6Address, opts)
+			adopted, err := p.recoverOneEndpoint(ctx, cid, n.ID, info.EndpointID, info.MacAddress.String(), prefixString(info.IPv4Address), prefixString(info.IPv6Address), opts)
 			if err != nil {
 				log.WithError(err).WithFields(log.Fields{
 					"network":  shortID(n.ID),
@@ -1161,7 +1197,7 @@ func (p *Plugin) recoverEndpoints(ctx context.Context, daemonWait time.Duration)
 		// (#1047).
 		if ipamBindingOf(n.ID) != nil {
 			if listed, ok := ipamListedMACs(netInfo.Containers); ok {
-				p.giveUpStrandedIPAMRecords(n.ID, listed, time.Now())
+				p.giveUpStrandedIPAMRecords(ctx, n.ID, listed, time.Now())
 			}
 		}
 	}
@@ -1208,7 +1244,7 @@ func (p *Plugin) containerGone(ctx context.Context, containerID string) bool {
 	ctx, cancel := context.WithTimeout(ctx, recoveryPerNetworkTimeout)
 	defer cancel()
 
-	ctr, err := p.docker.ContainerInspect(ctx, containerID)
+	ctr, err := inspectContainer(ctx, p.docker, containerID)
 	if err != nil {
 		return cerrdefs.IsNotFound(err)
 	}
@@ -1216,7 +1252,7 @@ func (p *Plugin) containerGone(ctx context.Context, containerID string) bool {
 }
 
 // recoveredHostname returns the hostname for a recovered fingerprint; ok=false, for no inspect answer or a refused
-// hostname (#693), records no fingerprint, since an empty hostname would write a wildcard tombstone (#726).
+// hostname (#693), gives the fingerprint no MAC, since an empty hostname would write a wildcard tombstone (#726).
 func (p *Plugin) recoveredHostname(ctx context.Context, containerID string) (dhcpHostname, bool) {
 	if containerID == "" {
 		p.recoveryFingerprintsSkipped.Add(1)
@@ -1228,7 +1264,7 @@ func (p *Plugin) recoveredHostname(ctx context.Context, containerID string) (dhc
 	ctx, cancel := context.WithTimeout(ctx, initialDHCPHostnameLookupTimeout)
 	defer cancel()
 
-	ctr, err := p.docker.ContainerInspect(ctx, containerID)
+	ctr, err := inspectContainer(ctx, p.docker, containerID)
 	if err != nil || ctr.Config == nil || ctr.Config.Hostname == "" {
 		// Counted, since this endpoint loses its address on the next restart (#721).
 		p.recoveryFingerprintsSkipped.Add(1)
@@ -1297,14 +1333,7 @@ func (p *Plugin) recoverOneEndpoint(ctx context.Context, containerID, networkID,
 
 	ipv4 = p.recoveredV4(networkID, endpointRecordKey(opts.Mode, endpointID, mac), ipv4)
 
-	fakeJoin := JoinRequest{
-		NetworkID:  networkID,
-		EndpointID: endpointID,
-	}
-	m := newDHCPManager(p.docker, fakeJoin, opts).withPlugin(p)
-	m.setLastIP(false, ipv4)
-	m.setLastIP(true, ipv6)
-	m.MacAddress = mac
+	m := p.recoveredManager(networkID, endpointID, mac, ipv4, ipv6, opts)
 	// Checked and registered in one operation, so a mid-recovery Join keeps its manager (#480).
 	if !p.registerDHCPManagerIfAbsent(endpointID, m) {
 		p.recoveryAlreadyManaged.Add(1)
@@ -1314,23 +1343,24 @@ func (p *Plugin) recoverOneEndpoint(ctx context.Context, containerID, networkID,
 	// Recovery records the fingerprint, or DeleteEndpoint lays no tombstone and the next `docker restart` loses the
 	// address (#721); after the compare-and-set, so a winning Join's fingerprint stands. Ifname stays empty, as Docker
 	// does not record the custom name (#125).
-	if hostname, ok := p.recoveredHostname(ctx, containerID); ok {
-		fpIPv4, fpIPv6 := "", ""
-		if ipv4 != nil {
-			fpIPv4 = ipv4.IP.String()
-		}
-		if ipv6 != nil {
-			fpIPv6 = ipv6.IP.String()
-		}
-		// Only an accepted hostname reaches here; a refusal writes no fingerprint (#726).
-		p.rememberEndpoint(endpointID, endpointFingerprint{
-			// Docker's MAC, not the resolved one: a tombstone must not offer an address filed under the ipvlan
-			// parent's MAC (#911).
-			MAC:  macStr,
-			IPv4: fpIPv4,
-			IPv6: fpIPv6,
-		}, hostname)
+	hostname, trusted := p.recoveredHostname(ctx, containerID)
+	fp := endpointFingerprint{
+		// Docker's MAC, not the resolved one: a tombstone must not offer an address filed under the ipvlan parent's
+		// MAC (#911). No MAC without a trusted hostname, whose "" would be a wildcard tombstone (#726); the record key
+		// still lets the removal hand the lease back (#1249).
+		MAC:       macStr,
+		RecordKey: endpointRecordKey(opts.effectiveMode(), endpointID, mac),
 	}
+	if !trusted {
+		fp.MAC = ""
+	}
+	if ipv4 != nil {
+		fp.IPv4 = ipv4.IP.String()
+	}
+	if ipv6 != nil {
+		fp.IPv6 = ipv6.IP.String()
+	}
+	p.rememberEndpoint(endpointID, fp, hostname)
 
 	go func() {
 		startCtx, cancel := context.WithTimeout(context.Background(), p.awaitTimeout)
@@ -1362,15 +1392,56 @@ func (p *Plugin) recoverOneEndpoint(ctx context.Context, containerID, networkID,
 	return true, nil
 }
 
+// recoveredManager builds the manager recovery registers, which has no Join answer to seed its advertised routes
+// from, so it adopts them from the link, minus the host link's destinations Join may have copied (#102, #1239).
+func (p *Plugin) recoveredManager(networkID, endpointID string, mac net.HardwareAddr, ipv4, ipv6 *netlink.Addr, opts DHCPNetworkOptions) *dhcpManager {
+	m := newDHCPManager(p.docker, JoinRequest{NetworkID: networkID, EndpointID: endpointID}, opts).withPlugin(p)
+	m.setLastIP(false, ipv4)
+	m.setLastIP(true, ipv6)
+	m.MacAddress = mac
+	m.recovered = true
+	if ipv6 == nil || opts.SkipRoutes || !opts.ipv6Enabled() {
+		return m
+	}
+	dests, err := hostRouteDestinations(opts)
+	if err != nil {
+		log.WithError(err).WithFields(log.Fields{"network": shortID(networkID), "endpoint": shortID(endpointID)}).
+			Warn("recovery: cannot read the host routes; a route the router withdraws stays until the container restarts")
+		return m
+	}
+	m.adoptAdvertRoutes, m.hostRouteDests = true, dests
+	return m
+}
+
+// hostRouteDestinations lists the non-default IPv6 destinations on the link Join copies routes from (#102).
+func hostRouteDestinations(opts DHCPNetworkOptions) (map[string]bool, error) {
+	link, err := joinRouteSource(opts)
+	if err != nil {
+		return nil, err
+	}
+	routes, err := util.DumpResult(nlRouteListFiltered(unix.AF_INET6, &netlink.Route{LinkIndex: link.Attrs().Index},
+		netlink.RT_FILTER_OIF))
+	if err != nil {
+		return nil, fmt.Errorf("failed to list host routes: %w", err)
+	}
+	dests := make(map[string]bool, len(routes))
+	for _, r := range routes {
+		if !isDefaultRoute(r) {
+			dests[r.Dst.String()] = true
+		}
+	}
+	return dests, nil
+}
+
 // lookupEndpointMAC reads Docker's stored MAC for an endpoint so a restart rebuilds the link with that MAC.
 func (p *Plugin) lookupEndpointMAC(ctx context.Context, networkID, endpointID string) (string, error) {
-	dockerNet, err := p.docker.NetworkInspect(ctx, networkID, dNetwork.InspectOptions{})
+	dockerNet, err := inspectNetwork(ctx, p.docker, networkID)
 	if err != nil {
 		return "", fmt.Errorf("failed to inspect network: %w", err)
 	}
 	for _, info := range dockerNet.Containers {
 		if info.EndpointID == endpointID {
-			return info.MacAddress, nil
+			return info.MacAddress.String(), nil
 		}
 	}
 	return "", fmt.Errorf("endpoint %v not found in network %v's container list", endpointID, networkID)
@@ -1417,7 +1488,7 @@ func (p *Plugin) initialDHCPHostname(ctx context.Context, networkID, endpointID 
 	_ = util.AwaitCondition(ctx, func() (bool, error) {
 		inner, innerCancel := context.WithTimeout(ctx, dockerCallTimeout)
 		defer innerCancel()
-		dockerNet, err := p.docker.NetworkInspect(inner, networkID, dNetwork.InspectOptions{})
+		dockerNet, err := inspectNetwork(inner, p.docker, networkID)
 		if err != nil {
 			return false, nil
 		}
@@ -1429,7 +1500,7 @@ func (p *Plugin) initialDHCPHostname(ctx context.Context, networkID, endpointID 
 			if strings.HasPrefix(ctrID, "ep-") {
 				return false, nil
 			}
-			ctr, err := p.docker.ContainerInspect(inner, ctrID)
+			ctr, err := inspectContainer(inner, p.docker, ctrID)
 			if err != nil {
 				return false, nil
 			}

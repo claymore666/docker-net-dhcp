@@ -5,6 +5,9 @@
 # The release walkthrough must RENDER inside the procedure step that
 # introduces it (#972 follow-up).
 #
+# Expires-when: the docs site renders with a CommonMark engine, so a
+#   three-space list continuation renders as written (#972).
+#
 # docs/release-runbook.md is a numbered procedure whose list items are
 # continued at THREE spaces, because `9. ` is three characters wide and
 # CommonMark continues a list item at the marker width. MkDocs does not
@@ -34,6 +37,8 @@
 # Usage: bash scripts/check-runbook-render.sh [runbook] [mkdocs.yml]
 
 set -euo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/.." && pwd)"

@@ -7,6 +7,7 @@
 package harness
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -94,11 +95,25 @@ type Kea6Config struct {
 	Subnet, PoolStart, PoolEnd                  string
 	PD                                          *Kea6PDPool
 	ValidSec, PreferredSec, RenewSec, RebindSec int
+	VendorOpts                                  []Kea6VendorOpt
+}
+
+// Kea6VendorOpt is one DHCPv6 option 17 instance, RFC 8415 section 21.17: an enterprise number and one sub-option (#1203).
+type Kea6VendorOpt struct {
+	Enterprise uint32
+	SubCode    uint16
+	SubData    []byte
+}
+
+func WithKea6VendorOpts(v ...Kea6VendorOpt) Kea6Option {
+	return func(c *Kea6Config) { c.VendorOpts = append(c.VendorOpts, v...) }
 }
 
 type Kea6Option func(*Kea6Config)
 
 func WithKea6PD() Kea6Option { return func(c *Kea6Config) { c.PD = DefaultKea6PD() } }
+
+func WithKea6PDPool(p Kea6PDPool) Kea6Option { return func(c *Kea6Config) { c.PD = &p } }
 
 func WithKea6Timers(renew, rebind int) Kea6Option {
 	return func(c *Kea6Config) { c.RenewSec, c.RebindSec = renew, rebind }
@@ -136,14 +151,39 @@ type keaJSON struct {
 }
 
 type keaDhcp6 struct {
-	Interfaces keaInterfaces `json:"interfaces-config"`
-	Lease      keaLeaseDB    `json:"lease-database"`
-	Valid      int           `json:"valid-lifetime"`
-	Renew      int           `json:"renew-timer"`
-	Rebind     int           `json:"rebind-timer"`
-	Preferred  int           `json:"preferred-lifetime"`
-	Subnets    []keaSubnet6  `json:"subnet6"`
-	Loggers    []keaLogger   `json:"loggers"`
+	Interfaces keaInterfaces   `json:"interfaces-config"`
+	Lease      keaLeaseDB      `json:"lease-database"`
+	Valid      int             `json:"valid-lifetime"`
+	Renew      int             `json:"renew-timer"`
+	Rebind     int             `json:"rebind-timer"`
+	Preferred  int             `json:"preferred-lifetime"`
+	Options    []keaOptionData `json:"option-data,omitempty"`
+	Subnets    []keaSubnet6    `json:"subnet6"`
+	Loggers    []keaLogger     `json:"loggers"`
+}
+
+// keaOptionData is one option-data entry. Measured against Kea 2.6.3 (#1203): `vendor-opts` takes the enterprise number as
+// its data, and a sub-option is an entry in space `vendor-<enterprise>` that is encapsulated only with always-send;
+// without it the reply carries the enterprise number alone.
+type keaOptionData struct {
+	Name       string `json:"name,omitempty"`
+	Space      string `json:"space,omitempty"`
+	Code       int    `json:"code,omitempty"`
+	Data       string `json:"data"`
+	CSVFormat  *bool  `json:"csv-format,omitempty"`
+	AlwaysSend bool   `json:"always-send"`
+}
+
+func (c Kea6Config) optionData() []keaOptionData {
+	var out []keaOptionData
+	raw := false
+	for _, v := range c.VendorOpts {
+		out = append(out,
+			keaOptionData{Name: "vendor-opts", Data: strconv.FormatUint(uint64(v.Enterprise), 10), AlwaysSend: true},
+			keaOptionData{Space: "vendor-" + strconv.FormatUint(uint64(v.Enterprise), 10), Code: int(v.SubCode),
+				Data: strings.ToUpper(hex.EncodeToString(v.SubData)), CSVFormat: &raw, AlwaysSend: true})
+	}
+	return out
 }
 
 type keaInterfaces struct {
@@ -202,6 +242,7 @@ func (c Kea6Config) JSON() string {
 		Lease: keaLeaseDB{Type: "memfile", Persist: true, LFCInterval: 0,
 			Name: path.Join(Kea6LeaseDir, Kea6LeaseFile)},
 		Valid: valid, Renew: renew, Rebind: rebind, Preferred: pref,
+		Options: c.optionData(),
 		Subnets: []keaSubnet6{s},
 		Loggers: []keaLogger{{Name: "kea-dhcp6", Severity: "INFO",
 			OutputOptions: []keaLogOut{{Output: path.Join(Kea6LogDir, Kea6LogFile), Flush: true}}}},

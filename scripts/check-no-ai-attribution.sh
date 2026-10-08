@@ -8,6 +8,10 @@
 # twice, which is why it is enforced mechanically here instead of
 # remembered.
 #
+# Expires-when: never: the project is published as the maintainer's own
+#   work, and the rule reached a public branch twice before this gate
+#   (#335).
+#
 # Usage: check-no-ai-attribution.sh <commit-range> [pr-body-file]
 #   <commit-range>: any git range, e.g. origin/dev..HEAD
 #   [pr-body-file]: optional file holding the PR description
@@ -26,6 +30,8 @@
 # maintainer: external contributors and dependabot author commits here
 # too, and they are legitimate.
 set -u
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
     echo "usage: $0 <commit-range> [pr-body-file]" >&2

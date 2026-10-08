@@ -474,8 +474,8 @@ while read -r number; do
         # out — and because the planner recomputes desired state from
         # scratch, a ref that contributes nothing becomes REMOVE in-dev
         # on issues that are in dev. This lane runs 40-67 times a day
-        # and this repo has hit GitHub's secondary rate limiting before
-        # (see missing-runs.yml), so it is not a theoretical branch.
+        # and this repo most likely hit GitHub's secondary rate limiting
+        # (#418), so it is not a theoretical branch.
         #
         # Two places in this same file already reason about exactly this
         # hazard and refuse; this was the third and it failed open.

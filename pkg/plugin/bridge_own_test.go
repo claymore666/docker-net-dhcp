@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	dNetwork "github.com/docker/docker/api/types/network"
+	dNetwork "github.com/moby/moby/api/types/network"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
@@ -43,20 +43,22 @@ func bridgeOwnOpts() DHCPNetworkOptions {
 // bridgeKernel is the host as the seams see it; the fields after links record what the plugin asked of the kernel,
 // the only outside evidence a unit test has (#903).
 type bridgeKernel struct {
-	links     map[string]netlink.Link
-	addrs     map[int][]netlink.Addr
-	routes    []netlink.Route
-	addrErr   map[int]error
-	routeErr  error
-	deleted   []string
-	added     []string
-	enslaved  []string
-	v6Off     []string
-	addErr    error
-	aliasErr  error
-	v6OffErr  error
-	upErr     error
-	masterErr error
+	links       map[string]netlink.Link
+	addrs       map[int][]netlink.Addr
+	routes      []netlink.Route
+	addrErr     map[int]error
+	routeErr    error
+	deleted     []string
+	added       []string
+	enslaved    []string
+	released    []string
+	v6Off       []string
+	addErr      error
+	aliasErr    error
+	v6OffErr    error
+	upErr       error
+	masterErr   error
+	noMasterErr error
 }
 
 // inFamily reports whether ip belongs to a netlink family; a route with no Dst and no Gw is in every one (#903).
@@ -77,10 +79,10 @@ func stubBridgeKernel(t *testing.T, links ...netlink.Link) *bridgeKernel {
 	for _, l := range links {
 		k.links[l.Attrs().Name] = l
 	}
-	prevBy, prevDel, prevUp, prevList, prevAlias, prevMaster := nlLinkByName, nlLinkDel, nlLinkSetUp, nlLinkList, nlLinkSetAlias, nlLinkSetMaster
+	prevBy, prevDel, prevUp, prevList, prevAlias, prevMaster, prevNoMaster := nlLinkByName, nlLinkDel, nlLinkSetUp, nlLinkList, nlLinkSetAlias, nlLinkSetMaster, nlLinkSetNoMaster
 	prevAddr, prevRoute, prevAdd, prevV6 := nlAddrList, nlRouteListFiltered, bridgeLinkAdd, bridgeHostIPv6Off
 	t.Cleanup(func() {
-		nlLinkByName, nlLinkDel, nlLinkSetUp, nlLinkList, nlLinkSetAlias, nlLinkSetMaster = prevBy, prevDel, prevUp, prevList, prevAlias, prevMaster
+		nlLinkByName, nlLinkDel, nlLinkSetUp, nlLinkList, nlLinkSetAlias, nlLinkSetMaster, nlLinkSetNoMaster = prevBy, prevDel, prevUp, prevList, prevAlias, prevMaster, prevNoMaster
 		nlAddrList, nlRouteListFiltered, bridgeLinkAdd, bridgeHostIPv6Off = prevAddr, prevRoute, prevAdd, prevV6
 	})
 	nlLinkByName = func(name string) (netlink.Link, error) {
@@ -128,6 +130,14 @@ func stubBridgeKernel(t *testing.T, links ...netlink.Link) *bridgeKernel {
 		k.enslaved = append(k.enslaved, l.Attrs().Name+"->"+master.Attrs().Name)
 		l.Attrs().MasterIndex, l.Attrs().Promisc = master.Attrs().Index, 1
 		master.Attrs().MTU = l.Attrs().MTU
+		return nil
+	}
+	nlLinkSetNoMaster = func(l netlink.Link) error {
+		if k.noMasterErr != nil {
+			return k.noMasterErr
+		}
+		k.released = append(k.released, l.Attrs().Name)
+		l.Attrs().MasterIndex, l.Attrs().Promisc = 0, 0
 		return nil
 	}
 	nlAddrList = func(l netlink.Link, family int) ([]netlink.Addr, error) {

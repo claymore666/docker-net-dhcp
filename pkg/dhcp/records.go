@@ -10,6 +10,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -186,7 +189,8 @@ func (r *Records) append(ev lease.RecordEvent) error {
 		ev.At = time.Now()
 	}
 	if err := r.store.Load().Append(ev); err != nil {
-		// An Append that did not land gives its sequence number back; a gap reads as a lost line in the fold (#950).
+		// An Append that did not land gives its sequence number back, so a reader sees no gap that is not a compaction's
+		// (#950, #1192).
 		r.seq[ev.ID]--
 		return err
 	}
@@ -395,10 +399,11 @@ func (r *Records) Resume(scope string, chaddr []byte, now time.Time) (string, Re
 // compactSuffix names the rewrite's temporary file, in the record's own directory so the rename stays atomic (#1182).
 const compactSuffix = ".compact"
 
-// Swapped by the tests to inject a failed rename or reopen (#1182).
+// Swapped by the tests to inject a failed rename or reopen (#1182), or a wrong thinning rule (#1192).
 var (
 	openRecordStore = func(path string) (*dhcpruntime.RecordStore, error) { return dhcpruntime.OpenRecordStore(path) }
 	renameRecords   = os.Rename
+	droppableLine   = droppableRenewal
 )
 
 // A rewrite of S bytes runs only after S/2 bytes were appended since the last one, so it costs at most two written
@@ -435,7 +440,11 @@ func (r *Records) compactLocked(now time.Time, retain time.Duration) error {
 	if err != nil {
 		return fmt.Errorf("dhcp: reading %s for compaction: %w", r.path, err)
 	}
-	kept, seq := keptLines(b, now, retain)
+	kept, seq, folded := keptLines(b, now, retain)
+	if folded > 0 {
+		log.WithFields(log.Fields{"path": r.path, "lines": folded}).
+			Debug("Compaction folded superseded renewal lines into the record's newest one (#1192)")
+	}
 
 	tmp := r.path + compactSuffix
 	if err := writeSynced(tmp, kept); err != nil {
@@ -501,10 +510,12 @@ func syncDir(dir string) error {
 	return d.Sync()
 }
 
-// keptLines is the file minus every line of a dropped record, and the sequence floor of what is left.
-func keptLines(b []byte, now time.Time, retain time.Duration) ([]byte, map[string]uint64) {
+// keptLines is the file minus every line of a dropped record and minus the superseded renewal lines of a kept one,
+// the sequence floor of what is left, and the number of lines folded away (#1182, #1192).
+func keptLines(b []byte, now time.Time, retain time.Duration) ([]byte, map[string]uint64, int) {
 	lines := bytes.Split(b, []byte("\n"))
 	ids := make([]string, len(lines))
+	evAt := make([]int, len(lines))
 	parsed := make([]bool, len(lines))
 	var evs []lease.RecordEvent
 	last := map[string]time.Time{}
@@ -513,18 +524,20 @@ func keptLines(b []byte, now time.Time, retain time.Duration) ([]byte, map[strin
 		if len(bytes.TrimSpace(line)) == 0 || json.Unmarshal(line, &ev) != nil {
 			continue
 		}
-		ids[i], parsed[i] = ev.ID, true
+		ids[i], parsed[i], evAt[i] = ev.ID, true, len(evs)
 		evs = append(evs, ev)
 		if ev.At.After(last[ev.ID]) {
 			last[ev.ID] = ev.At
 		}
 	}
-	keep := keptRecords(lease.Rebuild(evs), last, now, retain)
+	rb := lease.Rebuild(evs)
+	keep := keptRecords(rb, last, now, retain)
+	drop := thinnedEvents(evs, keep, rb)
 
 	var out []byte
 	var keptEvs []lease.RecordEvent
 	for i, line := range lines {
-		if len(bytes.TrimSpace(line)) == 0 || (parsed[i] && !keep[ids[i]]) {
+		if len(bytes.TrimSpace(line)) == 0 || (parsed[i] && (!keep[ids[i]] || drop[evAt[i]])) {
 			continue
 		}
 		out = append(out, line...)
@@ -533,12 +546,123 @@ func keptLines(b []byte, now time.Time, retain time.Duration) ([]byte, map[strin
 			out = append(out, '\n')
 		}
 	}
-	for _, ev := range evs {
-		if keep[ev.ID] {
+	folded := 0
+	for k, ev := range evs {
+		if keep[ev.ID] && !drop[k] {
 			keptEvs = append(keptEvs, ev)
 		}
+		if drop[k] {
+			folded++
+		}
 	}
-	return out, seqFloor(keptEvs)
+	return out, seqFloor(keptEvs), folded
+}
+
+// droppableRenewal is the line's own half of the thinning rule: a renewal or a change whose whole effect, the lease
+// and its phases, the next lease line of the record replaces. Any other field the fold copies makes the line
+// load-bearing, the Params snapshot above all (#1192). cur is the record before the line.
+func droppableRenewal(cur lease.Record, ev lease.RecordEvent) bool {
+	if ev.Op != lease.OpLease || (ev.Kind != lease.Renewed && ev.Kind != lease.Changed) {
+		return false
+	}
+	// Every lease line of a v6 record carries its family, which the record already holds.
+	if ev.Family != lease.FamilyUnset && ev.Family != cur.Family {
+		return false
+	}
+	return ev.Scope == "" && len(ev.CHAddr) == 0 && len(ev.Identity) == 0 && ev.Params == nil && ev.Params6 == nil &&
+		len(ev.Declined6) == 0 && ev.Deadline.IsZero() && ev.StepsRef == "" && ev.Manager == "" &&
+		ev.Config == nil && ev.Stats == nil && ev.Extra == nil
+}
+
+// replacesLease reports whether a line the fold accepted overwrites a record's lease wholesale (L record.go foldLease).
+func replacesLease(ev lease.RecordEvent) bool {
+	return ev.Op == lease.OpLease && (ev.Kind == lease.Acquired || ev.Kind == lease.Changed || ev.Kind == lease.Renewed)
+}
+
+// thinnedEvents marks, per event, the lines of a kept record to fold away: an accepted droppable line whose next
+// line of the same record is an accepted one that replaces the lease. A record's last line is never marked, so the
+// sequence floor and the newest lease survive. The fold of the thinned lines must equal the original but for the
+// folded counters; a record where it does not keeps every line and is named in one warning (#1192).
+func thinnedEvents(evs []lease.RecordEvent, keep map[string]bool, rb lease.Rebuilt) []bool {
+	drop := make([]bool, len(evs))
+	cur := map[string]lease.Record{}
+	pending := map[string]int{}
+	thinned := map[string]bool{}
+	for k, ev := range evs {
+		pre := cur[ev.ID]
+		next, err := lease.Fold(pre, ev)
+		accepted := err == nil
+		if next.Phase != lease.PhaseUnset {
+			cur[ev.ID] = next
+		}
+		if j, ok := pending[ev.ID]; ok {
+			if accepted && replacesLease(ev) {
+				drop[j], thinned[ev.ID] = true, true
+			}
+			delete(pending, ev.ID)
+		}
+		if accepted && keep[ev.ID] && droppableLine(pre, ev) {
+			pending[ev.ID] = k
+		}
+	}
+	if len(thinned) == 0 {
+		return drop
+	}
+
+	var thin []lease.RecordEvent
+	renewed, changed := map[string]uint64{}, map[string]uint64{}
+	for k, ev := range evs {
+		switch {
+		case drop[k] && ev.Kind == lease.Renewed:
+			renewed[ev.ID]++
+		case drop[k] && ev.Kind == lease.Changed:
+			changed[ev.ID]++
+		}
+		if keep[ev.ID] && !drop[k] {
+			thin = append(thin, ev)
+		}
+	}
+	rb2 := lease.Rebuild(thin)
+	var bad []string
+	for id := range thinned {
+		if !sameFold(rb, rb2, id, renewed[id], changed[id]) {
+			bad = append(bad, id)
+		}
+	}
+	if len(bad) == 0 {
+		return drop
+	}
+	sort.Strings(bad)
+	log.WithField("records", bad).Warn("Compaction kept these records whole: the fold of their thinned lines differs " +
+		"from the fold of the original lines (#1192)")
+	for k, ev := range evs {
+		if slices.Contains(bad, ev.ID) {
+			drop[k] = false
+		}
+	}
+	return drop
+}
+
+// sameFold compares a record and its rejects across the two folds, the thinned one given its folded counters (#1192).
+func sameFold(orig, thin lease.Rebuilt, id string, renewed, changed uint64) bool {
+	want, ok := orig.ByID(id)
+	got, ok2 := thin.ByID(id)
+	if !ok || !ok2 {
+		return false
+	}
+	got.Counters.Renewals += renewed
+	got.Counters.Changes += changed
+	return reflect.DeepEqual(want, got) && reflect.DeepEqual(rejectsOf(orig, id), rejectsOf(thin, id))
+}
+
+func rejectsOf(rb lease.Rebuilt, id string) []lease.Reject {
+	var out []lease.Reject
+	for _, rj := range rb.Rejects {
+		if rj.ID == id {
+			out = append(out, rj)
+		}
+	}
+	return out
 }
 
 // The newest record of a (scope, hardware address) group stays while an older one does: retainRecordFor and

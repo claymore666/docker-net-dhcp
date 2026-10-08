@@ -4,6 +4,9 @@
 
 # Go version-pin consistency gate (#525).
 #
+# Expires-when: the Go version is declared once and every workflow, image
+#   and go.mod reads it from there, so no two answers can differ (#525).
+#
 # There is no single place in this tree that says which Go we build
 # with, and before this gate there were four answers that disagreed:
 # go.mod said 1.26.4, six workflow steps said '1.26', the CI runner
@@ -37,6 +40,8 @@
 #
 # Usage: check-go-pins.sh [<repo-root>]   (defaults to the repo root)
 set -u
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 root="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 cd "$root" || { echo "cannot enter $root" >&2; exit 2; }

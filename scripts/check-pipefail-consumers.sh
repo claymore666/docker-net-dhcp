@@ -4,6 +4,9 @@
 
 # pipefail + early-exit-consumer gate.
 #
+# Expires-when: never: pipefail with an early-exit consumer reports SIGPIPE
+#   141 as a failure, a shell fact (#297); ends if no script uses pipefail.
+#
 # Under `set -o pipefail` a pipeline reports the failure of ANY stage.
 # `grep -q` exits the moment it matches, which closes the pipe while the
 # producer is still writing: the producer dies of SIGPIPE with status
@@ -109,6 +112,8 @@
 # Exit:  0 clean, 1 a racy pipeline found, 2 cannot check.
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="${PIPE_ROOT:-$(cd "$HERE/.." && pwd)}"

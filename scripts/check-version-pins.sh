@@ -11,6 +11,9 @@
 # not others — the failure mode scripts/bump-version.sh exists to avoid,
 # and this gate catches it on any branch.
 #
+# Expires-when: the docs stop spelling a versioned image reference, for
+#   example by substituting the version at build time (#251).
+#
 # It does NOT assert the pins equal the latest release tag: the release
 # branch legitimately leads it (pins bumped to the version about to
 # ship, before the tag exists). Internal agreement is the invariant that
@@ -32,6 +35,8 @@
 # Usage: check-version-pins.sh [<file>...]
 #   defaults: README.md docs/*.md (run from the repo root)
 set -u
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 IMAGE="ghcr.io/claymore666/docker-net-dhcp"
 
@@ -54,13 +59,8 @@ allowed_tag() {
 
 files=("$@")
 if [ "${#files[@]}" -eq 0 ]; then
-    for f in README.md docs/*.md; do
-        [ -f "$f" ] && files+=("$f")
-    done
-fi
-if [ "${#files[@]}" -eq 0 ]; then
-    echo "usage: $0 [<file>...]  (no README.md / docs/*.md found)" >&2
-    exit 2
+    # The pages readers copy snippets from: the docs class (#744).
+    gate_subjects files docs
 fi
 
 # --- 1. Every image reference must be runnable ------------------------

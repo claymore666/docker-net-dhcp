@@ -114,27 +114,15 @@ jobs:
         run: |
           echo "::warning title=Anonymous Docker Hub pulls::DOCKERHUB_USERNAME / DOCKERHUB_TOKEN are not available to this job (#562)."
 
-      # The toolchain and fixture deps are baked into the runner image;
-      # fail loudly if the image on the Pi drifted (same as amd64).
-      - name: Verify Go toolchain
-        run: |
-          if ! command -v go >/dev/null; then
-            echo "go not in PATH — dhcp-ci runner image is stale vs go.mod; rebuild ci/runner-image/ for arm64"
-            exit 1
-          fi
-          go version
-          [ "$(uname -m)" = "aarch64" ] || { echo "::error::expected aarch64, got $(uname -m)"; exit 1; }
+      # The toolchain and fixture deps are baked into the runner image; the
+      # check is integration.yml's own copy (#746). The architecture check
+      # is this lane's axis and stays here.
+      - name: Verify the runner image
+        uses: ./.github/actions/verify-runner-image
 
-      - name: Verify fixture dependencies
+      - name: Verify the runner is arm64
         run: |
-          missing=""
-          for tool in dnsmasq kea-dhcp4 kea-dhcp6 ip iptables; do
-            command -v "$tool" >/dev/null || missing="$missing $tool"
-          done
-          if [ -n "$missing" ]; then
-            echo "::error::dhcp-ci runner image is missing:$missing — rebuild ci/runner-image/ for arm64"
-            exit 1
-          fi
+          [ "$(uname -m)" = "aarch64" ] || { echo "::error::expected aarch64, got $(uname -m)"; exit 1; }
 
       # The host's own recovery path, checked on the host rather than in
       # the tree that provisions it (#677). The netbooted root is an
@@ -152,7 +140,7 @@ jobs:
       - name: Verify the host's NFS-outage watchdog
         run: |
           set +e
-          bash scripts/check-host-watchdog.sh
+          bash scripts/check-pi-watchdog.sh --host
           rc=$?
           set -e
           if [ "$rc" -eq 2 ]; then
@@ -188,15 +176,15 @@ jobs:
                exit 1 ;;
           esac
 
-      - name: Build + install integration plugin
-        run: |
-          make PLUGIN_NAME=ghcr.io/claymore666/docker-net-dhcp PLUGIN_TAG=integration plugin
-          docker plugin rm -f "${INTEGRATION_PLUGIN_REF}" 2>/dev/null || true
-          # The daemon does not create a missing bind source (#440).
-          mkdir -p /var/lib/net-dhcp
-          docker plugin create "${INTEGRATION_PLUGIN_REF}" plugin
-          docker plugin set "${INTEGRATION_PLUGIN_REF}" LOG_LEVEL=trace
-          docker plugin enable "${INTEGRATION_PLUGIN_REF}"
+      - name: Build integration plugin
+        run: make PLUGIN_NAME=ghcr.io/claymore666/docker-net-dhcp PLUGIN_TAG=integration plugin
+
+      # The shared install (#746); bind sources come from the manifest.
+      - name: Enable integration plugin
+        uses: ./.github/actions/install-plugin
+        with:
+          ref: ${{ env.INTEGRATION_PLUGIN_REF }}
+          dir: plugin
 
       # shell: bash is LOAD-BEARING for pipefail, exactly as in
       # integration.yml (#297).
@@ -274,6 +262,6 @@ jobs:
       # for the same reason and with more force behind it here.
       - name: Tear down integration plugin
         if: always()
-        run: |
-          docker plugin disable "${INTEGRATION_PLUGIN_REF}" 2>/dev/null || true
-          docker plugin rm -f "${INTEGRATION_PLUGIN_REF}" 2>/dev/null || true
+        uses: ./.github/actions/teardown-plugin
+        with:
+          ref: ${{ env.INTEGRATION_PLUGIN_REF }}

@@ -6,6 +6,9 @@
 # and every sentence names a grant config.json still asks for (E-2,
 # #725's second follow-up).
 #
+# Expires-when: SECURITY.md's grant sentences are generated from
+#   config.json, so a grant without its sentence cannot exist (#725).
+#
 # WHY THIS EXISTS
 #
 # SECURITY.md's job is to let an operator decide whether to approve what
@@ -79,6 +82,8 @@
 #        file, missing block markers, empty set on either side).
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 ROOT="${1:-.}"
 MANIFEST="$ROOT/config.json"

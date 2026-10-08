@@ -93,7 +93,7 @@ jobs:
       - name: Reject a dispatch ref that is not ours
         run: bash scripts/check-dispatch-ref.sh "${{ inputs.ref }}"
 YAML
-cat > "$TMP/prefix/missing-runs.yml" <<'YAML'
+cat > "$TMP/prefix/reconcile.yml" <<'YAML'
 on:
   workflow_dispatch:
     inputs:
@@ -102,14 +102,14 @@ on:
 jobs:
   reconcile:
     steps:
-      - run: bash scripts/check-missing-runs.sh "${{ inputs.grace-minutes || '20' }}"
+      - run: bash scripts/reconcile.sh "${{ inputs.grace-minutes || '20' }}"
 YAML
 check "pre-#737: input expanded in the signing job" 1 "$TMP/prefix" \
       "release.yml:13"
 check "pre-#737: the guard job expands its own input" 1 "$TMP/prefix" \
       "integration.yml:10"
 check "pre-#737: an input with a || default" 1 "$TMP/prefix" \
-      "missing-runs.yml:9"
+      "reconcile.yml:9"
 check "pre-#737: a secret written into the step script" 1 "$TMP/prefix" \
       "Secret expanded into a shell"
 
@@ -206,6 +206,35 @@ check "no run: step at all exits 2" 2 "$TMP/norun" \
 # expansion-keyed sentinel called that "the parser is broken". Asserting
 # the count explicitly keeps the two conditions apart.
 check "a clean tree reports what it read" 0 "$TMP/safe" "run body/bodies across"
+
+# --- a composite action beside the workflows (#746) -------------------
+# Both cases exit 0 on the gate before #746, which never opened them.
+mkdir -p "$TMP/act/.github/workflows" "$TMP/act/.github/actions/x"
+cp "$TMP/safe/"*.yml "$TMP/act/.github/workflows/"
+cat > "$TMP/act/.github/actions/x/action.yml" <<'YAML'
+inputs:
+  ref:
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: docker plugin create "${{ inputs.ref }}" plugin
+YAML
+check "an input expanded into a composite action's run: is caught" 1 \
+      "$TMP/act/.github/workflows" "actions/x/action.yml"
+cat > "$TMP/act/.github/actions/x/action.yml" <<'YAML'
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: echo "${{ secrets.TOKEN }}"
+YAML
+check "a secret expanded into a composite action's run: is caught" 1 \
+      "$TMP/act/.github/workflows" "actions/x/action.yml"
+mv "$TMP/act/.github/actions/x/action.yml" "$TMP/act/.github/actions/x/action.yaml"
+check "a composite spelled action.yaml is read too" 1 \
+      "$TMP/act/.github/workflows" "actions/x/action.yaml"
 
 # --- the real workflows -----------------------------------------------
 check "the real .github/workflows" 0 "$ROOT/.github/workflows" \

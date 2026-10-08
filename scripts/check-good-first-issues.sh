@@ -4,6 +4,10 @@
 
 # Keep the "good first issue" promise honest (#537, #851; follow-up to #455).
 #
+# Expires-when: neither .bestpractices.json nor README.md names the
+#   good-first-issue filter, so no public claim about tracker state remains
+#   (#537).
+#
 # Two public artifacts make claims about live tracker state:
 #
 #   * .bestpractices.json answers `small_tasks` Met or Unmet, and when it
@@ -88,7 +92,7 @@
 #             count, in both directions. This is NOT safe at PR time — an
 #             unrelated PR would go red because somebody closed the last
 #             starter issue, charging the cost to whoever pushed next. It
-#             runs on a schedule instead.
+#             is a manual step of docs/release-runbook.md instead (#748).
 #
 # WHERE THE LABEL NAME COMES FROM, and why it changed (#851). This gate
 # used to decode the label out of the promise URL. That works only while
@@ -185,6 +189,8 @@
 #               against a stub without touching the network.
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 MODE="${1:-}"
 case "$MODE" in
@@ -712,7 +718,7 @@ fi
 # stop existing, which happens without a commit — Discussions switched
 # off in repository settings, or the category renamed or deleted. That is
 # the same class of silent decay as the label's open count, so it is
-# checked in the same place and on the same schedule.
+# checked in the same place.
 #
 # The repository, and the category, are derived from ASK_ROUTE rather
 # than restated, so there is one copy of the fact and not three.

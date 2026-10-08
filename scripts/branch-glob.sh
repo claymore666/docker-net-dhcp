@@ -4,18 +4,15 @@
 
 # ONE branch-pattern matcher, for every reader of a branch pattern.
 #
-# WHY THIS IS A FILE AND NOT THREE COPIES OF A `case`
+# WHY THIS IS A FILE AND NOT TWO COPIES OF A `case`
 #
-# Three places in this repository decide whether a branch name matches a
+# Two places in this repository decide whether a branch name matches a
 # pattern: `check-branch-refs.sh` (does every pattern under `.github/`
-# match something that exists), `check-missing-runs.sh` (whose commits must
-# be evidenced) and `purge-workflow-runs.sh` (whose run records are spared).
-# The last two are the pair that `.github/gate-branch-scope.env` exists to
-# keep from disagreeing: if the purge's idea of the population is smaller
-# than the detector's, the purge deletes evidence the detector then demands
-# and the detector goes red naming a cause that never happened. A second
-# enumeration that must agree with the first is the defect, not the fix —
-# and a matcher copied into two scripts is exactly that.
+# match something that exists) and `purge-workflow-runs.sh` (whose run
+# records are spared). If the two matched differently, the refs gate could
+# pass a scope word the purge then expands to nothing, and the purge would
+# delete the records it was meant to spare. A matcher copied into two
+# scripts is a second enumeration that must agree with the first.
 #
 # WHY NOT THE SHELL'S OWN GLOB
 #
@@ -115,11 +112,10 @@ branch_glob_match() { # <pattern> <branch>
     [[ "$b" =~ ^${re}$ ]]
 }
 
-# A WHOLE WORD LIST, resolved to branch names. This is the function the two
-# gate-scope readers call, and it is one function rather than a loop in each
-# of them for the reason `.github/gate-branch-scope.env` exists at all: the
-# detector's population and the purge's must be the same one, and a rule
-# written twice is a rule that will be corrected once.
+# A WHOLE WORD LIST, resolved to branch names. The purge's keep rule 5
+# calls it on the words of `.github/gate-branch-scope.env`; it lives here
+# beside the matcher check-branch-refs.sh uses, so a rule written twice is
+# not a rule that will be corrected once.
 #
 # On stdout: the matched branch names, space separated, duplicates removed,
 # in the order the words were written. rc 1 with a diagnosis on stderr when

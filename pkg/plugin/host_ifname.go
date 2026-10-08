@@ -185,10 +185,15 @@ func (m *dhcpManager) renameHostLink(inspected bool, ctrName, ctrHostname string
 			return
 		}
 		m.plugin.hostIfnameFailures.Add(1)
+		// The host end is up here, and kernels before 6.2 answer EBUSY to renaming an up link (#1248).
+		msg := "The kernel refused to rename this endpoint's host-side link; it keeps its generated name"
+		if errors.Is(err, unix.EBUSY) {
+			msg = "The kernel refused to rename this endpoint's host-side link because it is up, which a kernel before 6.2 cannot do; it keeps its generated name"
+		}
 		log.WithError(err).WithFields(m.logFields(false)).
 			WithField("host_link", hostName).
 			WithField("wanted", want).
-			Warn("The kernel refused to rename this endpoint's host-side link; it keeps its generated name")
+			Warn(msg)
 		return
 	}
 

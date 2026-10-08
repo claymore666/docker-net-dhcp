@@ -5,6 +5,9 @@
 # Coverage-floor gate (#735): a PR may not lower a floor in
 # .github/coverage-baseline.txt without saying so.
 #
+# Expires-when: the coverage ratchet and .github/coverage-baseline.txt are
+#   retired; until then a silent floor cut is the hole #735 closed.
+#
 # Usage: check-coverage-floor.sh <commit-range> [pr-body-file]
 #   <commit-range>: any git range, e.g. origin/dev..HEAD
 #   [pr-body-file]: optional file holding the PR description
@@ -40,6 +43,8 @@
 # reference fires always and prevents nothing. This line is a statement
 # about lowering a floor; citing the issue you are working on is not.
 set -u
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 # The gate also runs over the per-function floor file (#1117): the same
 # script with COVERAGE_FLOOR_PATH naming it and COVERAGE_FLOOR_KIND=func,

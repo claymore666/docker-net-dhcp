@@ -6,6 +6,11 @@
 # (#583). The one place that knows them is harness/build.go, and every
 # test that needs the built rootfs asks harness.BuiltPluginDir.
 #
+# Expires-when: the coverage build stops having a directory of its own:
+#   both lanes build into one path, so no test can spell the wrong one.
+#   #746 keeps a cover: false|true input and both directories, so it
+#   does not end this (#583).
+#
 # WHY THIS EXISTS
 #
 # The two lanes build into different directories: `make plugin` ->
@@ -38,6 +43,8 @@
 #          the wrong thing)
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(dirname "$HERE")"
@@ -64,8 +71,11 @@ fi
 # the names.
 ALLOWED_RE="^($ACCESSOR|${ACCESSOR%.go}_test.go):"
 PATTERN='"plugin-cover"|plugin-cover/|plugin/rootfs|Join\([^)]*[Rr]oot[^)]*"plugin"\)'
-offenders=$(grep -rnE --include='*.go' -- "$PATTERN" "$TESTDIR" \
-    | grep -vE -- "$ALLOWED_RE" || true)
+gofiles=()
+gate_subjects gofiles go "$TESTDIR"
+hits=$(grep -HnE -- "$PATTERN" "${gofiles[@]}")
+[ $? -le 1 ] || gate_refuse "grep failed over $TESTDIR"
+offenders=$(printf '%s\n' "$hits" | grep -vE -- "$ALLOWED_RE" | grep -v '^$')
 
 if [ -n "$offenders" ]; then
     echo "::error title=A test names a plugin build directory (#583)::the lanes build into" \

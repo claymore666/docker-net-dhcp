@@ -3,15 +3,15 @@
 # Posture mirrors the govulncheck gate: fail a PR that introduces a new
 # high-or-critical advisory. The allow-ghsas list below is the
 # advisory-level counterpart of .github/vuln-allowlist.txt and follows
-# the same rules:
+# the same rules. The list is empty since #178 removed the last module
+# it accepted advisories for; the key is gone, and an entry returns it:
 #   - Every entry needs a justification and a review date. No bare IDs.
 #   - Entries are only for findings with no fixed release available on
 #     the module path we depend on. The moment a fix ships, the bump
 #     lands and the entry is removed.
 #   - The documented call-site review is the arbiter: an entry is only
 #     acceptable while the vulnerable code paths are not invoked by the
-#     plugin (this repo's only docker/docker call-sites are the client
-#     APIs listed below). Once the Go vuln DB imports an advisory,
+#     plugin. Once the Go vuln DB imports an advisory,
 #     govulncheck reports it through module-init symbol traces
 #     regardless of actual invocation, so a govulncheck report alone
 #     does not void an acceptance — but it does require a matching,
@@ -50,23 +50,19 @@ fail-on-severity: high
 # happen, in one file. scripts/check-allowlist-parity.sh now compares
 # them, through the declared mapping in .github/ghsa-go-map.txt.
 #
-# The surviving entry is daemon-side Moby, in github.com/docker/docker.
-# This plugin uses that module only as a CLIENT library; its sole
-# call-sites are NetworkList, NetworkInspect and ContainerInspect. It
-# never invokes the AuthZ handler where this one lives. govulncheck
-# reports it via init-chain traces, and it is accepted with the same
-# justification in .github/vuln-allowlist.txt (#291/#292). No fix is
-# available: the github.com/docker/docker module is frozen at v28.5.2;
-# the successor github.com/moby/moby/v2 migration is tracked in #178,
-# at which point the acceptance is re-evaluated. Reviewed 2026-06-14
-# (#193); re-reviewed 2026-07-03 (#291); reconciled 2026-08-22 (#741).
+# The last entry, GHSA-x744-4wpc-v9h2 (= GO-2026-4887, AuthZ plugin
+# bypass on oversized request bodies, daemon-side Moby in
+# github.com/docker/docker), was removed by #178: the module no longer
+# appears in go.mod, so the advisory cannot be reintroduced by a
+# dependency change here. Reviewed 2026-06-14 (#193); re-reviewed
+# 2026-07-03 (#291); reconciled 2026-08-22 (#741); removed 2026-10-07.
 #
 # Not listed (below fail-on-severity, so this gate never acts on them):
-# GHSA-pxq6-2prw-chj9 (= GO-2026-4883, medium, live in
-# vuln-allowlist.txt) and GHSA-vp62-88p7-qqf5 (= GO-2026-5668, medium,
-# `docker cp` symlink-swap empty-file race, removed from
+# GHSA-pxq6-2prw-chj9 (= GO-2026-4883, medium, removed from
+# vuln-allowlist.txt by #178) and GHSA-vp62-88p7-qqf5 (= GO-2026-5668,
+# medium, `docker cp` symlink-swap empty-file race, removed from
 # vuln-allowlist.txt on 2026-08-14 alongside GO-2026-5617).
-allow-ghsas:
-  # AuthZ plugin bypass on oversized request bodies (= GO-2026-4887,
-  # also in vuln-allowlist.txt for the govulncheck gate).
-  - GHSA-x744-4wpc-v9h2
+#
+# To accept an advisory again, add `allow-ghsas:` with one `- GHSA-...`
+# line under it and its pair to .github/ghsa-go-map.txt in the same
+# commit.

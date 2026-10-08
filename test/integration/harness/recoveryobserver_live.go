@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	docker "github.com/docker/docker/client"
+	docker "github.com/moby/moby/client"
 )
 
 // AwaitRecoveryRebuildWindow waits on the window spanning the recycle, so every read is checked against the window's instance (#405).
@@ -67,12 +67,12 @@ func DumpPluginLogOnFailure(t *testing.T, ctx context.Context, mark int64, what 
 // checkInstalledAwaitTimeout reports, with Errorf so the recycle test keeps reporting, a wait bound the installed plugin contradicts (#376).
 func checkInstalledAwaitTimeout(t *testing.T, ctx context.Context, cli *docker.Client) {
 	t.Helper()
-	p, _, err := cli.PluginInspectWithRaw(ctx, PluginRef)
+	p, err := cli.PluginInspect(ctx, PluginRef, docker.PluginInspectOptions{})
 	if err != nil {
 		t.Errorf("PluginInspect, to read the AWAIT_TIMEOUT the recovery budget is derived from: %v", err)
 		return
 	}
-	if msg := InstalledAwaitTimeoutDrift(p.Settings.Env); msg != "" {
+	if msg := InstalledAwaitTimeoutDrift(p.Plugin.Settings.Env); msg != "" {
 		t.Errorf("%s", msg)
 	}
 }

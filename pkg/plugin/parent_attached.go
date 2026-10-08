@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/mitchellh/mapstructure"
@@ -54,7 +55,7 @@ func refuseEnslavedParent(parent netlink.Link, own int) error {
 		return nil
 	}
 	name := fmt.Sprintf("index %d", master)
-	if m, err := netlink.LinkByIndex(master); err == nil {
+	if m, err := nlLinkByIndexCurNS(master); err == nil {
 		name = m.Attrs().Name
 	}
 	return fmt.Errorf("parent %v is already a port of %v, and the kernel would move it out without an error; remove it from %v or choose another NIC: %w",
@@ -178,6 +179,29 @@ func linkUpAwaitingAddress(ctx context.Context, link netlink.Link, budget time.D
 	}
 }
 
+var childHostIPv6Off = func(name string) error { return disableHostIPv6Under(ipv6DisableSysctlDir, name) }
+
+// childIPv6Off turns IPv6 off on a child before it comes up in the host namespace, or a router advertisement gives
+// the host a SLAAC address and a default route through a link about to move (#1247). A link entering a namespace
+// gets fresh IPv6 state, measured on Linux 6.12. Best effort: a read-only /proc/sys leaves the old exposure.
+func childIPv6Off(name string) {
+	if err := childHostIPv6Off(name); err != nil {
+		log.WithError(err).WithField("link", name).Warn("Could not turn IPv6 off on a link before it comes up; the host may take router advertisements on it until it moves (#1247)")
+	}
+}
+
+// childIPv6OffFor spares an IPv6 network, whose DHCPv6 exchange runs on the link here and needs its link-local (#1247).
+func childIPv6OffFor(opts DHCPNetworkOptions, name string) {
+	if !opts.ipv6Enabled() {
+		childIPv6Off(name)
+	}
+}
+
+func upChildLink(ctx context.Context, opts DHCPNetworkOptions, link netlink.Link, budget time.Duration) (bool, error) {
+	childIPv6OffFor(opts, link.Attrs().Name)
+	return linkUpAwaitingAddress(ctx, link, budget)
+}
+
 // noteRestartLinkUpWait records a #408 wait; neither counter affects healthy, since a timeout surfaces through
 // CreateEndpoint (#422).
 func (p *Plugin) noteRestartLinkUpWait(r CreateEndpointRequest, waited bool, err error) {
@@ -222,7 +246,7 @@ func pinChildMAC(opts DHCPNetworkOptions, userMAC bool, fresh, parent netlink.Li
 	return mac, nil
 }
 
-func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart time.Time, r CreateEndpointRequest, opts DHCPNetworkOptions) (CreateEndpointResponse, error) {
+func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart time.Time, r CreateEndpointRequest, opts DHCPNetworkOptions) (_ CreateEndpointResponse, err error) {
 	res := CreateEndpointResponse{Interface: &EndpointInterface{}}
 	mode := opts.effectiveMode()
 
@@ -257,6 +281,12 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 	requestedV6 := explicitV6
 	if mode == ModeMacvlan && effectiveMAC == "" {
 		if tombMAC, tombIP, tombIPv6, ok := p.consumeTombstone(r.NetworkID, hostname); ok {
+			// A failed create hands it back, or the retry leases a new MAC and address (#657).
+			defer func() {
+				if err != nil {
+					p.addTombstone(r.NetworkID, hostname.name, tombMAC, tombIP, tombIPv6)
+				}
+			}()
 			// The kernel ignores a passthru child's create address, and the pin below sets the parent's (#905).
 			if !opts.macvlanPassthru() {
 				effectiveMAC = tombMAC
@@ -329,9 +359,12 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 	)
 
 	if err := func() error {
-		fresh, err := netlink.LinkByName(la.Name)
+		fresh, err := nlEndpointLinkByName(la.Name)
 		if err != nil {
 			return fmt.Errorf("failed to re-fetch %v link: %w", mode, err)
+		}
+		if err := tagEndpointLink(fresh, r.EndpointID); err != nil {
+			return fmt.Errorf("failed to tag %v link with its endpoint: %w", mode, err)
 		}
 		if err := applyEndpointMTU(opts.MTU, fresh); err != nil {
 			return err
@@ -341,7 +374,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 			return err
 		}
 
-		waited, err := linkUpAwaitingAddress(ctx, fresh, childLinkUpBudget)
+		waited, err := upChildLink(ctx, opts, fresh, childLinkUpBudget)
 		p.noteRestartLinkUpWait(r, waited, err)
 		if err != nil {
 			return fmt.Errorf("failed to set %v link up: %w", mode, err)
@@ -445,16 +478,20 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 		}
 		return nil
 	}(); err != nil {
-		// Best-effort rollback: a link LinkDel misses goes with its netns.
+		// The child is still in the host netns: the engine moves it only after CreateEndpoint returns (#657).
 		p.closeRecord(recordID)
 		p.closeRecord(recordID6)
-		_ = netlink.LinkDel(link)
+		if delErr := nlLinkDel(link); delErr != nil {
+			log.WithError(delErr).WithField("link", la.Name).Warn("Endpoint link cleanup failed; remove it with `ip link del`")
+		}
 		return res, err
 	}
 
 	var hintMAC, hintGW, hintIPv4, hintIPv6 string
+	var recordKey net.HardwareAddr
 	p.updateJoinHint(r.EndpointID, func(h *joinHint) {
 		hintMAC = h.MacAddress.String()
+		recordKey = endpointRecordKey(mode, r.EndpointID, h.MacAddress)
 		hintGW = h.Gateway
 		if h.IPv4 != nil {
 			hintIPv4 = h.IPv4.IP.String()
@@ -464,9 +501,13 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 		}
 	})
 
-	if mode == ModeMacvlan {
-		p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: hintMAC, IPv4: hintIPv4, IPv6: hintIPv6, Ifname: p.hintIfname(r.EndpointID)}, hostname)
+	// No MAC on ipvlan, whose children share the parent's, so it gets no tombstone, only the release (#1249).
+	fpMAC := hintMAC
+	if mode == ModeIPvlan {
+		fpMAC = ""
 	}
+	p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: fpMAC, IPv4: hintIPv4, IPv6: hintIPv6,
+		Ifname: p.hintIfname(r.EndpointID), RecordKey: recordKey}, hostname)
 
 	log.WithFields(log.Fields{
 		"network":  shortID(r.NetworkID),
@@ -508,17 +549,38 @@ func (p *Plugin) deleteParentAttachedEndpoint(r DeleteEndpointRequest) error {
 	return nil
 }
 
-func findLinkByMAC(handle linkLister, mac net.HardwareAddr) (netlink.Link, error) {
+// endpointAliasPrefix starts a child's endpoint alias; the bare vlanOwnerAlias marks a sub-interface.
+const endpointAliasPrefix = vlanOwnerAlias + " endpoint "
+
+// tagEndpointLink names the endpoint in the child's alias, which survives the move and rename (Linux 6.12) and which
+// libnetwork never sets, so findEndpointLink tells apart ipvlan and passthru children wearing one MAC (#1243).
+func tagEndpointLink(link netlink.Link, endpointID string) error {
+	return nlLinkSetAlias(link, endpointAliasPrefix+endpointID)
+}
+
+// findEndpointLink returns the MAC's link tagged for endpointID, else an untagged one where the MAC is the endpoint's
+// own or, on recovery only, the sole candidate, since the engine's own ipvlan may reach a Join's sandbox first (#1243).
+func findEndpointLink(handle linkLister, mac net.HardwareAddr, endpointID string, sharedMAC, recovered bool) (netlink.Link, error) {
 	links, err := util.DumpResult(handle.LinkList())
 	if err != nil {
 		return nil, fmt.Errorf("failed to list links: %w", err)
 	}
+	var untagged []netlink.Link
 	for _, l := range links {
-		if bytes.Equal(l.Attrs().HardwareAddr, mac) {
+		if !bytes.Equal(l.Attrs().HardwareAddr, mac) {
+			continue
+		}
+		if l.Attrs().Alias == endpointAliasPrefix+endpointID {
 			return l, nil
 		}
+		if !strings.HasPrefix(l.Attrs().Alias, endpointAliasPrefix) {
+			untagged = append(untagged, l)
+		}
 	}
-	return nil, fmt.Errorf("no link with MAC %v", mac)
+	if len(untagged) > 0 && (!sharedMAC || (recovered && len(untagged) == 1)) {
+		return untagged[0], nil
+	}
+	return nil, fmt.Errorf("no link with MAC %v tagged for endpoint %v (%d untagged)", mac, shortID(endpointID), len(untagged))
 }
 
 // parentAttachedOperInfo is the EndpointOperInfo answer for macvlan and ipvlan endpoints.

@@ -156,6 +156,18 @@ net_dhcp_router_advert_guard_failures_total 7077324
 # TYPE net_dhcp_ipv6_router_withdrawn_total counter
 net_dhcp_ipv6_router_withdrawn_total 3245771
 
+# HELP net_dhcp_ipv6_prefix_routes_installed_total Delegated IPv6 prefixes (ipv6_pd, RFC 8415 section 21.21 IA_PD) installed as an unreachable route in a container, one per prefix granted or changed. Router software inside the container adds the longer routes that make the prefix useful.
+# TYPE net_dhcp_ipv6_prefix_routes_installed_total counter
+net_dhcp_ipv6_prefix_routes_installed_total 4678060
+
+# HELP net_dhcp_ipv6_prefix_routes_withdrawn_total Delegated prefix routes removed from a container: the server stopped granting the prefix, the lease was lost, or the container left and the prefix was released. A rise matching ipv6_prefix_routes_installed over time is the normal life cycle.
+# TYPE net_dhcp_ipv6_prefix_routes_withdrawn_total counter
+net_dhcp_ipv6_prefix_routes_withdrawn_total 8669854
+
+# HELP net_dhcp_ipv6_prefix_overlaps_total Endpoints whose delegated prefix overlapped one another endpoint of the same network holds. Both keep the prefix; the DHCPv6 server's prefix pool is the place to look.
+# TYPE net_dhcp_ipv6_prefix_overlaps_total counter
+net_dhcp_ipv6_prefix_overlaps_total 8234684
+
 # HELP net_dhcp_router_solicits_sent_total RFC 4861 section 6.3.7 Router Solicitations sent from container links by the DHCPv6 client. READ router_adverts_seen_total AGAINST THIS ONE: a zero sighting count beside a zero solicitation count is a client that never asked, which is not the same reading as a link whose routers are silent. Only IPv6 endpoints solicit, so it cannot move on an IPv4-only host.
 # TYPE net_dhcp_router_solicits_sent_total counter
 net_dhcp_router_solicits_sent_total 2355602
@@ -275,6 +287,10 @@ net_dhcp_join_aborted_no_container_total 4265654
 # HELP net_dhcp_join_aborted_endpoint_left_total Joins abandoned because a Leave arrived while the attach was in flight. Not a fault.
 # TYPE net_dhcp_join_aborted_endpoint_left_total counter
 net_dhcp_join_aborted_endpoint_left_total 2013096
+
+# HELP net_dhcp_join_aborted_link_withdrawn_total Joins abandoned because the container's link left its sandbox after Join, as when the engine refuses the attach. Not a fault.
+# TYPE net_dhcp_join_aborted_link_withdrawn_total counter
+net_dhcp_join_aborted_link_withdrawn_total 9064536
 
 # HELP net_dhcp_join_attach_slow_total Attaches that outran their expected window and needed the daemon-busy grace.
 # TYPE net_dhcp_join_attach_slow_total counter

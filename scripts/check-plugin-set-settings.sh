@@ -5,6 +5,9 @@
 # Every `docker plugin set NAME=...` operand must be a setting some
 # manifest actually declares.
 #
+# Expires-when: never: the daemon refuses docker plugin set for a setting no
+#   manifest declares (#899); ends only if no document shows plugin set.
+#
 # WHY THIS EXISTS. The daemon refuses the call outright:
 #
 #   Error response from daemon: setting "OUTAGE_TICK" not found in the
@@ -39,6 +42,8 @@
 # widen. This gate answers "does it exist anywhere", which is exactly
 # the question the daemon's error asks.
 set -u
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 cd "$(dirname "$0")/.." || exit 2
 

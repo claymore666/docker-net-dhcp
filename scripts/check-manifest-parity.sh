@@ -11,13 +11,27 @@
 # landed in config.json only, and the release-PR coverage run failed
 # the new non-root test against the unfixed cover manifest.
 #
+# Expires-when: config-cover.json stops being a hand-kept copy: it is
+#   generated from config.json, or the cover build uses config.json,
+#   so the two cannot drift. #746 de-duplicates the workflows, not the
+#   manifests, so it does not end this (#317).
+#
 # Cover-specific additions (env like GOCOVERDIR, extra mounts) are
 # expected and NOT compared. Usage:
 #   scripts/check-manifest-parity.sh [config.json] [config-cover.json]
 set -euo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 MAIN="${1:-config.json}"
 COVER="${2:-config-cover.json}"
+
+# An unreadable or non-JSON manifest is a refusal, named, not jq's
+# exit status leaking out of `set -e` (#744).
+for f in "$MAIN" "$COVER"; do
+    [ -r "$f" ] || gate_refuse "cannot read $f"
+    jq -e 'type == "object"' "$f" >/dev/null 2>&1 || gate_refuse "$f is not a JSON object"
+done
 
 fails=0
 for field in '.linux.capabilities' '.network.type' '.pidhost' '.interface.types'; do

@@ -1,0 +1,18 @@
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+name: Tear down the plugin under test
+description: Disable and remove the plugin a lane installed; call it with if always().
+inputs:
+  ref:
+    description: The plugin reference the lane installed.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Disable and remove the plugin
+      shell: bash
+      env:
+        PLUGIN_REF: ${{ inputs.ref }}
+      run: |
+        docker plugin disable "${PLUGIN_REF}" 2>/dev/null || true
+        docker plugin rm -f "${PLUGIN_REF}" 2>/dev/null || true

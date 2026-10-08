@@ -18,9 +18,17 @@
 #     counters were discarded; renumberNetnsChild now passes it the parent's
 #     coverage dir. Value: that run's merged profile summed with this tree's
 #     unit profile. It is an estimate until a Coverage run reads it.
+#
+# #657 PR 2 adds createEndpoint 99.4 and createParentAttachedEndpoint 99.4.
+# They are UNIT-ONLY readings (go test -coverprofile ./pkg/plugin/ on the
+# PR head), a lower bound: the tests that earn them stub the kernel and
+# skip nowhere, and the merged profile unions their blocks. Last merged
+# readings before them (run 37274363352): 91.5 and 92.0.
 github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.CreateNetwork 100.0
-github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.DeleteNetwork 93.1
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.DeleteNetwork 95.4
 github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.CreateEndpoint 91.5
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.createEndpoint 99.4
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.createParentAttachedEndpoint 99.4
 github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.DeleteEndpoint 89.6
 github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.Join 83.5
 github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.Leave 96.3

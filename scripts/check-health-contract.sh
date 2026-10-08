@@ -5,6 +5,9 @@
 # The `healthy` contract must say the same thing in every place that
 # states it (#638).
 #
+# Expires-when: the reference states the healthy contract once, generated
+#   from the code, so no restatement can disagree (#638).
+#
 # WHY THIS EXISTS
 #
 # `/Plugin.Health` returns one boolean an operator is expected to alert
@@ -96,6 +99,8 @@
 #                                 [<other-pages-dir>]
 # Exit:  0 they all agree, 1 they disagree, 2 cannot check.
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 DOC="${1:-docs/reference.md}"
 SRC="${2:-pkg/plugin/endpoints.go}"

@@ -18,7 +18,7 @@ import (
 	"github.com/claymore666/dhcp-golib/lease"
 	"github.com/claymore666/dhcp-golib/proto"
 	"github.com/claymore666/dhcp-golib/wire"
-	dContainer "github.com/docker/docker/api/types/container"
+	dContainer "github.com/moby/moby/api/types/container"
 	"github.com/vishvananda/netlink"
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
@@ -758,7 +758,7 @@ func TestDeleteEndpoint_ClosesTheRecordOfALinkLocalEndpointOnly(t *testing.T) {
 			p.records = recordingPlugin(t).records
 			mac, _ := net.ParseMAC("02:42:a9:fe:3c:c7")
 			id := p.recordCreated(netID, mac, dhcp.ClientIdentity([]byte{3}))
-			p.rememberEndpoint(epID, endpointFingerprint{MAC: mac.String(), IPv4: tc.ip}, dhcpHostname{name: "ll-1"})
+			p.rememberEndpoint(epID, endpointFingerprint{MAC: mac.String(), IPv4: tc.ip, RecordKey: mac}, dhcpHostname{name: "ll-1"})
 			if err := p.DeleteEndpoint(context.Background(), DeleteEndpointRequest{NetworkID: netID, EndpointID: epID}); err != nil {
 				t.Fatalf("DeleteEndpoint: %v", err)
 			}

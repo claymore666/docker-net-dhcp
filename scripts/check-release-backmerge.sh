@@ -5,6 +5,9 @@
 # Assert every commit on `main` is reachable from `dev` (#598) — that
 # the post-release back-merge in release-runbook step 11 actually ran.
 #
+# Expires-when: the release flow no longer merges into main separately from
+#   dev, for example main is fast-forwarded from dev (#598).
+#
 # Why this is a gate and not a comment:
 #
 # The runbook records step 11 being forgotten outright once, after
@@ -73,6 +76,8 @@
 #        2 cannot see — refs missing, shallow clone, not a repo
 
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 DIR="${BACKMERGE_GIT_DIR:-$(cd "$HERE/.." && pwd)}"

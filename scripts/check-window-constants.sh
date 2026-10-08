@@ -13,6 +13,9 @@
 # test: they are sentences, and nothing in the build read them before
 # this gate.
 #
+# Expires-when: the release_lease=on_remove window is one constant, or no
+#   prose states the sum of its three parts (#984).
+#
 # THIS COMMENT STATES NO COUNT OF THEM. The gate counts them on every
 # run and prints the total. A number written here would be one more
 # sentence about this window with nothing keeping it true, which is the
@@ -120,6 +123,8 @@
 #        1 a statement disagrees
 #        2 cannot see -- refuse rather than pass
 set -uo pipefail
+# shellcheck source=scripts/gatelib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/gatelib.sh" || exit 2
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 while [ "$#" -gt 0 ]; do
