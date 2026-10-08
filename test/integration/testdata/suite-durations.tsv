@@ -606,6 +606,12 @@
 #     | sed -E 's/.*: ([A-Za-z0-9_]+) \(([0-9.]+)s\)/\1\t\2/'
 # then take the per-name median across the three, sort by name, and
 # re-derive the shard counts above from the new totals.
+#
+# The three option-gap rows (TestForceCreate_*, TestGatewayOption_*,
+# TestIgnoreConflicts_*) are INFERRED, not measured: no run has executed
+# them. Gateway is three arms of one network and one container at about
+# 12 each; IgnoreConflicts is two creates, one refused, and one leased
+# container; ForceCreate adds a veth, two creates and one container.
 TestAdvertDNS_ReachesTheResolverAndDHCPv6ComesFirst	75.00
 TestAdvertRoutes_BecomeContainerRoutesUnlessSkipRoutes	150.00
 TestAuditLog_DefaultOff	12.63
@@ -675,6 +681,8 @@ TestFailure_LeaseRefusedOnRenewal	29.64
 TestFailure_ServerLossDuringRenewal	33.34
 TestFailure_ServerReturnsBeforeExpiry	54.72
 TestFailure_UnansweredRenewalsCounted	84.19
+TestForceCreate_BridgeFromParentUnderDroppingFirewall	30.00
+TestGatewayOption_OverridesTheOfferedRouter	36.00
 TestHealthCounters_ObtainedAndReleased	12.13
 TestHealthDocument_BuildInfoIsWhatTheLaneBuilt	0.01
 TestHealthDocument_EndpointEntryMatchesTheContainer	12.05
@@ -719,6 +727,7 @@ TestIPv6_AcceptedAtCreate	0.02
 TestIPv6_DNS6Propagation	34.17
 TestIPv6_TheV4OnlyPathIsUnchanged	11.57
 TestIPvlan_DHCPv6IdentityIsPerEndpointAndSurvivesARestart	30.86
+TestIgnoreConflicts_SecondNetworkOnOneBridge	24.00
 TestInterfaceName_InvalidRejected	0.44
 TestInterfaceName_MultiNetworkDeterministic	12.08
 TestInterfaceName_PluginHonorsOption	12.50

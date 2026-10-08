@@ -405,6 +405,12 @@ they prove:
   validation (modes, options, IPAM) and netlink-state rejections.
 - `static_routes_bridge_test.go`, `static_routes_macvlan_test.go` —
   route copying + `skip_routes` opt-out.
+- `gateway_option_test.go`, `ignore_conflicts_option_test.go`,
+  `force_create_test.go`: one test per option that had none. `gateway`
+  replaces the offered router on macvlan, bridge and IPAM paths;
+  `ignore_conflicts` lets a second network take a bridge another names
+  (refused without it); `force_create` lets a bridge made from `parent`
+  be created under a dropping firewall (refused without it, #903).
 
 **Observability**
 - `health_counters_test.go` — /Plugin.Health counter movement.

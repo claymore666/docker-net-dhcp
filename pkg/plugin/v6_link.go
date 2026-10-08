@@ -4,15 +4,18 @@
 package plugin
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 
+	"github.com/claymore666/dhcp-golib/proto"
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
@@ -187,6 +190,9 @@ func (m *dhcpManager) prepareIPv6Link() (bool, dhcp.RouterAdvertGuardResult, err
 		return false, noGuard, fmt.Errorf("sandbox network namespace handle is closed")
 	}
 	located, index := m.ctrLink.Attrs().Name, m.ctrLink.Attrs().Index
+	hw := m.ctrLink.Attrs().HardwareAddr
+	iid, iidErr := m.opts.ipv6IID()
+	purgeEUI64 := iidErr == nil && iid == proto.IIDModeStablePrivacy
 
 	var (
 		changed bool
@@ -195,6 +201,15 @@ func (m *dhcpManager) prepareIPv6Link() (bool, dhcp.RouterAdvertGuardResult, err
 	)
 	if eerr := v6EnterSandbox(m, func(dir string) {
 		changed, guard, err = prepareV6LinkOnLink(dir, located, index)
+		if err != nil || index <= 0 || !purgeEUI64 {
+			return
+		}
+		// After the guard, as the route purge: autoconf=0 keeps an address the kernel already formed (#1268).
+		failed, perr := purgeKernelEUI64Addrs(index, hw)
+		guard.Failures += failed
+		if perr != nil {
+			guard.Err = joinGuardErrors(guard.Err, perr)
+		}
 	}); eerr != nil {
 		return false, noGuard, eerr
 	}
@@ -411,6 +426,57 @@ func purgeRouterAdvertRoutes(linkIndex int) (int, error) {
 	return failed, firstErr
 }
 
+// An advertisement between the engine's link-up and the guard lets the kernel form the modified EUI-64 address, the one
+// ipv6_iid=stable-privacy exists to avoid; the sandbox defaults cannot cover engines 24 to 27 (#1145). Measured on kernel
+// 6.12.111: autoconf=0 and accept_ra=0 keep that address for its valid lifetime, a delete removes it for good, and a
+// per-link autoconf=0 written before the netns move reads 1 after it (#1268).
+
+// purgeKernelEUI64Addrs deletes the link's non-link-local addresses whose identifier the kernel formed from hw.
+func purgeKernelEUI64Addrs(linkIndex int, hw net.HardwareAddr) (int, error) {
+	iid, err := proto.ModifiedEUI64(hw)
+	if err != nil {
+		// A link address that is no EUI-48 or EUI-64 gives the kernel no MAC to form an identifier from.
+		return 0, nil
+	}
+	link := &netlink.Device{LinkAttrs: netlink.LinkAttrs{Index: linkIndex}}
+	addrs, err := util.DumpResult(nlAddrList(link, unix.AF_INET6))
+	if err != nil {
+		return 1, fmt.Errorf("list the link's IPv6 addresses: %w", err)
+	}
+
+	failed := 0
+	var firstErr error
+	for i := range addrs {
+		ip := addrs[i].IP.To16()
+		if ip == nil || ip.IsLinkLocalUnicast() || !kernelMACIID(ip[8:], hw, iid) {
+			continue
+		}
+		// EADDRNOTAVAIL: the kernel expired it between the list and the delete.
+		if err := nlAddrDelCurNS(link, &addrs[i]); err != nil && !errors.Is(err, unix.EADDRNOTAVAIL) {
+			failed++
+			if firstErr == nil {
+				firstErr = fmt.Errorf("delete the kernel-formed EUI-64 address %v: %w", addrs[i].IPNet, err)
+			}
+			continue
+		}
+		log.WithField("address", addrs[i].IPNet.String()).
+			Info("Removed the MAC-derived IPv6 address the kernel formed from a Router Advertisement before the guard took, " +
+				"since this network sets ipv6_iid=stable-privacy")
+	}
+	return failed, firstErr
+}
+
+// An ipvlan child carries a dev_id, and the kernel then puts it in place of ff:fe without the U/L flip: measured on
+// kernel 6.12.111, MAC 02:42:c0:a8:63:11 gave ::242:c000:1a8:6311 and ::242:c000:2a8:6311 on two children (#1268).
+
+// kernelMACIID reports whether id is an identifier the kernel forms from hw: eui, or the dev_id form of a 6-byte MAC.
+func kernelMACIID(id []byte, hw net.HardwareAddr, eui [8]byte) bool {
+	if bytes.Equal(id, eui[:]) {
+		return true
+	}
+	return len(hw) == 6 && bytes.Equal(id[:3], hw[:3]) && bytes.Equal(id[5:], hw[3:]) && (id[3] != 0 || id[4] != 0)
+}
+
 // describeRoute renders one route as "dest via gw" for a log field.
 func describeRoute(r netlink.Route) string {
 	dst := "default"
@@ -447,6 +513,6 @@ func (m *dhcpManager) ensureIPv6Enabled() {
 		log.WithError(guard.Err).WithFields(m.logFields(true)).
 			WithField("failed_steps", guard.Failures).
 			Warn("The Router Advertisement guard did not take on the container link; " +
-				"the container may carry a second IPv6 default route the kernel installed")
+				"the container may carry a second IPv6 default route or an address the kernel formed")
 	}
 }
