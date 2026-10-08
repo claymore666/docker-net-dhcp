@@ -66,7 +66,7 @@
   "updateable_reused_components_status": "Met",
   "updateable_reused_components_justification": "All reused components are standard Go modules resolved through go.mod, so updating one is a `go get` plus a lockfile change; Dependabot automates exactly that. No vendored or convenience copies of third-party source are carried in the repository.",
   "interfaces_current_status": "Met",
-  "interfaces_current_justification": "staticcheck runs as a blocking CI check and its SA1019 rule fails the build on use of deprecated functions and APIs, so deprecated interfaces cannot silently accumulate. The stack is kept current deliberately — this project exists partly because its predecessor stopped building against modern Docker; it tracks a current Go toolchain and Docker SDK.",
+  "interfaces_current_justification": "staticcheck runs as a blocking CI check and its SA1019 rule fails the build on use of deprecated functions and APIs, so deprecated interfaces cannot silently accumulate. The stack is kept current deliberately: this project exists partly because its predecessor stopped building against modern Docker; it tracks a current Go toolchain and Docker SDK.",
   "automated_integration_testing_status": "Met",
   "automated_integration_testing_justification": "A live integration suite runs on every pull request as a required status check, exercising all three attachment modes plus DHCPv6, restart recovery, and failure injection against a real kernel, a real Docker daemon, and real dnsmasq DHCP servers. It reports pass/fail per scenario in the workflow run.",
   "regression_tests_added50_status": "Met",
