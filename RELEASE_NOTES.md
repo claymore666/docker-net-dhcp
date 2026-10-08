@@ -8,7 +8,7 @@ The notes below go back to the first release of this project.
 
 [predecessor]: https://github.com/devplayer0/docker-net-dhcp
 
-## v2.5.0 (unreleased)
+## v2.5.0
 
 A network can ask the DHCPv6 server for a delegated prefix (`ipv6_pd`),
 the client logs DHCPv6 vendor option 17, and the plugin talks to the
