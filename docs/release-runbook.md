@@ -568,7 +568,7 @@ be true.
      operators through the plugin rootfs. A feature PR updates the
      section it is about; it rarely finds the other page that quietly
      depended on the old behaviour.
-   - **Syntax deprecated upstream.** Compose, Docker CLI and dhcpcd move
+   - **Syntax deprecated upstream.** Compose and the Docker CLI move
      on their own schedule. `docker compose -f <snippet> config` prints
      the deprecation warnings for anything in a Compose example.
    - **Restated lists that live somewhere else.** Required CI checks,
