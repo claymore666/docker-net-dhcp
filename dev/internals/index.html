@@ -2225,6 +2225,10 @@ lifecycle (v2.4.0, #1182), and a live record stops growing per renewal
 network file whose network Docker answers is gone is removed together with
 its pool binding and held records, and <code>stale_networks_dropped</code> counts it
 (v2.4.0, #1174); a slow or unreachable daemon leaves everything as it is.
+The drop runs the host side of <code>DeleteNetwork</code> as well: held
+<code>release_lease=on_remove</code> leases are released, and the VLAN sub-interface
+or the plugin-made bridge is removed unless another network uses it
+(v2.5.0, #1251).
 <code>ipv6-iid-secret</code> holds the 32-byte secret behind <code>ipv6_iid=stable-privacy</code>
 (v2.4.0, #1032), mode 0600, created on first use.</p>
 <p>The plugin's identity is a MAC. Both stability mechanisms exist because

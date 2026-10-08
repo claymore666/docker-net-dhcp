@@ -4496,7 +4496,7 @@ already parse it were not told to expect a new type.</p>
 <td><code>stale_networks_dropped</code></td>
 <td>no</td>
 <td>n/a</td>
-<td><em>(v2.4.0+)</em> Networks the plugin had saved state for at start that Docker no longer had, so their saved file and address-pool binding were removed (#1174). Such a network was removed while the plugin was not running (<code>docker plugin rm</code> or a stopped plugin, then <code>docker network rm</code>); its leftover bound the subnet, and every later <code>docker network create</code> for it was refused with <code>network &lt;id&gt; already holds pool &lt;subnet&gt;</code>. Only Docker's not-found answer counts, so a daemon that is slow or unreachable at start leaves the state alone. Not a fault, so it never flips <code>healthy</code>.</td>
+<td><em>(v2.4.0+)</em> Networks the plugin had saved state for at start that Docker no longer had, so their saved file and address-pool binding were removed (#1174). From v2.5.0 the drop also sends the DHCP release for the network's held <code>release_lease=on_remove</code> leases and removes the VLAN sub-interface or the bridge the plugin made for it, unless another network still uses it (#1251). Such a network was removed while the plugin was not running (<code>docker plugin rm</code> or a stopped plugin, then <code>docker network rm</code>); its leftover bound the subnet, and every later <code>docker network create</code> for it was refused with <code>network &lt;id&gt; already holds pool &lt;subnet&gt;</code>. Only Docker's not-found answer counts, so a daemon that is slow or unreachable at start leaves the state alone. Not a fault, so it never flips <code>healthy</code>.</td>
 </tr>
 <tr>
 <td><code>recovery_fingerprints_skipped</code></td>
