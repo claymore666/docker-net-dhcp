@@ -24,6 +24,12 @@ const (
 	eui64TestLinkLocal  = "fe80::42:c0ff:fea8:6311/64"
 	eui64TestStableAddr = "fd00:98::9c3e:51d0:7a2b:e4f1/64"
 	eui64TestOtherHost  = "fd00:98::42:c0ff:fea8:6312/64"
+
+	ipvlanTestKernelAddr = "fd00:98::242:c000:1a8:6311/64"
+	ipvlanTestLinkLocal  = "fe80::242:c000:1a8:6311/64"
+	ipvlanTestNoDevID    = "fd00:98::242:c000:a8:6311/64"
+	ipvlanTestOtherTail  = "fd00:98::242:c000:1a8:6312/64"
+	ipvlanTestOtherHead  = "fd00:98::42:c000:1a8:6311/64"
 )
 
 type eui64AddrTable struct {
@@ -102,6 +108,11 @@ func (tb *eui64AddrTable) held() []string {
 
 func eui64TestManager(t *testing.T, p *Plugin, iid, mac string) *dhcpManager {
 	t.Helper()
+	return eui64TestManagerIn(t, p, ModeBridge, iid, mac)
+}
+
+func eui64TestManagerIn(t *testing.T, p *Plugin, mode, iid, mac string) *dhcpManager {
+	t.Helper()
 	var hw net.HardwareAddr
 	if mac != "" {
 		var err error
@@ -110,7 +121,7 @@ func eui64TestManager(t *testing.T, p *Plugin, iid, mac string) *dhcpManager {
 		}
 	}
 	m := &dhcpManager{
-		opts: DHCPNetworkOptions{IPv6Mode: "slaac", IPv6IID: iid},
+		opts: DHCPNetworkOptions{Mode: mode, IPv6Mode: "slaac", IPv6IID: iid},
 		ctrLink: &netlink.Device{LinkAttrs: netlink.LinkAttrs{
 			Name: renameTestLocated, Index: renameTestIndex, HardwareAddr: hw,
 		}},
@@ -266,4 +277,17 @@ func TestIPv6IID_UnlocatedLinkIndexRemovesNothing(t *testing.T) {
 	if tb.lists != 0 || tb.deletes != 0 {
 		t.Errorf("%d list(s) and %d delete(s) with no link index: a zero index filters nothing", tb.lists, tb.deletes)
 	}
+}
+
+func TestIPv6IID_StablePrivacyIPvlanRemovesTheDevIDFormedAddress(t *testing.T) {
+	k := newV6RenameKernel(t, map[string]int{renameTestLocated: renameTestIndex})
+	tb := newEUI64AddrTable(t, k, renameTestLocated,
+		ipvlanTestKernelAddr, ipvlanTestLinkLocal, ipvlanTestNoDevID, ipvlanTestOtherTail, ipvlanTestOtherHead,
+		eui64TestStableAddr)
+	p := &Plugin{}
+
+	eui64TestManagerIn(t, p, ModeIPvlan, "stable-privacy", eui64TestMAC).ensureIPv6Enabled()
+
+	assertHeld(t, tb, ipvlanTestLinkLocal, ipvlanTestNoDevID, ipvlanTestOtherTail, ipvlanTestOtherHead, eui64TestStableAddr)
+	assertV6Counters(t, p, 0, 0)
 }

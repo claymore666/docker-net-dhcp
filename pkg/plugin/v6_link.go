@@ -431,7 +431,7 @@ func purgeRouterAdvertRoutes(linkIndex int) (int, error) {
 // 6.12.111: autoconf=0 and accept_ra=0 keep that address for its valid lifetime, a delete removes it for good, and a
 // per-link autoconf=0 written before the netns move reads 1 after it (#1268).
 
-// purgeKernelEUI64Addrs deletes the link's non-link-local addresses whose identifier is hw's modified EUI-64.
+// purgeKernelEUI64Addrs deletes the link's non-link-local addresses whose identifier the kernel formed from hw.
 func purgeKernelEUI64Addrs(linkIndex int, hw net.HardwareAddr) (int, error) {
 	iid, err := proto.ModifiedEUI64(hw)
 	if err != nil {
@@ -448,7 +448,7 @@ func purgeKernelEUI64Addrs(linkIndex int, hw net.HardwareAddr) (int, error) {
 	var firstErr error
 	for i := range addrs {
 		ip := addrs[i].IP.To16()
-		if ip == nil || ip.IsLinkLocalUnicast() || !bytes.Equal(ip[8:], iid[:]) {
+		if ip == nil || ip.IsLinkLocalUnicast() || !kernelMACIID(ip[8:], hw, iid) {
 			continue
 		}
 		// EADDRNOTAVAIL: the kernel expired it between the list and the delete.
@@ -464,6 +464,17 @@ func purgeKernelEUI64Addrs(linkIndex int, hw net.HardwareAddr) (int, error) {
 				"since this network sets ipv6_iid=stable-privacy")
 	}
 	return failed, firstErr
+}
+
+// An ipvlan child carries a dev_id, and the kernel then puts it in place of ff:fe without the U/L flip: measured on
+// kernel 6.12.111, MAC 02:42:c0:a8:63:11 gave ::242:c000:1a8:6311 and ::242:c000:2a8:6311 on two children (#1268).
+
+// kernelMACIID reports whether id is an identifier the kernel forms from hw: eui, or the dev_id form of a 6-byte MAC.
+func kernelMACIID(id []byte, hw net.HardwareAddr, eui [8]byte) bool {
+	if bytes.Equal(id, eui[:]) {
+		return true
+	}
+	return len(hw) == 6 && bytes.Equal(id[:3], hw[:3]) && bytes.Equal(id[5:], hw[3:]) && (id[3] != 0 || id[4] != 0)
 }
 
 // describeRoute renders one route as "dest via gw" for a log field.
