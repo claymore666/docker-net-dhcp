@@ -1883,10 +1883,11 @@ What the option does, concretely:
   `register_dns` network. Turning `register_dns` on is the way to get
   the name there, and with it the AAAA record: see *Dynamic-DNS
   registration* above.
-- **Prefix delegation is not implemented.** The client asks for an IA_NA;
-  there is no IA_PD. It is open as
-  [#214](https://github.com/claymore666/docker-net-dhcp/issues/214),
-  designed first; the [roadmap](roadmap.md) says where it stands.
+- **A delegated prefix is routed, never configured** (v2.5.0, #214). With
+  `ipv6_pd` the client asks for an IA_PD beside the IA_NA, and the plugin
+  installs one `unreachable` route for each prefix it is given. It puts no
+  part of the prefix on a link and does not split it between downstream
+  interfaces; *Delegated prefixes* below says what it does do.
 
 #### The DUID differs by mode, and it matters on ipvlan
 

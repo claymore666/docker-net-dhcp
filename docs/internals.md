@@ -28,7 +28,11 @@ The parts and what passes between them are drawn in
    host end is named `dh-` plus twelve hex digits here, whatever the
    network asked for: the container's name is not known at this point,
    so a network that set `host_ifname` gets its rename at step 7, where
-   the daemon's answer already is.
+   the daemon's answer already is. On a network without IPv6 the
+   container end is brought up with `disable_ipv6=1`, so the host takes
+   no SLAAC address and no default route through a link that is about to
+   leave it; the macvlan and ipvlan children, the IPAM reservation link
+   and the `validate_dhcp` probe link are treated the same (v2.5.0, #1247).
 3. A one-shot DHCP acquisition runs on the container end (still in the
    host namespace). The plugin provides the initial IP address to Docker.
 4. Docker moves the container end of the `veth` pair into the
