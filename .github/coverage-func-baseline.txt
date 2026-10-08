@@ -25,7 +25,7 @@
 # skip nowhere, and the merged profile unions their blocks. Last merged
 # readings before them (run 37274363352): 91.5 and 92.0.
 github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.CreateNetwork 100.0
-github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.DeleteNetwork 93.1
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.DeleteNetwork 95.4
 github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.CreateEndpoint 91.5
 github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.createEndpoint 99.4
 github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.createParentAttachedEndpoint 99.4
