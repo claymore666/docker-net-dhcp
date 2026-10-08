@@ -162,35 +162,3 @@
 #     with nothing to report stays quiet, pins or no pins.
 #     The stale rule is never suspended.
 #
-.github/workflows/gate-expiry.yml
-  Reason: The Gate expiry list (#749) is new on this branch, so neither
-    its quarterly cron nor a dispatch can start it until it reaches
-    `main`. Until then the same script runs on every pull request as
-    the Gate expiry check, and `bash scripts/check-gate-expiry.sh --list`
-    prints the list locally.
-  Clears: The v2.5.0 release merges `dev` into `main`. Remove this entry
-    in that release PR; this gate fails on it once the workflow is on the
-    default branch.
-  Triggers: schedule workflow_dispatch
-
-.github/workflows/pool-live-count.yml
-  Reason: The pool live count (#886) is new on this branch, so neither
-    its daily cron nor a dispatch can start it until it reaches `main`.
-    Until then `bash scripts/check-pool-facts.sh --live`, run by hand
-    with an admin token, is the only comparison of the pool file with
-    the registered runners.
-  Clears: The v2.5.0 release merges `dev` into `main`. Remove this entry
-    in that release PR; this gate fails on it once the workflow is on the
-    default branch.
-  Triggers: schedule workflow_dispatch
-
-.github/workflows/capability-matrix.yml
-  Reason: The capability matrix (#690) is new on this branch, so a
-    dispatch cannot start it until it reaches `main`. Until then its
-    `pull_request` and `push` triggers run it on every pull request into
-    `dev` or `main`, and every push to them, that touches `config.json`,
-    the Go source, `docs/reference.md` or the matrix's own files.
-  Clears: The v2.5.0 release merges `dev` into `main`. Remove this entry
-    in that release PR; this gate fails on it once the workflow is on the
-    default branch.
-  Triggers: workflow_dispatch

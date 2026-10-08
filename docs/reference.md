@@ -16,7 +16,7 @@ The claims made *about* those counters, which five flip `healthy`, are
 enforced separately, wherever this page states them
 ([`scripts/check-health-contract.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/check-health-contract.sh)).
 
-**What that enforcement is, and where it stops.** All three gates run in
+**What that enforcement is, and where it stops.** Both gates run in
 one direction, code to document: no option, counter or setting can exist
 in the plugin without being named here, and none may be documented
 twice. Nothing runs the other direction, and nothing reads a sentence
@@ -170,10 +170,10 @@ for unattended):
 sudo mkdir -p /var/lib/net-dhcp
 
 # amd64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.4.0
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.5.0
 
 # arm64 (v1.7.0 onward). The architecture is in the tag, see below
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.4.0-arm64
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.5.0-arm64
 ```
 
 **If the directory is missing**, the install pulls the plugin, then
@@ -187,7 +187,7 @@ plugin that is already there:
 
 ```bash
 sudo mkdir -p /var/lib/net-dhcp
-docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v2.4.0
+docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v2.5.0
 ```
 
 On arm64 that second line takes the `-arm64` tag, like every other
@@ -527,7 +527,7 @@ You bring an existing Linux bridge that is L2-connected to the LAN
 (see [`bridge-mode.md`](bridge-mode.md) for the bridge setup itself):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.4.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.5.0 \
     --ipam-driver null \
     -o bridge=my-bridge \
     my-dhcp-net
@@ -547,7 +547,7 @@ NIC as it was: no master, promiscuity 0, still up.
 
 ```bash
 sudo iptables -I DOCKER-USER -i lan0 -o lan0 -j ACCEPT
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.4.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.5.0 \
     --ipam-driver null \
     -o bridge=lan0 -o parent=eth1 -o force_create=true \
     lan-dhcp
@@ -616,7 +616,7 @@ kernel-generated MACs as macvlan children of a host NIC
 [sub-modes](#macvlan-and-ipvlan-sub-modes)):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.4.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.5.0 \
     --ipam-driver null \
     -o mode=macvlan -o parent=eth0 \
     lan-dhcp
@@ -638,7 +638,7 @@ reservations on the server, use macvlan. See
 [DHCP identity](#dhcp-identity).
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.4.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.5.0 \
     --ipam-driver null \
     -o mode=ipvlan -o parent=eth0 \
     lan-dhcp
@@ -734,7 +734,7 @@ Docker's own `macvlan` driver uses, so their DHCP traffic and everything
 after it leaves the parent tagged:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.4.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.5.0 \
     --ipam-driver null \
     -o mode=macvlan -o parent=eth0 -o vlan=100 \
     lan-vlan100
@@ -813,8 +813,8 @@ also serves an IPAM driver of its own (#110), and the line names the
 plugin twice:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.4.0 \
-    --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.4.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.5.0 \
+    --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.5.0 \
     -o mode=macvlan -o parent=eth0 \
     lan-dhcp
 ```
@@ -1883,10 +1883,11 @@ What the option does, concretely:
   `register_dns` network. Turning `register_dns` on is the way to get
   the name there, and with it the AAAA record: see *Dynamic-DNS
   registration* above.
-- **Prefix delegation is not implemented.** The client asks for an IA_NA;
-  there is no IA_PD. It is open as
-  [#214](https://github.com/claymore666/docker-net-dhcp/issues/214),
-  designed first; the [roadmap](roadmap.md) says where it stands.
+- **A delegated prefix is routed, never configured** (v2.5.0, #214). With
+  `ipv6_pd` the client asks for an IA_PD beside the IA_NA, and the plugin
+  installs one `unreachable` route for each prefix it is given. It puts no
+  part of the prefix on a link and does not split it between downstream
+  interfaces; *Delegated prefixes* below says what it does do.
 
 #### The DUID differs by mode, and it matters on ipvlan
 
@@ -2320,7 +2321,7 @@ socket also gives, so a permission problem looks exactly like a dead
 endpoint:
 
 ```bash
-PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v2.4.0)
+PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v2.5.0)
 sudo curl -s --unix-socket /run/docker/plugins/$PLUGIN_ID/net-dhcp.sock \
     http://localhost/Plugin.Health | jq .
 ```
@@ -2538,7 +2539,7 @@ quietly go missing from your dashboards.
 On the plugin socket, always:
 
 ```bash
-PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v2.4.0)
+PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v2.5.0)
 sudo curl -s --unix-socket /run/docker/plugins/$PLUGIN_ID/net-dhcp.sock \
     http://localhost/metrics
 ```
@@ -2547,7 +2548,7 @@ Prometheus cannot scrape a UNIX socket, so for an actual scrape target
 set `METRICS_ADDR`:
 
 ```bash
-PLUGIN=ghcr.io/claymore666/docker-net-dhcp:v2.4.0
+PLUGIN=ghcr.io/claymore666/docker-net-dhcp:v2.5.0
 docker plugin disable "$PLUGIN"
 docker plugin set "$PLUGIN" METRICS_ADDR=127.0.0.1:9099
 docker plugin enable "$PLUGIN"
@@ -2707,7 +2708,7 @@ Raise verbosity with a disable, a set, and an enable, in that order,
 because `docker plugin set` is refused while the plugin is running:
 
 ```bash
-PLUGIN=ghcr.io/claymore666/docker-net-dhcp:v2.4.0
+PLUGIN=ghcr.io/claymore666/docker-net-dhcp:v2.5.0
 docker plugin disable "$PLUGIN"
 docker plugin set "$PLUGIN" LOG_LEVEL=trace
 docker plugin enable "$PLUGIN"
@@ -2790,7 +2791,7 @@ Compose-managed alternative (network lifecycle tied to the project):
 ```yaml
 networks:
   lan:
-    driver: ghcr.io/claymore666/docker-net-dhcp:v2.4.0
+    driver: ghcr.io/claymore666/docker-net-dhcp:v2.5.0
     driver_opts:
       mode: macvlan
       parent: eth0
