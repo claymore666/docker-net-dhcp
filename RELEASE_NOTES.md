@@ -199,6 +199,30 @@ so `docker plugin upgrade` from v2.4.0 asks for nothing new.
   running client's lost lease only; `client_stop_failures` no longer
   says that nothing sends a DHCPRELEASE (`release_lease` does); and `tombstone_write_failures` counts write failures,
   not read failures (#1252).
+- The plugin pins dhcp-golib v1.4.4, which carries three fixes. A DHCPv4
+  client that the server keeps refusing (a DHCPNAK, a lease of zero
+  seconds, a renewal that runs out) no longer sends a new DHCPDISCOVER at
+  the server's reply rate: from the second restart in a row it waits 4 s,
+  8 s, up to 64 s. A DHCPv6 lease whose T1 and T2 are infinite arms no
+  renewal, and one whose T1 and T2 are zero is timed from the addresses
+  still preferred, so a deprecated address beside a live one no longer
+  leaves the lease with no timer and loses the address at the valid
+  lifetime. A DHCPv6 Release now reaches the server after the link was
+  deleted and recreated under the same name, where it failed with
+  `bind: no such device`
+  ([dhcp-golib#77](https://github.com/claymore666/dhcp-golib/issues/77),
+  [dhcp-golib#78](https://github.com/claymore666/dhcp-golib/issues/78),
+  [dhcp-golib#74](https://github.com/claymore666/dhcp-golib/issues/74)).
+- With `ipv6_iid=stable-privacy`, a container no longer keeps the IPv6
+  address the kernel derives from its MAC. A router advertisement that
+  reached the container link before the plugin turned off address
+  autoconfiguration on it let the kernel form that address, and turning
+  autoconfiguration off afterwards does not remove it, so the container
+  carried it for its full valid lifetime beside the stable one. The plugin
+  now removes it right after that write, in either form the kernel uses
+  (on ipvlan the identifier carries the link's device id instead of
+  `ff:fe`); a removal that fails counts in
+  `router_advert_guard_failures` (#1268).
 
 ### CI
 
@@ -238,6 +262,11 @@ so `docker plugin upgrade` from v2.4.0 asks for nothing new.
 - A rerun after a cancelled matrix cell replaces the earlier attempt's
   artifact, and the capability cell's package install times out after six
   minutes (#1266).
+- Integration tests drive the `gateway`, `force_create` and
+  `ignore_conflicts` options, none of which had one (#1255).
+- Unit tests drive the IPv4 and IPv6 clients of one endpoint manager
+  through set-up, events, the shared `resolv.conf` merge and teardown, and
+  a v6 set-up that fails after the v4 client ran (#1279).
 
 ## v2.4.0
 
