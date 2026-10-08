@@ -10,6 +10,79 @@ The notes below go back to the first release of this project.
 
 ## v2.5.0 (unreleased)
 
+A network can ask the DHCPv6 server for a delegated prefix (`ipv6_pd`),
+the client logs DHCPv6 vendor option 17, and the plugin talks to the
+engine through the moby client in place of the frozen `docker/docker`
+module. The rest is fixes to lease release, the child link before it
+moves into the container, dual-stack DNS, and the option values
+`docker network create` accepts.
+
+### Upgrade notes
+
+**The privilege prompt does not change.** No field `docker plugin upgrade`
+prompts on has moved since v2.0.0. The manifest is the same as v2.4.0's,
+so `docker plugin upgrade` from v2.4.0 asks for nothing new.
+
+<!-- manifest-delta: begin baseline=v2.4.0 -->
+
+| field | v2.4.0 | v2.5.0 | prompted |
+| --- | --- | --- | --- |
+| `linux.capabilities` | `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | no change |
+| `network.type` | `host` | `host` | no change |
+| `ipchost` | `false` | `false` | no change |
+| `pidhost` | `true` | `true` | no change |
+| `mounts` | `/var/run/docker.sock:bind`, `/var/lib/net-dhcp:rbind,rw`, `/var/run/docker:rbind,ro` | `/var/run/docker.sock:bind`, `/var/lib/net-dhcp:rbind,rw`, `/var/run/docker:rbind,ro` | no change |
+| `propagatedmount` | `(absent)` | `(absent)` | no change |
+| `linux.devices` | `(absent)` | `(absent)` | no change |
+| `linux.allowalldevices` | `false` | `false` | no change |
+| `env` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `DHCPV6_ABSENCE_MEMORY`, `STATE_DIR`, `METRICS_ADDR`, `DOCKER_HOST` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `DHCPV6_ABSENCE_MEMORY`, `STATE_DIR`, `METRICS_ADDR`, `DOCKER_HOST` | no change |
+
+<!-- manifest-delta: end -->
+
+| What changed | What it does to you |
+| --- | --- |
+| `api_version` on `/Plugin.Health` reports the API version the plugin negotiated with the engine, up to 1.56 on Docker 29.x where it read 1.51 (#178) | A dashboard or alert that compares it with `1.51` needs updating |
+| The plugin's User-Agent toward the engine is `moby-client/<version> <os>/<arch>` (#178) | A socket proxy that allows requests by user agent must allow it |
+| `docker network create` refuses five option values that failed every container: a `gateway` that is not a bare unicast IPv4 address (loopback and broadcast are refused too), a `vendor_class` over 255 octets, a `client_id` over 254, a negative `lease_timeout`, and an `mtu` below 1280 with IPv6 on (#1240) | A create command with one of them now fails and names the option. Networks created earlier keep loading |
+| The per-endpoint `ip` driver option matches its key in any letter case, and an empty value counts as not set (#1245) | A container connected with `--driver-opt IP=<address>` or Compose `IP:` gets that address where it got a DHCP lease before. Two spellings with different values are refused |
+| A macvlan or ipvlan child, and the container end of a bridge-mode veth, has IPv6 switched off until it moves into the container, on a network without IPv6 (#1247) | The host no longer takes a SLAAC address and a default route through a link that is about to leave it |
+| With `propagate_dns` on a dual-stack network, `/etc/resolv.conf` carries both families' resolvers and search domains, IPv4 first (#1250) | The file no longer holds only the family that wrote last |
+| `release_lease=on_remove` releases ipvlan leases and the leases of containers adopted after a plugin restart, and the start-up drop of a network removed while the plugin was down releases them too (#1249, #1251) | Leases that stayed held on the DHCP server until they expired are now handed back. The drop also removes the network's VLAN sub-interface or plugin-made bridge |
+| An attach that Docker refuses after the plugin's Join counts in the new `join_aborted_link_withdrawn` and no longer in `join_start_failures` (#1236) | `healthy` no longer turns false for it |
+
+### New
+
+- `ipv6_pd=<length>` asks the DHCPv6 server for a delegated prefix of that
+  length (IA_PD, RFC 8415) beside the address. The plugin installs one
+  `unreachable <prefix> proto dhcp` route per delegated prefix in the
+  container, so router software there can route longer prefixes out of it;
+  the prefix is never put on the link or handed to Docker. A lost or
+  refused lease and a disconnect withdraw the route; a plugin restart keeps
+  it. The option is refused at create with `ipv6_mode=off` or `slaac`, on
+  ipvlan, and outside 1 to 128. `/Plugin.Health` shows `delegated_prefixes`
+  and `prefix_overlap` per endpoint and counts `ipv6_prefix_routes_installed`,
+  `ipv6_prefix_routes_withdrawn` and `ipv6_prefix_overlaps`. A DHCPv6
+  Release built from the lease record names the delegated prefixes and the
+  `ipv6_temporary` address beside the stable one (#214).
+- The "DHCP options received" log line carries DHCPv6 option 17
+  (vendor-specific information) as `vendor_17`, one `enterprise:hex` entry
+  per instance, as `vendor_43` and `vendor_125` do for DHCPv4. A value of
+  these three over 256 bytes is logged as its first 256 bytes and its
+  length (#1203).
+- Compaction of the lease record file `lease-records.jsonl` also drops a
+  live record's superseded renewal lines, so a container that renews for
+  weeks no longer grows the file by one line per renewal (#1192).
+- The plugin and its test suite talk to the engine through
+  `moby/moby/client` and `moby/moby/api`, and `docker/docker` is no longer
+  a dependency, so the advisories accepted for it are gone. Supported
+  engines are unchanged, Docker Engine 20.10 and later; `api_version` and
+  the User-Agent change as in the table above (#178).
+- The driver reference has a Versioning section that says what the
+  release number covers (driver options, per-mode behaviour, plugin
+  settings, `STATE_DIR` files, `/Plugin.Health` fields, image tags, the
+  minimum engine) and which change moves which part of it, binding from
+  v2.5.0 (#674).
+
 ### Fixed
 
 - With `propagate_mtu=true`, a container link whose MTU a DHCP server or
@@ -39,6 +112,132 @@ The notes below go back to the first release of this project.
   `lease_timeout`, and an `mtu` below 1280 with IPv6 on (`ipv6_mode=dhcp`,
   `slaac`, `auto` or `ipv6=true`). Networks created earlier keep loading
   as before (#1240).
+- `release_lease=on_remove` now hands the lease back when an ipvlan
+  container is removed, and when a container the plugin adopted after a
+  restart is removed, a macvlan `passthru` one or one whose inspect failed
+  among them. Before, these leases stayed held on the DHCP server until
+  they expired, and every ipvlan container recreate took a new one (#1249).
+- A network removed while the plugin was down no longer leaves its VLAN
+  sub-interface, its plugin-made bridge or its `release_lease=on_remove`
+  leases behind; the plugin cleans them up when it next starts, and keeps
+  a link another network still uses (#1251).
+- `docker run --ip <address>` no longer stays refused with "held by another
+  endpoint" after a container on an IPAM network was removed while the
+  plugin was disabled or down. At start-up the plugin gives such a record
+  up once Docker runs no container with its MAC, and the `--ip` request
+  reaches the DHCP server at once. The server may still refuse the address
+  while the old lease is live there: with `release_lease=on_remove` the
+  plugin hands that lease back about a minute after start-up, under the
+  default the server keeps it until it expires. A reservation whose lease
+  record cannot be written now fails before any address is requested, so
+  no lease is left without a record (#1246).
+- With `propagate_dns` on a dual-stack network, the container's
+  `/etc/resolv.conf` now keeps both the IPv4 and the IPv6 resolvers and
+  search domains. Before, each DHCPv4 or IPv6 update overwrote the file
+  with its own family only, which on musl images could leave the container
+  with no working resolver until the next DHCPv4 renewal (#1250).
+- On a dual-stack network with a `dhcp_servers` allow-list,
+  `dhcp_server_policy_timeouts` no longer stays at zero while the IPv4
+  client times out: starting the IPv6 client cleared the IPv4 client's
+  restriction flag, so those timeouts counted in `dhcp_timeouts` only.
+  IPv6 timeouts still never count there (#1241).
+- A macvlan or ipvlan child, and the container end of a bridge-mode veth
+  pair, no longer take a router advertisement in the host namespace
+  between `CreateEndpoint` and the move into the container. With IPv6
+  forwarding off and `accept_ra=1` the host got a SLAAC address and a
+  default route through a link about to leave. The same holds for the
+  IPAM reservation link and the `validate_dhcp` probe link. IPv6 is
+  switched off on the link before it comes up; networks with IPv6 enabled
+  are unchanged, since their DHCPv6 exchange runs on that link (#1247).
+- A container on two ipvlan networks whose links share a MAC, such as two
+  networks on one parent or one on the parent and one on its `vlan=N`
+  sub-interface, now runs each network's DHCP client on that network's
+  link. Before, the second network's client could run on the first
+  network's link, so its renewals left on the wrong segment and its
+  address, routes and MTU landed on the wrong interface. The same holds
+  for a macvlan `passthru` link, which also wears its parent's MAC (#1243).
+- A per-endpoint `ip` driver option written in another letter case, such
+  as `docker network connect --driver-opt IP=<address>` or `IP:` under
+  Compose `driver_opts:`, was ignored and the container got an address
+  from DHCP with no message. The key now matches in any case, and two
+  spellings with different values are refused. An empty `ip` value, as
+  Compose sends for `ip: "${IP}"` with `IP` unset, counts as not set and
+  the container gets a DHCP lease instead of failing to start (#1245).
+- A container whose attach Docker refuses after the plugin's `Join`, such
+  as a second network in a subnet the container already routes, no longer
+  counts as `join_start_failures` and no longer turns `healthy` false.
+  Docker moves the container's link back out of the sandbox, and the
+  plugin counts that attach in the new `join_aborted_link_withdrawn`,
+  which does not affect `healthy` (#1236).
+- A restarting container whose endpoint creation fails once, for example
+  on a DHCP timeout, keeps its MAC address and IP address on the retry.
+  Before, the failed attempt used up the record of the old ones, so the
+  retry got new ones (#657).
+- When an endpoint creation fails and removing the link it made also
+  fails, the plugin logs a warning naming the link and `ip link del`:
+  the bridge-mode veth, the macvlan or ipvlan child, and the macvlan link
+  of a reservation. Before, the link stayed on the host with no trace in
+  the log (#657).
+- A bridge-mode `docker network create` that failed after the plugin had
+  put the parent NIC back into its own bridge no longer leaves the NIC a
+  port of that bridge. The plugin releases it again, unless another call
+  has relied on the port in the meantime. A bridge whose lookup failed
+  right after the plugin added it no longer stays behind and refuses the
+  next create (#1242).
+- `host_ifname` needs Linux 6.2 or later, and now says so. On an older
+  kernel, such as Debian 12 or Unraid 6.12 (both 6.1), the kernel refuses
+  to rename the up host-side link with `EBUSY`, every link keeps its
+  generated name and `host_ifname_failures` rises; the reference names the
+  minimum and the plugin log names the reason. The `conflict_check` row no
+  longer says `validate_dhcp`'s probe address is released at once: its
+  lease is left to expire (#1248).
+- The reference matches the code on six points: on ipvlan no
+  per-container reservation survives a restart without `client_id`
+  (use `--ip` or macvlan); DHCPv6 Reconfigure is counted in
+  `reconfigures_accepted` and `reconfigures_refused`; `ipv6_pd` sends no
+  IA_PD on the `ipv6_mode=auto` SLAAC fallback; `dhcp_timeouts` counts a
+  running client's lost lease only; `client_stop_failures` no longer
+  says that nothing sends a DHCPRELEASE (`release_lease` does); and `tombstone_write_failures` counts write failures,
+  not read failures (#1252).
+
+### CI
+
+- The release workflow's production-shape gate waits up to 3900 s for the
+  tagged commit's engine-matrix run, where 1800 s timed out on the
+  v2.4.0-rc1 tag behind the same commit's `main` run (#1205).
+- The release workflow's arm64 install proofs no longer wait on the amd64
+  build, and the release runbook describes the workflow as it runs (#799).
+- The four integration lanes share one plugin install, one teardown and
+  one runner-image check (#746).
+- A push run skips its suites as a duplicate only when an earlier run of
+  the same tree ran its suites and they passed, and the run-verdict tier
+  is cut back to the coverage-run check (#747).
+- A capability-matrix workflow installs the plugin once with every
+  capability and once without each, and compares the results with the
+  table the reference now carries under the privileges section (#690).
+- A removed or renamed metric, `/Plugin.Health` key or audit-log kind
+  fails CI unless the unreleased release notes name it (#856).
+- A pseudo-version pin of `dhcp-golib` may reach `dev` only from the
+  library's `dev` or `main`, and never reaches `main` or a tag (#1228).
+- Gate scripts share one library for the files they judge, their refusal
+  and their locale (#744); four gate pairs are merged (#745); every gate
+  states when it can be removed, and a quarterly job lists them (#749);
+  the release-job independence gate counts any job that uploads image
+  bytes as a publisher (#798); a Go doc comment that opens with another
+  test's name fails the lane (#861).
+- A daily job compares the runner pool's facts file with the registered
+  runners (#886).
+- The issue labeller keeps its rule pass only, the starter-task workflow
+  is a release-runbook step now, and `GOVERNANCE.md` freezes the process
+  tier until there is a second maintainer or a first outside contributor
+  (#748).
+- The DHCPv4 Kea test fixture runs under the packaged AppArmor profile
+  and names the denial when Kea does not start (#680).
+- The `resolv.conf` tear test classifies a read cut at an older, shorter
+  length and logs any torn read it sees (#1215).
+- A rerun after a cancelled matrix cell replaces the earlier attempt's
+  artifact, and the capability cell's package install times out after six
+  minutes (#1266).
 
 ## v2.4.0
 
@@ -56,8 +255,6 @@ below 28.
 prompts on has moved since v2.0.0. This release changes the manifest's
 `env` list only, by one setting, and the daemon does not prompt on it.
 
-<!-- manifest-delta: begin baseline=v2.3.1 -->
-
 | field | v2.3.1 | v2.4.0 | prompted |
 | --- | --- | --- | --- |
 | `linux.capabilities` | `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | no change |
@@ -69,8 +266,6 @@ prompts on has moved since v2.0.0. This release changes the manifest's
 | `linux.devices` | `(absent)` | `(absent)` | no change |
 | `linux.allowalldevices` | `false` | `false` | no change |
 | `env` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `STATE_DIR`, `METRICS_ADDR`, `DOCKER_HOST` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `DHCPV6_ABSENCE_MEMORY`, `STATE_DIR`, `METRICS_ADDR`, `DOCKER_HOST` | no: a setting is not a privilege |
-
-<!-- manifest-delta: end -->
 
 | What changed | What it does to you |
 | --- | --- |
