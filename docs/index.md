@@ -100,9 +100,9 @@ The plugin refuses these with a message that names the reason.
 ## Planned
 
 v2.5.0 adds DHCPv6 prefix delegation ([#214]), fixes to lease release
-and option validation, and the CI consolidation. Nothing is planned
-beyond it yet. The full list, with what this project will not do, is on
-the [roadmap](roadmap.md).
+and option validation, and the CI consolidation. v2.6.0 is planned for
+the CI consolidation tracking issue ([#733]). The full list, with what
+this project will not do, is on the [roadmap](roadmap.md).
 
 ## How to check any of this
 
@@ -125,6 +125,7 @@ the [roadmap](roadmap.md).
 [#904]: https://github.com/claymore666/docker-net-dhcp/issues/904
 [#949]: https://github.com/claymore666/docker-net-dhcp/issues/949
 [#214]: https://github.com/claymore666/docker-net-dhcp/issues/214
+[#733]: https://github.com/claymore666/docker-net-dhcp/issues/733
 [#1027]: https://github.com/claymore666/docker-net-dhcp/issues/1027
 
 ## Requirements
