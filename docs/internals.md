@@ -336,7 +336,10 @@ window is real. `purgeRouterAdvertRoutes` closes it: after the knobs
 take, every `RTPROT_RA` route on the link is deleted. Failures there
 fold into `router_advert_guard_failures` beside the sysctl ones, because
 they are one obligation seen twice. The address the kernel may have
-formed in the same window is NOT touched; that is #818's.
+formed in the same window is the one an `eui64` network forms itself, so
+the plugin's install replaces it; on `ipv6_iid=stable-privacy` it is the
+address the option exists to avoid, and `purgeKernelEUI64Addrs` deletes
+it after the knobs take, counted the same way (#1268).
 
 It all runs in `prepareIPv6Link`, in one namespace entry. That placement
 is a deviation from where the design put it, inside the client's own

@@ -975,6 +975,12 @@ v6_in() {
         | awk -v P="$2" '$1 == "inet6" && index($2, P) == 1 { sub(/\/.*/, "", $2); print $2; exit }'
 }
 
+# v6_all_in CONTAINER PREFIX prints every address CONTAINER holds in PREFIX, one per line (#1268).
+v6_all_in() {
+    d docker exec "$1" ip -6 addr 2>/dev/null \
+        | awk -v P="$2" '$1 == "inet6" && index($2, P) == 1 { sub(/\/.*/, "", $2); print $2 }'
+}
+
 wait_v6() {
     local _
     V6=""
@@ -1211,17 +1217,30 @@ opt_ipv6_mode() {
 }
 
 # The MAC is fixed so the modified EUI-64 identifier it would form is known: 02:..:e0:11 is ::ff:fe00:e011 (#1032).
+# An advertisement before the plugin's guard lets the kernel form that address, which the plugin then removes; LEASE_TIME
+# is its valid lifetime, so an address still held after the 30 s bound was kept (#1268).
 opt_ipv6_iid() {
-    local got
+    local _ got held
     v6_server "--dhcp-range=$V6_PREFIX_A,ra-only,$LEASE_TIME --enable-ra"
     opt_net em-o-v6 -o bridge="$V6_BRIDGE" -o ipv6_mode=slaac -o ipv6_iid=stable-privacy
     opt_run em-c-v6 em-o-v6 --mac-address 02:00:00:00:e0:11
     wait_v6 em-c-v6 "$V6_PREFIX_A"
-    case "$V6" in
-        *ff:fe00:e011) fail "ipv6_iid=stable-privacy: the container holds $V6, the modified EUI-64 of its MAC" ;;
-    esac
     got="$(inspect_v6 em-c-v6 em-o-v6)"
-    [ "$got" = "$V6" ] || fail "ipv6_iid=stable-privacy: the container holds $V6 and Docker reports '$got'"
+    for _ in $(seq 1 30); do
+        held=" $(v6_all_in em-c-v6 "$V6_PREFIX_A" | tr '\n' ' ')"
+        case "$held" in
+            *ff:fe00:e011\ *) ;;
+            *" $got "*) [ -n "$got" ] && break ;;
+        esac
+        sleep 1
+    done
+    case "$held" in
+        *ff:fe00:e011\ *) fail "ipv6_iid=stable-privacy: the container holds$held in $V6_PREFIX_A, among them the modified EUI-64 of its MAC" ;;
+    esac
+    case "$held" in
+        *" $got "*) [ -n "$got" ] || fail "ipv6_iid=stable-privacy: the container holds$held and Docker reports no address" ;;
+        *) fail "ipv6_iid=stable-privacy: the container holds$held in $V6_PREFIX_A and Docker reports '$got'" ;;
+    esac
     opt_down em-o-v6 em-c-v6
     opt_net em-o-v6 -o bridge="$V6_BRIDGE" -o ipv6_mode=slaac
     opt_run em-c-v6 em-o-v6 --mac-address 02:00:00:00:e0:11

@@ -32,6 +32,8 @@ var (
 
 	// nlRouteDel acts in the caller's current namespace; purgeRouterAdvertRoutes calls it inside the sandbox on a locked thread.
 	nlRouteDel = netlink.RouteDel
+	// nlAddrDelCurNS acts in the caller's current namespace, as nlRouteDel; purgeKernelEUI64Addrs is its caller.
+	nlAddrDelCurNS = netlink.AddrDel
 
 	// nlNewHandleAt needs CAP_SYS_ADMIN even for the caller's own namespace, since it calls setns(2) (#417).
 	nlNewHandleAt = netlink.NewHandleAt
