@@ -783,10 +783,21 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#v250" class="md-nav__link">
+  <a href="#v250-released" class="md-nav__link">
     <span class="md-ellipsis">
       
-        v2.5.0
+        v2.5.0, released
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#v260-planned" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        v2.6.0, planned
       
     </span>
   </a>
@@ -1096,10 +1107,21 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#v250" class="md-nav__link">
+  <a href="#v250-released" class="md-nav__link">
     <span class="md-ellipsis">
       
-        v2.5.0
+        v2.5.0, released
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#v260-planned" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        v2.6.0, planned
       
     </span>
   </a>
@@ -1250,9 +1272,15 @@ below decide what is in a release; this page follows them.</p>
 </tr>
 <tr>
 <td>v2.5.0</td>
-<td>planned</td>
-<td>CI consolidation and code debt, and DHCPv6 prefix delegation, designed first</td>
+<td>released</td>
+<td>CI consolidation and code debt, and DHCPv6 prefix delegation</td>
 <td><a href="https://github.com/claymore666/docker-net-dhcp/milestone/35">milestone 35</a></td>
+</tr>
+<tr>
+<td>v2.6.0</td>
+<td>planned</td>
+<td>The CI consolidation tracking issue</td>
+<td><a href="https://github.com/claymore666/docker-net-dhcp/milestone/39">milestone 39</a></td>
 </tr>
 </tbody>
 </table>
@@ -1322,7 +1350,7 @@ below decide what is in a release; this page follows them.</p>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/926">#926</a>, DHCPv6 Rapid Commit, the two-message exchange</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/927">#927</a>, DHCPv6 temporary addresses (IA_TA)</li>
 </ul>
-<h3 id="v250">v2.5.0<a class="headerlink" href="#v250" title="Permanent link">&para;</a></h3>
+<h3 id="v250-released">v2.5.0, released<a class="headerlink" href="#v250-released" title="Permanent link">&para;</a></h3>
 <ul>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/214">#214</a>, DHCPv6 prefix delegation (IA_PD): <code>-o ipv6_pd=&lt;length&gt;</code> asks
   the server for a prefix beside the address and installs it in the
@@ -1330,10 +1358,10 @@ below decide what is in a release; this page follows them.</p>
   Kea DHCPv6 test fixture shipped in v2.4.0</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1203">#1203</a>, the DHCPv6 option 17 logged as <code>vendor_17</code>, the plugin half of
   <a href="https://github.com/claymore666/docker-net-dhcp/issues/1034">#1034</a></li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/733">#733</a>, the tracking issue for the CI consolidation programme</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/744">#744</a>, one subject discovery, one refusal and one collation in a
   shared shell library</li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/745">#745</a>, six gates merged, and one proved removable</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/745">#745</a>, five gates merged into the gates that read the same files, and
+  the release preflight taken out of the gate class</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/746">#746</a>, the four integration lanes reduced to one reusable workflow</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/747">#747</a>, four detectors modelling one vendor scheduler collapsed into
   one</li>
@@ -1342,13 +1370,14 @@ below decide what is in a release; this page follows them.</p>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/749">#749</a>, gate expiry, the premise rule turned on the gates themselves</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/798">#798</a>, a publisher outside the standard build-and-push shape is
   dropped from a gate's population</li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/799">#799</a>, nothing observes the release runbook against the release
-  workflow</li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/856">#856</a>, nothing checks the release notes' breaking-change table against
-  the code</li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/861">#861</a>, nothing checks that a Go comment still describes its code</li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/886">#886</a>, the canonical runner-pool facts are never compared to the live
-  runner count</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/799">#799</a>, the release runbook read against the release workflow by a
+  gate, and the arm64 install proofs no longer wait on the amd64 build</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/856">#856</a>, a gate that fails CI when a changed or removed metric, health
+  key or ledger kind is missing from the unreleased release notes</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/861">#861</a>, a gate that fails the lane when a Go doc block opens by naming
+  a different Test function</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/886">#886</a>, the runner-pool facts file compared with the registered runners
+  daily</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/680">#680</a>, a host AppArmor profile silently disables the kea fixture</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/690">#690</a>, what each capability in <code>config.json</code> buys, measured by a
   matrix job</li>
@@ -1356,7 +1385,12 @@ below decide what is in a release; this page follows them.</p>
   unit-tested</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/674">#674</a>, what a version number promises, written down</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/178">#178</a>, the frozen <code>docker/docker</code> module replaced by the ones moby
-  publishes; done, shipping in the next release</li>
+  publishes</li>
+</ul>
+<h3 id="v260-planned">v2.6.0, planned<a class="headerlink" href="#v260-planned" title="Permanent link">&para;</a></h3>
+<ul>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/733">#733</a>, the tracking issue for the CI consolidation: factor the corpus,
+  and establish that a gate can be removed</li>
 </ul>
 <h2 id="the-release-line">The release line<a class="headerlink" href="#the-release-line" title="Permanent link">&para;</a></h2>
 <pre class="mermaid"><code>flowchart LR
@@ -1366,10 +1400,11 @@ below decide what is in a release; this page follows them.</p>
     v23["v2.3&lt;br/&gt;host plumbing"]
     v24["v2.4&lt;br/&gt;the rest of IPv6"]
     v25["v2.5&lt;br/&gt;CI, code debt and&lt;br/&gt;prefix delegation"]
-    v20 --&gt; v21 --&gt; v22 --&gt; v23 --&gt; v24 --&gt; v25
+    v26["v2.6&lt;br/&gt;CI consolidation&lt;br/&gt;tracking"]
+    v20 --&gt; v21 --&gt; v22 --&gt; v23 --&gt; v24 --&gt; v25 --&gt; v26
     classDef planned stroke-dasharray: 6 4
-    class v25 planned</code></pre>
-<p>v2.0 to v2.4 are released and v2.5 is planned; the planned one is the
+    class v26 planned</code></pre>
+<p>v2.0 to v2.5 are released and v2.6 is planned; the planned one is the
 dashed node. There are no dates. Every
 release, patches included, is in
 <a href="https://github.com/claymore666/docker-net-dhcp/blob/main/RELEASE_NOTES.md">the release notes</a>.</p>
