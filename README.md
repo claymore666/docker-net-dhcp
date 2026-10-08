@@ -19,8 +19,8 @@ This is the successor of `devplayer0/docker-net-dhcp`, not a patched copy:
 
 ```bash
 sudo mkdir -p /var/lib/net-dhcp                      # once per host
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.4.0   # -arm64 on arm64
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.4.0 \
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.5.0   # -arm64 on arm64
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.5.0 \
   --ipam-driver null -o mode=macvlan -o parent=eth0 lan-dhcp
 docker run --rm -ti --network lan-dhcp alpine ip address show
 ```
@@ -202,16 +202,16 @@ this project will not do, is on the [roadmap](docs/roadmap.md).
 sudo mkdir -p /var/lib/net-dhcp
 
 # amd64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.4.0
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.5.0
 # arm64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.4.0-arm64
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.5.0-arm64
 ```
 
 One network, created once. `macvlan` needs only a host NIC; `bridge`
 wants a bridge you bring yourself ([bridge mode](docs/bridge-mode.md)):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.4.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.5.0 \
   --ipam-driver null -o mode=macvlan -o parent=eth0 lan-dhcp
 
 docker run --rm -ti --network lan-dhcp alpine ip address show
@@ -224,8 +224,8 @@ goes into Docker's own address management, which makes `--ip` and
 Compose's `ipv4_address` work.
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.4.0 \
-  --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.4.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.5.0 \
+  --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.5.0 \
   -o mode=macvlan -o parent=eth0 lan-dhcp
 ```
 
