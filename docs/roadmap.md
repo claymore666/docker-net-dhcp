@@ -93,7 +93,8 @@ below decide what is in a release; this page follows them.
 - [#733], the tracking issue for the CI consolidation programme
 - [#744], one subject discovery, one refusal and one collation in a
   shared shell library
-- [#745], six gates merged, and one proved removable
+- [#745], five gates merged into the gates that read the same files, and
+  the release preflight taken out of the gate class
 - [#746], the four integration lanes reduced to one reusable workflow
 - [#747], four detectors modelling one vendor scheduler collapsed into
   one

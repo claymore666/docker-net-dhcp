@@ -16,7 +16,7 @@ The claims made *about* those counters, which five flip `healthy`, are
 enforced separately, wherever this page states them
 ([`scripts/check-health-contract.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/check-health-contract.sh)).
 
-**What that enforcement is, and where it stops.** All three gates run in
+**What that enforcement is, and where it stops.** Both gates run in
 one direction, code to document: no option, counter or setting can exist
 in the plugin without being named here, and none may be documented
 twice. Nothing runs the other direction, and nothing reads a sentence
