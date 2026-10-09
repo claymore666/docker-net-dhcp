@@ -1276,12 +1276,18 @@ only in the workflows linked below.</p>
 controller runs every scenario on every shape, judges each one against
 the server's lease table, and everything that leaves the lab passes the
 address check first.</p>
+<p>Every plugin release gets one lab run; its results page is linked from
+the release notes and lives in the lab repository's
+<a href="https://github.com/claymore666/docker-net-dhcp-lab/tree/dev/results">results/</a>
+directory, with the evidence tarball attached to the lab release it ran on.</p>
 <ul>
-<li>Results: 504 PASS in docker-net-dhcp-lab v0.1.0, 6 N/A, 0 FAIL, over
-  3 DHCP servers (Kea, ISC dhcpd, dnsmasq), 2 Docker hosts (Debian 13,
-  Ubuntu 24.04), 5 network shapes and 17 scenarios per shape; the plugin
-  under test was docker-net-dhcp v2.3.0-rc1
-  (<a href="https://github.com/claymore666/docker-net-dhcp-lab/releases/tag/v0.1.0">release and evidence</a>).</li>
+<li>Results: 504 PASS, 6 N/A, 0 FAIL for docker-net-dhcp v2.5.0 on
+  docker-net-dhcp-lab v0.1.0, over 3 DHCP servers (Kea, ISC dhcpd,
+  dnsmasq), 2 Docker hosts (Debian 13, Ubuntu 24.04), 5 network shapes
+  and 17 scenarios per shape
+  (<a href="https://github.com/claymore666/docker-net-dhcp-lab/blob/ba9203aafbdd2691f08bc2e497ab2be48a3fff33/results/v0.1.0-plugin-v2.5.0.md">results page</a>,
+  <a href="https://github.com/claymore666/docker-net-dhcp-lab/releases/tag/v0.1.0">evidence on the lab release</a>).
+  The first run, on v2.3.0-rc1, had the same totals.</li>
 <li>Proves: the release candidate passes the everyday container journeys on
   every shape against three stock DHCP servers on two distributions, with
   the evidence attached to the release.</li>
