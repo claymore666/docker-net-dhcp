@@ -1197,7 +1197,16 @@ tc_case "a toolchain line that is not 'toolchain <version>' is refused" 2 "$TMP/
     "Unreadable toolchain line"
 
 # No `go` to ask is no verdict: exit 2, as for every unanswerable probe.
-NOGO_PATH=$(printf '%s' "$PATH" | tr ':' '\n' | while IFS= read -r d; do [ -x "$d/go" ] || printf '%s:' "$d"; done)
+# A PATH dir holding go is swapped for a copy of it without go, never dropped:
+# on CI /usr/bin can hold go beside bash and awk (#1301).
+NOGO_PATH=$(n=0; printf '%s\n' "$PATH" | tr ':' '\n' | while IFS= read -r d; do
+    if [ -x "$d/go" ]; then
+        n=$((n + 1)); mkdir -p "$TMP/nogo$n"
+        for f in "$d"/*; do [ "${f##*/}" = go ] || ln -sf "$f" "$TMP/nogo$n/"; done
+        d="$TMP/nogo$n"
+    fi
+    printf '%s:' "$d"
+done)
 NOGO_PATH=${NOGO_PATH%:}
 for how in absent failing; do
     if [ "$how" = failing ]; then
