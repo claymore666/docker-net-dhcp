@@ -42,8 +42,15 @@ TREE_BEFORE=$(git -C "$REPO_UNDER_TEST" status --porcelain 2>/dev/null)
 # nothing about.
 ratchet() { RATCHET_FUNC_PROFILE='' RATCHET_FUNC_REQUIRED='' RATCHET_HEAD_BASELINE="${2-}" bash "$RATCHET" "$@"; }
 
+# THE UNIT (#1301). Every fixture below that floors something carries
+# `toolchain go1.99.0` and every run is told it is go1.99.0, so the cases
+# written before the toolchain line compare their floors as they did. The
+# toolchain cases at the bottom set their own.
+export RATCHET_GO_VERSION=go1.99.0
+
 BASELINE="$TMP/baseline.txt"
 cat > "$BASELINE" <<'EOF'
+toolchain go1.99.0
 # comment lines and blanks are ignored
 
 example.com/mod/pkg/a 80.0
@@ -246,6 +253,7 @@ xcheck "a baseline matching its report is cross-checked" 0 "$BASELINE" "$TMP/rep
 # THE CASE THIS EXISTS FOR. The baseline lost a line; the report still
 # says two. Pre-#791 this compared one package, printed PASS, exited 0.
 cat > "$TMP/truncated.txt" <<'EOF'
+toolchain go1.99.0
 # comment lines and blanks are ignored
 
 example.com/mod/pkg/a 80.0
@@ -259,6 +267,7 @@ grep -F 'example.com/mod/pkg/b' "$TMP/out" > /dev/null \
 # of them is not the one the resolver handed over — a count-only check
 # reads that as complete, which is why the comparison is by name.
 cat > "$TMP/swapped.txt" <<'EOF'
+toolchain go1.99.0
 example.com/mod/pkg/a 80.0
 example.com/mod/pkg/z 50.0
 EOF
@@ -316,7 +325,7 @@ fi
 # pass or fail for a coverage reason.
 floorless() { # floorless <name> <baseline-body> [needle]
     local name="$1" body="$2" needle="${3:-Unreadable baseline floor}" got
-    printf '%s' "$body" > "$TMP/floorless.txt"
+    printf 'toolchain go1.99.0\n%s' "$body" > "$TMP/floorless.txt"
     RATCHET_REPORT='' ratchet "$TMP/full.txt" "$TMP/floorless.txt" > "$TMP/out" 2>&1
     got=$?
     if [ "$got" -ne 2 ]; then
@@ -370,7 +379,7 @@ example.com/mod/pkg/b n/a
 # carries no decimal point and is a perfectly good floor: it must still be
 # READ and still be ENFORCED, so this drives a regression against it and
 # demands exit 1 -- not merely "not 2", which a silent pass would satisfy.
-printf 'example.com/mod/pkg/a 80\n' > "$TMP/intfloor.txt"
+printf 'toolchain go1.99.0\nexample.com/mod/pkg/a 80\n' > "$TMP/intfloor.txt"
 percent "$TMP/under.txt" 70.0
 RATCHET_REPORT='' ratchet "$TMP/under.txt" "$TMP/intfloor.txt" > "$TMP/out" 2>&1
 if [ $? -eq 1 ] && grep -F 'is below baseline 80%' "$TMP/out" > /dev/null; then
@@ -411,7 +420,7 @@ fi
 # other than two fields, measured, so nothing in the tree depends on the
 # old behaviour. This case exists so a future reader finds the decision
 # rather than rediscovering it from a red release check.
-printf 'example.com/mod/pkg/a 80.0 junk\n' > "$TMP/trailing.txt"
+printf 'toolchain go1.99.0\nexample.com/mod/pkg/a 80.0 junk\n' > "$TMP/trailing.txt"
 percent "$TMP/under-a.txt" 70.0
 RATCHET_REPORT='' ratchet "$TMP/under-a.txt" "$TMP/trailing.txt" > "$TMP/out" 2>&1
 got=$?
@@ -432,6 +441,7 @@ fi
 # sides makes the NAME sets identical, so missing and extra are empty and
 # the count term is the only thing that can produce a refusal.
 cat > "$TMP/duplicated.txt" <<'EOF'
+toolchain go1.99.0
 example.com/mod/pkg/a 80.0
 example.com/mod/pkg/b 50.0
 example.com/mod/pkg/a 80.0
@@ -500,6 +510,7 @@ GLUED="$TMP/glued.txt"
 
 REAL_BASELINE="$TMP/baseline-2x.txt"
 cat > "$REAL_BASELINE" <<'EOF'
+toolchain go1.99.0
 github.com/claymore666/docker-net-dhcp/v2/pkg/util 95.0
 github.com/claymore666/docker-net-dhcp/v2/pkg/plugin 86.8
 github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp 89.9
@@ -523,6 +534,7 @@ fi
 # with pkg/dhcp's 90.5 and pass this baseline.
 BUILDINFO_BASELINE="$TMP/baseline-buildinfo.txt"
 cat > "$BUILDINFO_BASELINE" <<'EOF'
+toolchain go1.99.0
 github.com/claymore666/docker-net-dhcp/v2/pkg/buildinfo 90.0
 EOF
 RATCHET_REPORT='' ratchet "$GLUED" "$BUILDINFO_BASELINE" > "$TMP/out" 2>&1
@@ -562,6 +574,7 @@ fi
 # package this run measured and this baseline does not floor.
 THREE_BASELINE="$TMP/baseline-three.txt"
 cat > "$THREE_BASELINE" <<'EOF'
+toolchain go1.99.0
 github.com/claymore666/docker-net-dhcp/v2/pkg/util 95.0
 github.com/claymore666/docker-net-dhcp/v2/pkg/plugin 86.8
 github.com/claymore666/docker-net-dhcp/v2/cmd/net-dhcp 77.8
@@ -606,10 +619,10 @@ GONE_PKG=$SELF/cmd/dhcp-handler
 HERE_PKG=$SELF/pkg/buildinfo
 
 printf '\t%s/pkg/util\t\tcoverage: 97.3%% of statements\n' "$SELF" > "$TMP/drop-pct.txt"
-printf '%s/pkg/util 95.0\n%s 74.0\n' "$SELF" "$GONE_PKG" > "$TMP/drop-base.txt"
-printf '%s/pkg/util 95.0\n' "$SELF"                      > "$TMP/head-without.txt"
-printf '%s/pkg/util 95.0\n%s 74.0\n' "$SELF" "$GONE_PKG" > "$TMP/head-with.txt"
-printf '%s/pkg/util 95.0\n%s 90.0\n' "$SELF" "$HERE_PKG" > "$TMP/base-present.txt"
+printf 'toolchain go1.99.0\n%s/pkg/util 95.0\n%s 74.0\n' "$SELF" "$GONE_PKG" > "$TMP/drop-base.txt"
+printf 'toolchain go1.99.0\n%s/pkg/util 95.0\n' "$SELF"                      > "$TMP/head-without.txt"
+printf 'toolchain go1.99.0\n%s/pkg/util 95.0\n%s 74.0\n' "$SELF" "$GONE_PKG" > "$TMP/head-with.txt"
+printf 'toolchain go1.99.0\n%s/pkg/util 95.0\n%s 90.0\n' "$SELF" "$HERE_PKG" > "$TMP/base-present.txt"
 
 # THE PRE-FIX SCRIPT IS THE STRONGEST MUTANT, and it is built by putting
 # the old arm back into the REAL script rather than by keeping a copy of
@@ -757,7 +770,7 @@ fi
 # times, in a data row or a comment, so a substring lookup passes every
 # other case in this file (measured: `$1 == p` mutated to `$0 ~ p`
 # survived the whole suite before this case existed).
-printf '%s/pkg/util 95.0\n%s-v2 74.0\n' "$SELF" "$GONE_PKG" > "$TMP/head-longer.txt"
+printf 'toolchain go1.99.0\n%s/pkg/util 95.0\n%s-v2 74.0\n' "$SELF" "$GONE_PKG" > "$TMP/head-longer.txt"
 RATCHET_REPORT='' RATCHET_HEAD_BASELINE="$TMP/head-longer.txt" \
     bash "$RATCHET" "$TMP/drop-pct.txt" "$TMP/drop-base.txt" > "$TMP/out" 2>&1
 got=$?
@@ -830,10 +843,12 @@ SELF_NEW=github.com/claymore666/docker-net-dhcp/v2
 RENAME_BASE="$TMP/rename-base.txt"      # main's baseline: the OLD spelling
 RENAME_HEAD="$TMP/rename-head.txt"      # this branch's: the NEW spelling
 cat > "$RENAME_BASE" <<EOF
+toolchain go1.99.0
 $SELF_OLD/pkg/util 96.8
 $SELF_OLD/pkg/plugin 89.6
 EOF
 cat > "$RENAME_HEAD" <<EOF
+toolchain go1.99.0
 $SELF_NEW/pkg/util 96.8
 $SELF_NEW/pkg/plugin 89.6
 EOF
@@ -887,10 +902,11 @@ fi
 DROP_BASE="$TMP/rename-drop-base.txt"
 DROP_HEAD="$TMP/rename-drop-head.txt"
 cat > "$DROP_BASE" <<EOF
+toolchain go1.99.0
 $SELF_NEW/pkg/util 96.8
 $SELF_NEW/cmd/dhcp-handler 74.0
 EOF
-printf '%s/pkg/util 96.8\n' "$SELF_NEW" > "$DROP_HEAD"
+printf 'toolchain go1.99.0\n%s/pkg/util 96.8\n' "$SELF_NEW" > "$DROP_HEAD"
 RATCHET_REPORT='' RATCHET_HEAD_BASELINE="$DROP_HEAD" \
     bash "$RATCHET" "$RENAME_OK" "$DROP_BASE" > "$TMP/out" 2>&1
 got=$?
@@ -912,6 +928,7 @@ fi
 ALLGONE_BASE="$TMP/allgone-base.txt"
 ALLGONE_HEAD="$TMP/allgone-head.txt"
 cat > "$ALLGONE_BASE" <<EOF
+toolchain go1.99.0
 $SELF_NEW/cmd/dhcp-handler 74.0
 $SELF_NEW/pkg/gone-as-well 61.0
 EOF
@@ -933,10 +950,11 @@ fi
 NEARLY_BASE="$TMP/nearly-base.txt"
 NEARLY_HEAD="$TMP/nearly-head.txt"
 cat > "$NEARLY_BASE" <<EOF
+toolchain go1.99.0
 $SELF_NEW/cmd/dhcp-handler 74.0
 $SELF_NEW/pkg/util 96.8
 EOF
-printf '%s/pkg/util 96.8\n' "$SELF_NEW" > "$NEARLY_HEAD"
+printf 'toolchain go1.99.0\n%s/pkg/util 96.8\n' "$SELF_NEW" > "$NEARLY_HEAD"
 RATCHET_REPORT='' RATCHET_HEAD_BASELINE="$NEARLY_HEAD" \
     bash "$RATCHET" "$RENAME_OK" "$NEARLY_BASE" > "$TMP/out" 2>&1
 got=$?
@@ -1001,7 +1019,7 @@ cp "$ABS_RATCHET" "$STANDIN/scripts/coverage-ratchet.sh"
 # missing the package entirely passes this check, measured.
 STANDIN_RATCHET="$STANDIN/scripts/coverage-ratchet.sh"
 PRESENT_BASE="$TMP/present-base.txt"    # pkg/util is floored and unmeasured
-printf '%s/pkg/util 96.8\n%s/pkg/plugin 89.6\n' "$SELF_NEW" "$SELF_NEW" > "$PRESENT_BASE"
+printf 'toolchain go1.99.0\n%s/pkg/util 96.8\n%s/pkg/plugin 89.6\n' "$SELF_NEW" "$SELF_NEW" > "$PRESENT_BASE"
 PRESENT_PCT="$TMP/present-pct.txt"      # ...and only pkg/plugin was measured
 printf '\t%s/pkg/plugin\t\tcoverage: 90.1%% of statements\n' "$SELF_NEW" > "$PRESENT_PCT"
 
@@ -1055,7 +1073,7 @@ cp "$ABS_RATCHET" "$BETA/scripts/coverage-ratchet.sh"
 
 BETA_BASE="$TMP/beta-base.txt"          # a DIFFERENT module, sharing the stripped prefix
 BETA_HEAD="$TMP/beta-head.txt"
-printf 'example.com/mod/pkg/a 90.0\n' > "$BETA_BASE"
+printf 'toolchain go1.99.0\nexample.com/mod/pkg/a 90.0\n' > "$BETA_BASE"
 printf '# the foreign row is not floored here\n' > "$BETA_HEAD"
 BETA_PCT="$TMP/beta-pct.txt"            # measured under the v2beta module, well below
 printf '\texample.com/mod/v2beta/pkg/a\t\tcoverage: 10.0%% of statements\n' > "$BETA_PCT"
@@ -1118,6 +1136,89 @@ else
         sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
     fi
 fi
+
+# THE UNIT, COMPARED BEFORE THE NUMBERS (#1301). Go 1.27.2's cover tool
+# counts statements differently from 1.27.1's, so a floor from another
+# toolchain is not compared: the head copy is, when it matches the run,
+# and a run with neither gets a red that names the re-baseline. The v2.6.0
+# release PR takes the head path. Its merge base holds main's 1.27.1 file,
+# and only pull_request context resolves floors there, so it is proved here.
+tc_case() { # tc_case <name> <want-exit> <baseline> <head baseline> <needle> [absent]
+    local name="$1" want="$2" got
+    RATCHET_FUNC_PROFILE='' RATCHET_FUNC_REQUIRED='' RATCHET_REPORT="${TC_REPORT-}" \
+        RATCHET_HEAD_BASELINE="$4" bash "$RATCHET" "${TC_PCT:-$TMP/hold.txt}" "$3" > "$TMP/out" 2>&1
+    got=$?
+    if [ "$got" -eq "$want" ] && grep -qF -- "$5" "$TMP/out" \
+        && { [ -z "${6-}" ] || ! grep -qF -- "$6" "$TMP/out"; }; then
+        echo "PASS: $name"
+    else
+        echo "FAIL: $name (want exit $want with '$5'${6:+ and no '$6'}, got $got)"
+        sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
+    fi
+}
+tcfile() { # tcfile <path> <toolchain line or ''> <floor a> [<floor b>]
+    { [ -n "$2" ] && printf '%s\n' "$2"; printf 'example.com/mod/pkg/a %s\n' "$3"
+      [ -n "${4-}" ] && printf 'example.com/mod/pkg/b %s\n' "$4"; } > "$1"
+}
+tcfile "$TMP/tc-run.txt"   'toolchain go1.99.0' 80.0 50.0
+tcfile "$TMP/tc-old.txt"   'toolchain go1.27.1' 95.0 95.0
+tcfile "$TMP/tc-none.txt"  ''                   95.0 95.0
+tcfile "$TMP/tc-high.txt"  'toolchain go1.99.0' 85.0 50.0
+tcfile "$TMP/tc-old2.txt"  'toolchain go1.27.1' 80.0 50.0
+
+tc_case "matching floors compare as before: a hold passes" 0 "$TMP/tc-run.txt" "$TMP/tc-old.txt" \
+    "PASS  example.com/mod/pkg/a" "TOOLCHAIN"
+TC_PCT="$TMP/down.txt" tc_case "matching floors compare as before: a regression fails" 1 \
+    "$TMP/tc-run.txt" "$TMP/tc-old.txt" "FAIL  example.com/mod/pkg/a" "TOOLCHAIN"
+TC_REPORT="$TMP/report-full" tc_case "the toolchain line is not a row: the two-package report cross-checks" 0 \
+    "$TMP/tc-run.txt" "$TMP/tc-run.txt" "Cross-checked" "  toolchain"
+tc_case "floors from another toolchain fall back to the matching head copy" 0 \
+    "$TMP/tc-old.txt" "$TMP/tc-run.txt" "read from $TMP/tc-run.txt instead, measured on go1.99.0" "95.0"
+tc_case "floors with no toolchain line fall back too (every tree before #1301)" 0 \
+    "$TMP/tc-none.txt" "$TMP/tc-run.txt" "measured on an unrecorded toolchain, this run on go1.99.0"
+tc_case "the head copy is compared, not waved through" 1 \
+    "$TMP/tc-old.txt" "$TMP/tc-high.txt" "FAIL  example.com/mod/pkg/a"
+TC_REPORT="$TMP/report-full" tc_case "the fallback drops the base's resolver report and says so" 0 \
+    "$TMP/tc-old.txt" "$TMP/tc-run.txt" "NOT CROSS-CHECKED: no resolver report." "Cross-checked"
+tc_case "a head copy from another toolchain too is a re-baseline red" 1 \
+    "$TMP/tc-old.txt" "$TMP/tc-old2.txt" "FAIL  re-baseline needed: package floors measured on go1.27.1" "PASS  "
+tcfile "$TMP/tc-oldlow.txt" 'toolchain go1.27.1' 10.0 10.0
+tc_case "a re-baseline red stays red where the old floors would have held" 1 \
+    "$TMP/tc-oldlow.txt" "$TMP/tc-old2.txt" "FAIL  re-baseline needed" "PASS  "
+tc_case "a head copy with no toolchain line is a re-baseline red" 1 \
+    "$TMP/tc-old.txt" "$TMP/tc-none.txt" "measured on an unrecorded toolchain in $TMP/tc-none.txt, run on go1.99.0"
+printf '# floors live here\ntoolchain go1.27.1\n' > "$TMP/tc-only.txt"
+tc_case "a file holding only a toolchain line keeps its own refusal, not a fallback" 2 \
+    "$TMP/tc-only.txt" "$TMP/tc-run.txt" "Nothing to inspect" "TOOLCHAIN"
+printf 'toolchain go1.99.0\ntoolchain go1.99.0\nexample.com/mod/pkg/a 80.0\nexample.com/mod/pkg/b 50.0\n' > "$TMP/tc-dup.txt"
+tc_case "two toolchain lines are refused" 2 "$TMP/tc-dup.txt" "$TMP/tc-run.txt" "Unreadable toolchain line"
+printf 'toolchain go1.99.0 extra\nexample.com/mod/pkg/a 80.0\nexample.com/mod/pkg/b 50.0\n' > "$TMP/tc-bad.txt"
+tc_case "a toolchain line that is not 'toolchain <version>' is refused" 2 "$TMP/tc-run.txt" "$TMP/tc-bad.txt" \
+    "Unreadable toolchain line"
+
+# No `go` to ask is no verdict: exit 2, as for every unanswerable probe.
+NOGO_PATH=$(printf '%s' "$PATH" | tr ':' '\n' | while IFS= read -r d; do [ -x "$d/go" ] || printf '%s:' "$d"; done)
+NOGO_PATH=${NOGO_PATH%:}
+for how in absent failing; do
+    if [ "$how" = failing ]; then
+        mkdir -p "$TMP/tcgo"; printf '#!/bin/sh\nexit 1\n' > "$TMP/tcgo/go"; chmod +x "$TMP/tcgo/go"
+        p="$TMP/tcgo:$NOGO_PATH"
+    else
+        p="$NOGO_PATH"
+    fi
+    if PATH="$p" command -v go > /dev/null && [ "$how" = absent ]; then
+        echo "FAIL: could not build a PATH without go"; failures=$((failures + 1)); continue
+    fi
+    env -u RATCHET_GO_VERSION PATH="$p" RATCHET_FUNC_PROFILE='' RATCHET_FUNC_REQUIRED='' RATCHET_REPORT='' \
+        RATCHET_HEAD_BASELINE="$TMP/tc-run.txt" bash "$RATCHET" "$TMP/hold.txt" "$TMP/tc-run.txt" > "$TMP/out" 2>&1
+    got=$?
+    if [ "$got" -eq 2 ] && grep -qF "Unknown toolchain" "$TMP/out"; then
+        echo "PASS: a go that is $how is exit 2, not a verdict"
+    else
+        echo "FAIL: a go that is $how did not exit 2 (got $got)"; sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
+    fi
+done
+
 # No cleanup in the checkout to do: every file this block wrote is under
 # $TMP, which the tmpdir guard removes. That the suite touched nothing in
 # the working tree is ASSERTED, because the cost of writing there is not

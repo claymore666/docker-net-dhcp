@@ -153,6 +153,34 @@ example.com/mod/pkg/b 50.0' \
 
 The line is > Coverage-floor: #123 in the PR body." "" 1
 
+# --- 3b. the toolchain line (#1301) -----------------------------------
+# It names the unit the floors are in and is not a floor: adding, bumping or
+# dropping it is no lowering. The ratchet falls back to the head copy when
+# the merge base was measured on another toolchain, so a floor lowered there
+# must still need the trailer.
+TC_OLD='toolchain go1.27.1
+example.com/mod/pkg/a 80.0
+example.com/mod/pkg/b 50.0'
+TC_LOW='toolchain go1.27.2
+example.com/mod/pkg/a 78.0
+example.com/mod/pkg/b 50.0'
+run_case "adding a toolchain line beside the same floors passes" "$BASE_BASELINE" \
+"toolchain go1.27.2
+$BASE_BASELINE" "ci: record the toolchain" "" 0
+run_case "bumping the toolchain line alone passes" "$TC_OLD" \
+'toolchain go1.27.2
+example.com/mod/pkg/a 80.0
+example.com/mod/pkg/b 50.0' "ci: re-baseline" "" 0
+run_case "dropping the toolchain line is not a dropped package" "$TC_OLD" "$BASE_BASELINE" "ci: tidy" "" 0
+run_case "a floor lowered beside a toolchain bump still trips the gate" "$TC_OLD" "$TC_LOW" "ci: re-baseline" "" 1
+run_case "...and the commit trailer waives it" "$TC_OLD" "$TC_LOW" "ci: re-baseline
+
+Coverage-floor: #1301" "" 0
+run_case "...and so does the PR body trailer" "$TC_OLD" "$TC_LOW" "ci: re-baseline" \
+"Floors re-measured on the new toolchain.
+
+Coverage-floor: #1301" 0
+
 # --- 4. refusing a verdict rather than rendering an empty one ---------
 run_case "a base baseline with no data lines refuses a verdict" \
 '# every floor was commentary
@@ -471,6 +499,15 @@ run_func_case "the first PR that adds the file has nothing to compare against" N
     "does not exist at"
 run_func_case "deleting the function floor file trips the gate" "$FTWO" DELETE "pkg/a" "pkg/a" 1 "Coverage baseline deleted"
 run_func_case "an unknown kind refuses" "$FTWO" "$FTWO" "pkg/a" "pkg/a" 2 "COVERAGE_FLOOR_KIND" bogus
+# The toolchain line is not a function row (#1301).
+run_func_case "adding the toolchain line passes" "$FTWO" "toolchain go1.27.2
+$FTWO" "pkg/a" "pkg/a" 0
+run_func_case "dropping the toolchain line is not a removed function row" "toolchain go1.27.1
+$FTWO" "$FTWO" "pkg/a" "pkg/a" 0
+run_func_case "a function floor lowered beside a toolchain bump still trips" "toolchain go1.27.1
+$FTWO" 'toolchain go1.27.2
+example.com/mod/pkg/a.Foo 70.0
+example.com/mod/pkg/a.Bar 50.0' "pkg/a" "pkg/a" 1 "floor lowered 80.0% → 70.0%"
 
 FPREFIX_DIR=
 guarded_tmpdir FPREFIX_DIR
