@@ -154,12 +154,17 @@ func (m *dhcpManager) releaseHeldLease(v6 bool) releaseOutcome {
 	}
 
 	held, _ := m.releasedAddr(v6)
-	return releaseFromRecord(rec, m.opts, v6, held, m.logFields(v6))
+	return releaseFromRecord(rec, m.opts, v6, held, nil, m.logFields(v6))
 }
 
 // releaseFromRecord needs only the record, the options and the family, which is all the deferred release holds (#984).
-func releaseFromRecord(rec lease.Record, opts DHCPNetworkOptions, v6 bool, held netip.Addr, fields log.Fields) releaseOutcome {
+// resolved is the sweep's shared probe answers for the link path, nil outside a sweep (#1288).
+func releaseFromRecord(rec lease.Record, opts DHCPNetworkOptions, v6 bool, held netip.Addr,
+	resolved *runtime.LinkResolveCache, fields log.Fields) releaseOutcome {
 	src, iface, err := hostSourceFor(opts, v6, held)
+	if !v6 && errors.Is(err, errParentHasNoAddress) {
+		return releaseOnLink(rec, opts.hostLink(), resolved, fields)
+	}
 	if err != nil {
 		log.WithError(err).WithFields(fields).
 			Warn("Not releasing: no address on the parent for this family to send the release from")
@@ -176,6 +181,19 @@ func releaseFromRecord(rec lease.Record, opts DHCPNetworkOptions, v6 bool, held 
 }
 
 var rtSendRelease = runtime.SendRelease
+
+// releaseOnLink sends a v4 release from the leased address over a parent with no host IPv4, e.g. a macvlan one (#1288).
+func releaseOnLink(rec lease.Record, iface string, resolved *runtime.LinkResolveCache, fields log.Fields) releaseOutcome {
+	if err := rtSendReleaseOnLink(rec, runtime.LinkReleaseConfig{Interface: iface, Resolved: resolved}); err != nil {
+		log.WithError(err).WithFields(fields).
+			WithField("interface", iface).
+			Debug("The release over the address-less parent was refused or could not be sent")
+		return classifyReleaseError(err)
+	}
+	return releaseSent
+}
+
+var rtSendReleaseOnLink = runtime.SendReleaseOnLink
 
 // releaseRecord falls back to the (scope, MAC) index when an attach cancelled before setupClient left no id (#966),
 // refusing a retained record, which the next CreateEndpoint inherits (#820), and a closed one.
@@ -232,12 +250,14 @@ func classifyReleaseError(err error) releaseOutcome {
 	case errors.Is(err, lease.ErrReleaseNoServer):
 		return releaseNoServer
 	case errors.Is(err, lease.ErrReleaseFamily),
+		errors.Is(err, runtime.ErrLinkReleaseFamily),
 		errors.Is(err, lease.ErrReleaseNoIdentity),
 		errors.Is(err, lease.ErrReleaseIAIDMismatch):
 		return releaseBadRecord
 	case errors.Is(err, runtime.ErrReleaseNoSource),
 		errors.Is(err, runtime.ErrReleaseSourceFamily),
 		errors.Is(err, runtime.ErrReleaseNoInterface),
+		errors.Is(err, runtime.ErrLinkReleaseNoInterface),
 		errors.Is(err, runtime.ErrReleaseSourceIsReleased):
 		return releaseNoSource
 	default:
@@ -268,9 +288,10 @@ func announceReleaseOutcome(entry *log.Entry, out releaseOutcome) {
 		entry.Warn("The lease record's own fields disagree, so no release was built. This is a " +
 			"plugin defect: report it with the record id and the plugin version")
 	case releaseNoSource:
-		entry.Warn("No address on the parent to send the release from, so nothing was sent and the " +
+		entry.Warn("The release could not be sent from the parent, so nothing was sent and the " +
 			"address is left to expire on the server. A v6 release needs a link-local address on " +
-			"the parent; a parent with IPv6 disabled has none")
+			"the parent, which a parent with IPv6 disabled has none of; a v4 release needs only " +
+			"that the parent exists")
 	case releaseSendFailed:
 		entry.Warn("The release was built and did not leave the host, so the address is left to " +
 			"expire on the server")
@@ -357,7 +378,11 @@ func (o DHCPNetworkOptions) hostLink() string {
 	return o.linkParent()
 }
 
-var errNoHostSource = errors.New("no usable source address on the parent for this family")
+var (
+	errNoHostSource = errors.New("no usable source address on the parent for this family")
+	// errParentHasNoAddress is the one errNoHostSource case a v4 release survives, over the link (#1288).
+	errParentHasNoAddress = errors.New("the parent carries no usable address")
+)
 
 func (m *dhcpManager) hostSourceFor(v6 bool) (netip.Addr, string, error) {
 	held, _ := m.releasedAddr(v6)
@@ -367,8 +392,8 @@ func (m *dhcpManager) hostSourceFor(v6 bool) (netip.Addr, string, error) {
 // hostSourceFor picks the release source (#962): for v4 any non-link-local parent address (RFC 3927) that is not the
 // released one, which rides in ciaddr (RFC 2131 section 3.1); for v6 a parent link-local, since the destination
 // ff02::1:2 is link-scoped (RFC 9915 section 7.2) and the released address may not be the source (section 18.2.7).
-// Several candidates: the smallest in byte order, as netlink's order changes when one is added. None refuses,
-// commonly a parent with disable_ipv6=1.
+// Several candidates: the smallest in byte order, as netlink's order changes when one is added. None refuses: for v6
+// commonly a parent with disable_ipv6=1, for v4 a dedicated parent, which the caller releases over the link (#1288).
 func hostSourceFor(opts DHCPNetworkOptions, v6 bool, held netip.Addr) (netip.Addr, string, error) {
 	name := opts.hostLink()
 	if name == "" {
@@ -411,7 +436,7 @@ func hostSourceFor(opts DHCPNetworkOptions, v6 bool, held netip.Addr) (netip.Add
 		}
 	}
 	if !best.IsValid() {
-		return netip.Addr{}, "", fmt.Errorf("%w: parent %q carries none", errNoHostSource, name)
+		return netip.Addr{}, "", fmt.Errorf("%w: %w: parent %q", errNoHostSource, errParentHasNoAddress, name)
 	}
 	return best, name, nil
 }
