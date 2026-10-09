@@ -1139,8 +1139,13 @@ jobs:
         with:
           go-version: '1.27.2'
           cache: true
+      # staticcheck v0.8.1 pins x/tools below the export data v5 that Go 1.27.2
+      # writes (#1291, dominikh/go-tools#1832); the shim module lifts x/tools.
       - name: Install staticcheck
-        run: go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
+        run: |
+          d="$(mktemp -d)" && cd "$d" && go mod init staticcheck-shim >/dev/null
+          go get honnef.co/go/tools/cmd/staticcheck@v0.8.1 golang.org/x/tools@v0.51.0
+          go install honnef.co/go/tools/cmd/staticcheck
 
       # TWO VIEWS, NOT ONE WIDENED FLAG (#871).
       #
