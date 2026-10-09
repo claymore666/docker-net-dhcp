@@ -110,10 +110,12 @@ BLOB=$(git rev-parse --verify --quiet "$MERGE_BASE:$BASELINE_PATH" 2>/dev/null) 
 # Data lines, by the SAME rule the ratchet parses with -- a leading `#`
 # or a blank line is commentary. Two different rules here would make the
 # cross-check fail on files that are perfectly fine.
+# The `toolchain` line names the unit the floors are in, not a package (#1301).
 PKGS=$(awk '
     { sub(/^[[:space:]]+/, "") }
     /^#/ { next }
     NF == 0 { next }
+    $1 == "toolchain" { next }
     { print $1 }
 ' "$OUT")
 COUNT=$(printf '%s\n' "$PKGS" | grep -c .)

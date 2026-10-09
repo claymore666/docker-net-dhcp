@@ -24,17 +24,32 @@
 # PR head), a lower bound: the tests that earn them stub the kernel and
 # skip nowhere, and the merged profile unions their blocks. Last merged
 # readings before them (run 37274363352): 91.5 and 92.0.
-github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.CreateNetwork 100.0
-github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.DeleteNetwork 95.4
-github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.CreateEndpoint 91.5
-github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.createEndpoint 99.4
-github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.createParentAttachedEndpoint 99.4
-github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.DeleteEndpoint 89.6
-github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.Join 83.5
-github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.Leave 96.3
-github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.ipamBindingFor 88.5
-github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.createBridgeNetwork 77.5
-github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.createParentAttachedNetwork 94.1
-github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.saveNetworkAndBind 50.0
-github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.runDHCPProbe 77.8
-github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.nftForwardPolicy 88.2
+#
+# #1301 recorded decision, 2026-10-09: re-measured on Go 1.27.2, whose cover
+# tool counts statements differently from 1.27.1, from the merged table of
+# coverage run 37939950726 (artifact coverage-func-37939950726); each floor
+# 0.5 under its reading, old -> new (read):
+#   CreateNetwork 100.0 -> 99.5 (100.0), DeleteNetwork 95.4 -> 93.9 (94.4),
+#   CreateEndpoint 91.5 -> 99.5 (100.0), createEndpoint 99.4 -> 98.8 (99.3),
+#   createParentAttachedEndpoint 99.4 -> 99.5 (100.0),
+#   DeleteEndpoint 89.6 -> 86.7 (87.2), Join 83.5 -> 83.6 (84.1),
+#   Leave 96.3 -> 94.2 (94.7), ipamBindingFor 88.5 -> 88.0 (88.5),
+#   createBridgeNetwork 77.5 -> 81.3 (81.8),
+#   createParentAttachedNetwork 94.1 -> 93.6 (94.1),
+#   saveNetworkAndBind 50.0 -> 49.5 (50.0), runDHCPProbe 77.8 -> 75.8 (76.3),
+#   nftForwardPolicy 88.2 -> 87.7 (88.2).
+toolchain go1.27.2
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.CreateNetwork 99.5
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.DeleteNetwork 93.9
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.CreateEndpoint 99.5
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.createEndpoint 98.8
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.createParentAttachedEndpoint 99.5
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.DeleteEndpoint 86.7
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.Join 83.6
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.Leave 94.2
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.ipamBindingFor 88.0
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.createBridgeNetwork 81.3
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.createParentAttachedNetwork 93.6
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.saveNetworkAndBind 49.5
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.runDHCPProbe 75.8
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.nftForwardPolicy 87.7

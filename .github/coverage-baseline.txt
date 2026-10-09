@@ -340,7 +340,18 @@
 # did; the last merged reading, run 37274363352, was 92.9 on older code,
 # 2.0 above, wider than any spread this file records.
 #
+# #1301 recorded decision, 2026-10-09: floors re-measured on Go 1.27.2,
+# whose cover tool counts statements differently from 1.27.1 over the same
+# blocks, so every floor above was in another unit. Reading: coverage run
+# 37939950726 (Go 1.27.2); each floor 0.5 under it:
+#   - pkg/plugin 90.9 -> 92.2 (read 92.7), pkg/dhcp 93.1 -> 92.6 (93.1),
+#     cmd/net-dhcp 82.8 -> 81.3 (81.8).
+#   - pkg/util stays 95.2 (read 97.3): the v2.2.0 entry floors it from the
+#     lowest reading of its variance band, and 1.27.2 moved it 0.1.
+# The toolchain line names the unit; the ratchet compares it first.
+#
+toolchain go1.27.2
 github.com/claymore666/docker-net-dhcp/v2/pkg/util 95.2
-github.com/claymore666/docker-net-dhcp/v2/pkg/plugin 90.9
-github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp 93.1
-github.com/claymore666/docker-net-dhcp/v2/cmd/net-dhcp 82.8
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin 92.2
+github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp 92.6
+github.com/claymore666/docker-net-dhcp/v2/cmd/net-dhcp 81.3
