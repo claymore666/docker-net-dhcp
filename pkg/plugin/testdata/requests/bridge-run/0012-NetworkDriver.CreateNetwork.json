@@ -1,0 +1,1 @@
+{"NetworkID":"6bc9b0d92412bf2785a9510d1ad421a1d0aa053d0e80cb42233ac9f8733d224f","Options":{"com.docker.network.enable_ipv4":true,"com.docker.network.enable_ipv6":false,"com.docker.network.generic":{"bridge":"dh-itest-br2","mode":"bridge"}},"IPv4Data":[{"AddressSpace":"null","Pool":"0.0.0.0/0"}],"IPv6Data":[]}
