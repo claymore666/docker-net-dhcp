@@ -528,29 +528,13 @@ jobs:
       # exposure than the note at the top of this file describes and not
       # a larger one.
 
-      # The runner image bakes go.mod's Go and the fixtures' servers; a stale
-      # image fails here in seconds instead of minutes into the suite (#449).
-      # One copy for this lane and integration-arm64.yml (#746).
-      - name: Verify the runner image
-        uses: ./.github/actions/verify-runner-image
-
-      # The replayed request fixtures (#644) are a recording of ONE
-      # engine. This is the only host that knows which engine the suite
-      # actually talks to, so it is the only place the recording can be
-      # checked against reality — everywhere else the comparison would
-      # be against an unrelated daemon.
-      #
-      # Without it the fixtures decay into an assumption that agrees
-      # with itself forever, with a green test next to it. That is worse
-      # than the hand-built structs they replaced, because it looks like
-      # evidence.
-      - name: Fixture engine drift
-        run: bash scripts/check-fixture-engine-drift.sh
-
-      # Best-effort: clean any orphans from a previous run that
-      # panicked mid-setup. Safe to run even on a clean state.
-      - name: Cleanup orphans from previous runs
-        run: bash test/integration/cleanup-orphans.sh
+      # Image verification, engine drift against the recorded fixtures (#644)
+      # and orphan cleanup: one copy for this lane, arm64 and coverage (#733).
+      - name: Prepare the lane
+        uses: ./.github/actions/lane-preflight
+        with:
+          plugin-ref: ${{ env.INTEGRATION_PLUGIN_REF }}
+          drift: enforce
 
       # Install the plugin THIS RUN built (D41), tagged `:integration` so
       # it coexists with `:golang` (production) and `:golang-cover`
@@ -646,26 +630,14 @@ jobs:
           # It lives in one shard; this step is in all of them.
           echo "NET_DHCP_EXPECT_COMMIT=${EXPECT_COMMIT}" >> "$GITHUB_ENV"
 
-      # tee the verbose output so the timing-summary step below can
-      # report where the wall-clock went. `shell: bash` is LOAD-BEARING:
-      # only the explicit form runs `bash -eo pipefail`; the implicit
-      # default is `bash -e` WITHOUT pipefail, which let tee's exit 0
-      # swallow go-test failures and pass the gate green (#297).
+      # One shard's make target, tee'd under pipefail, then the timing
+      # summary under if: always() (#297, #733).
       - name: Run ${{ matrix.suite }} suite
-        shell: bash
-        run: make ${{ matrix.target }} 2>&1 | tee /tmp/itest-${{ matrix.suite }}.log
-
-      # Surface the slowest tests + phase totals in the job log and step
-      # summary, so speedup work can target the biggest waits without
-      # digging through verbose output. Informational, always-run: it
-      # owns no pass/fail and tolerates a missing log.
-      #
-      # Per-job now rather than one combined call: each job only has its
-      # own suite's log. Both still land in the run's summary page,
-      # under their own job headings.
-      - name: Test timing summary
-        if: always()
-        run: scripts/integration-timing.sh /tmp/itest-${{ matrix.suite }}.log
+        uses: ./.github/actions/run-suites
+        with:
+          plugin-ref: ${{ env.INTEGRATION_PLUGIN_REF }}
+          main: ${{ matrix.target }}
+          log: ${{ matrix.suite }}
 
       # Tear down so a follow-up workflow on the same runner doesn't
       # find a stale `:integration` plugin pinned to the previous

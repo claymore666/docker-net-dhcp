@@ -139,7 +139,7 @@ HEADSEOF
 
 # --- the population, discovered ----------------------------------------
 readers=$(grep -lE 'GATE_SCOPE_BRANCHES|gate-branch-scope\.env' "$ROOT"/scripts/*.sh 2>/dev/null |
-          grep -v '/test-' | sort)
+          grep -v '/scripts/test-' | sort)
 n_readers=$(printf '%s\n' "$readers" | grep -c .)
 if [ "$n_readers" -eq 0 ]; then
     no "no script in scripts/ reads GATE_SCOPE_BRANCHES. Either the scope moved or the discovery broke; an empty population is not a pass."

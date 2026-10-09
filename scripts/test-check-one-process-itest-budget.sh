@@ -12,7 +12,10 @@
 # subject.
 #
 # So each of the gate's three properties is driven twice: absent, where
-# the gate must go red, and present, where it must stay clean. A check
+# the gate must go red, and present, where it must stay clean. The lanes
+# call the suites through .github/actions/run-suites (#733), so property
+# B, which only a `run:` step through sudo can break, is driven on a
+# fixture lane written beside the real ones. A check
 # that fires in both directions is one nobody can satisfy, and a check
 # that fires in neither is decoration.
 #
@@ -153,21 +156,20 @@ import re
 import sys
 
 text = open(sys.argv[1], encoding="utf-8").read()
-vals = re.findall(r"^ *ITEST_TIMEOUT: (\d+)m$", text, flags=re.M)
+vals = re.findall(r"^ *(?:main|failure)-timeout: (\d+)m$", text, flags=re.M)
 assert len(vals) == 2, "the hosted lane no longer states exactly two ceilings"
 print(sum(int(v) for v in vals))
 SUM
 )" || exit 1
 COVERAGE_CAP="$(read_one "$WF/coverage.yml" '^    timeout-minutes: (\d+)$')" || exit 1
 
-# The coverage lane's MAIN-suite ceiling, keyed on the step's own `run:`
-# line rather than on its value, because the failure step's ceiling sits
-# at the same indentation two steps below.
-COVERAGE_MAIN_RE='^          ITEST_TIMEOUT: \S+$\n        run: make integration-test$'
+# The coverage lane's MAIN-suite ceiling, keyed on the input's name
+# rather than on its value.
+COVERAGE_MAIN_RE='^          main-timeout: \S+$'
 
-# coverage_main_ceiling <value> -- that step rewritten with a new ceiling.
+# coverage_main_ceiling <value> -- that input rewritten with a new ceiling.
 coverage_main_ceiling() {
-    printf '          ITEST_TIMEOUT: %s\n        run: make integration-test' "$1"
+    printf '          main-timeout: %s' "$1"
 }
 
 # ---------------------------------------------------------------- control
@@ -188,11 +190,10 @@ fi
 
 # ------------------------------------------------- A: the ceiling is stated
 root="$(fixture no_main_ceiling)"
-subst "$root/workflows/coverage.yml" "$COVERAGE_MAIN_RE" \
-      '        run: make integration-test' 1 || fail=$((fail + 1))
+subst "$root/workflows/coverage.yml" "${COVERAGE_MAIN_RE}\\n" '' 1 || fail=$((fail + 1))
 mutated "$root" "no_main_ceiling"
 if [ "$(verdict "$root")" = "1" ]; then
-    ok "a main-suite step with no ITEST_TIMEOUT is a finding (property A)"
+    ok "a run-suites call with no main-timeout is a finding (property A)"
 else
     no "a main-suite step inheriting the shard default passed the gate"
 fi
@@ -205,43 +206,72 @@ fi
 # A, the other direction: the FAILURE suite may take the default, because
 # there the default is the whole-suite budget. Remove it and stay clean.
 root="$(fixture failure_takes_default)"
-if ! python3 - "$root/workflows/integration-hosted.yml" <<'PY'
-import sys
-p = sys.argv[1]
-s = open(p).read()
-old = """        env:
-          ITEST_TIMEOUT: 20m
-        run: sudo env "PATH=$PATH" "INTEGRATION_PLUGIN_REF=$INTEGRATION_PLUGIN_REF" "ITEST_TIMEOUT=$ITEST_TIMEOUT" make integration-test-failure
-"""
-new = """        run: sudo env "PATH=$PATH" "INTEGRATION_PLUGIN_REF=$INTEGRATION_PLUGIN_REF" make integration-test-failure
-"""
-assert s.count(old) == 1, "the hosted failure step is not the shape this case mutates"
-open(p, "w").write(s.replace(old, new))
-PY
-then
-    fail=$((fail + 1))
-fi
+subst "$root/workflows/integration-hosted.yml" '^          failure-timeout: \S+\n' '' 1 || fail=$((fail + 1))
 mutated "$root" "failure_takes_default"
 if [ "$(verdict "$root")" = "0" ]; then
-    ok "a failure-suite step taking the Makefile default is not a finding"
+    ok "a failure suite taking the Makefile default is not a finding"
 else
     no "the gate demands a value identical to the default it would replace"
 fi
 
-# ------------------------------------------------ B: the value survives sudo
-root="$(fixture sudo_not_forwarded)"
-if ! python3 - "$root/workflows/integration-hosted.yml" <<'PY'
-import sys
-p = sys.argv[1]
-s = open(p).read()
-old = ' "ITEST_TIMEOUT=$ITEST_TIMEOUT" make integration-test\n'
-assert s.count(old) == 1, "the hosted main step's forward is not the shape this case mutates"
-open(p, "w").write(s.replace(old, " make integration-test\n"))
-PY
-then
-    fail=$((fail + 1))
+# A, read through any spelling of the local reference: quoted (the parser
+# unquotes it), with a trailing slash, the call is still a member and still
+# needs its ceiling.
+root="$(fixture quoted_uses)"
+subst "$root/workflows/coverage.yml" '^        uses: \./\.github/actions/run-suites$' \
+      '        uses: "./.github/actions/run-suites/"' 1 || fail=$((fail + 1))
+subst "$root/workflows/coverage.yml" "${COVERAGE_MAIN_RE}\\n" '' 1 || fail=$((fail + 1))
+mutated "$root" "quoted_uses"
+if [ "$(verdict "$root")" = "1" ]; then
+    ok "a quoted, slash-terminated run-suites reference is read like the plain one"
+else
+    no "a respelled run-suites reference dropped out of the population"
 fi
-mutated "$root" "sudo_not_forwarded"
+
+# A, spelled empty: integration-suites.sh exports no ITEST_TIMEOUT for an
+# empty input, so `main-timeout: ""` inherits the default like an absent one.
+root="$(fixture empty_main_ceiling)"
+subst "$root/workflows/coverage.yml" "${COVERAGE_MAIN_RE}" '          main-timeout: ""' 1 || fail=$((fail + 1))
+mutated "$root" "empty_main_ceiling"
+if [ "$(verdict "$root")" = "1" ] && says "$root" "inherits"; then
+    ok "an empty main-timeout is read as no ceiling (property A)"
+else
+    no "an empty main-timeout passed as if it stated a ceiling"
+fi
+
+# integration-suites.sh refuses an exported ITEST_TIMEOUT, so a lane that
+# sets one beside a run-suites call is red at the edit, not at the run.
+root="$(fixture env_beside_run_suites)"
+subst "$root/workflows/coverage.yml" '^      COVER_DIR: (\S+)$' \
+      '      COVER_DIR: \1\n      ITEST_TIMEOUT: 150m' 1 || fail=$((fail + 1))
+mutated "$root" "env_beside_run_suites"
+if [ "$(verdict "$root")" = "1" ] && says "$root" "integration-suites.sh refuses it"; then
+    ok "ITEST_TIMEOUT in the env of a run-suites call is a finding"
+else
+    no "an ITEST_TIMEOUT that integration-suites.sh would refuse passed the gate"
+fi
+
+# ------------------------------------------------ B: the value survives sudo
+# A `run:` lane beside the real ones: no lane in the tree spells the suite
+# that way since #733, and the gate still reads the spelling.
+# sudo_lane <root> <sudo prefix> -- that lane, with the prefix before make.
+sudo_lane() {
+    cat > "$1/workflows/sudo-lane.yml" <<YML
+name: sudo lane
+on: workflow_dispatch
+jobs:
+  itest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - env:
+          ITEST_TIMEOUT: 45m
+        run: $2 make integration-test
+YML
+}
+root="$(fixture sudo_not_forwarded)"
+# shellcheck disable=SC2016  # the literal $PATH is workflow text
+sudo_lane "$root" 'sudo env "PATH=$PATH"'
 if [ "$(verdict "$root")" = "1" ]; then
     ok "an env: value not forwarded through sudo is a finding (property B)"
 else
@@ -253,23 +283,18 @@ else
     no "the property B message does not say why the env: block bounds nothing"
 fi
 
-# B, the other direction, twice: a step that does not use sudo needs no
-# forward (integration-arm64.yml's main step is exactly that, and the
-# control already covers it), and `sudo -E` is a forward too.
-root="$(fixture sudo_preserve_env)"
-if ! python3 - "$root/workflows/integration-hosted.yml" <<'PY'
-import sys
-p = sys.argv[1]
-s = open(p).read()
-old = 'run: sudo env "PATH=$PATH" "INTEGRATION_PLUGIN_REF=$INTEGRATION_PLUGIN_REF" "ITEST_TIMEOUT=$ITEST_TIMEOUT" make integration-test\n'
-new = 'run: sudo -E env "PATH=$PATH" "INTEGRATION_PLUGIN_REF=$INTEGRATION_PLUGIN_REF" make integration-test\n'
-assert s.count(old) == 1
-open(p, "w").write(s.replace(old, new))
-PY
-then
-    fail=$((fail + 1))
+# B, the other direction, twice: a forward by name, and `sudo -E`.
+root="$(fixture sudo_forwarded)"
+# shellcheck disable=SC2016  # the literal $ITEST_TIMEOUT is workflow text
+sudo_lane "$root" 'sudo env "PATH=$PATH" "ITEST_TIMEOUT=$ITEST_TIMEOUT"'
+if [ "$(verdict "$root")" = "0" ]; then
+    ok "a value forwarded by name through sudo is not a finding"
+else
+    no "a forwarded budget was reported as discarded"
 fi
-mutated "$root" "sudo_preserve_env"
+root="$(fixture sudo_preserve_env)"
+# shellcheck disable=SC2016  # the literal $PATH is workflow text
+sudo_lane "$root" 'sudo -E env "PATH=$PATH"'
 if [ "$(verdict "$root")" = "0" ]; then
     ok "sudo -E is a forward: the gate reads the mechanism, not one spelling"
 else
@@ -379,6 +404,33 @@ if says "$root" "population has rotted"; then
     ok "the refusal says the domain is empty rather than implying everything passed"
 else
     no "the empty-population refusal does not explain itself"
+fi
+
+# Neither spelling: a run-suites call whose arguments are a shard, or an
+# expression this gate does not evaluate, runs no whole suite it can see.
+root="$(fixture run_suites_shards_only)"
+rm -f "$root"/workflows/*.yml "$root"/workflows/*.yaml
+cat > "$root/workflows/shard-only.yml" <<'YML'
+name: shards only
+on: workflow_dispatch
+jobs:
+  itest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: ./.github/actions/run-suites
+        with:
+          main: integration-test-shard SHARD=1 OF=9 SUITE=main
+          log: shard
+      - uses: ./.github/actions/run-suites
+        with:
+          main: ${{ matrix.target }}
+          log: matrix
+YML
+if [ "$(verdict "$root")" = "2" ] && says "$root" "population has rotted"; then
+    ok "run-suites calls that run only shards leave the population EMPTY and refuse"
+else
+    no "the gate reported clean over run-suites calls that run no whole suite"
 fi
 
 # The same file with a shard step beside a whole-suite step: the shard

@@ -1,0 +1,61 @@
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+name: Prepare a dhcp-ci lane
+description: Verify the runner image, compare the running engine with the recorded fixtures, and clean up a previous run's orphans.
+inputs:
+  plugin-ref:
+    description: The plugin reference this lane installs; orphan cleanup removes a leftover copy of it.
+    required: true
+  drift:
+    description: enforce fails the lane when the engine and the recorded fixtures differ; report only prints both (a lane on another engine).
+    required: true
+runs:
+  using: composite
+  steps:
+    # The runner image bakes go.mod's Go and the fixtures' servers; a stale
+    # image fails here in seconds instead of minutes into the suite (#449).
+    - name: Verify Go toolchain and fixture dependencies
+      shell: bash
+      run: |
+        if ! command -v go >/dev/null; then
+          echo "::error::go not in PATH: the dhcp-ci runner image is stale against go.mod; rebuild ci/runner-image/ for $(uname -m)"
+          exit 1
+        fi
+        go version
+        missing=""
+        for tool in dnsmasq kea-dhcp4 kea-dhcp6 ip iptables; do
+          command -v "$tool" >/dev/null || missing="$missing $tool"
+        done
+        if [ -n "$missing" ]; then
+          echo "::error::dhcp-ci runner image is missing:$missing"
+          echo "The integration fixtures need these (see ci/runner-image/Dockerfile)."
+          echo "The image is published by the runner-image workflow, but the runner"
+          echo "host caches it: pull ghcr.io/claymore666/dhcp-ci-runner:latest there."
+          exit 1
+        fi
+        echo "fixture deps present: dnsmasq $(dnsmasq --version 2>/dev/null | head -1 | awk '{print $3}'), kea $(kea-dhcp4 -v 2>/dev/null)"
+
+    # The replayed request fixtures (#644) are a recording of one engine, and
+    # a lane's own runner is the only place that knows the engine it talks to.
+    - name: Fixture engine drift
+      shell: bash
+      env:
+        DRIFT: ${{ inputs.drift }}
+      run: |
+        case "${DRIFT}" in
+          enforce) bash scripts/check-fixture-engine-drift.sh ;;
+          report) bash scripts/check-fixture-engine-drift.sh --report ;;
+          *) echo "::error title=lane-preflight::drift must be enforce or report, got '${DRIFT}'" >&2
+             exit 1 ;;
+        esac
+
+    - name: Cleanup orphans from previous runs
+      shell: bash
+      env:
+        INTEGRATION_PLUGIN_REF: ${{ inputs.plugin-ref }}
+      run: |
+        if [ -z "${INTEGRATION_PLUGIN_REF}" ]; then
+          echo "::error title=lane-preflight::plugin-ref is empty, so cleanup would target the default plugin" >&2
+          exit 1
+        fi
+        bash test/integration/cleanup-orphans.sh

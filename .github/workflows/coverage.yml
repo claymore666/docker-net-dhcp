@@ -185,20 +185,16 @@ jobs:
         with:
           go-version: '1.27.2'
 
-      # The ref is passed explicitly because this lane's plugin is
-      # COVER_PLUGIN_REF, not the :integration tag the other lanes use.
-      # cleanup-orphans re-enables a plugin a panicked recovery test may
-      # have left disabled, and it can only do that for the tag it is
-      # told about (#742).
-      - name: Cleanup orphans from previous runs
-        env:
-          INTEGRATION_PLUGIN_REF: ${{ env.COVER_PLUGIN_REF }}
-        run: bash test/integration/cleanup-orphans.sh
-
-      # This lane's engine is recorded beside the integration lane's (#1015):
-      # both run on the same pool, so the fixtures' check applies here too.
-      - name: Fixture engine drift
-        run: bash scripts/check-fixture-engine-drift.sh
+      # The ref is COVER_PLUGIN_REF, not the :integration tag the other
+      # lanes use: cleanup-orphans re-enables a plugin a panicked recovery
+      # test left disabled only for the tag it is told about (#742). The
+      # engine drift is enforced as on the integration lane, whose pool
+      # this lane shares (#1015, #733).
+      - name: Prepare the lane
+        uses: ./.github/actions/lane-preflight
+        with:
+          plugin-ref: ${{ env.COVER_PLUGIN_REF }}
+          drift: enforce
 
       # Wipe any counter/meta files from a previous coverage run so
       # `go tool covdata` only sees data from this invocation. The
@@ -230,7 +226,7 @@ jobs:
       # (default :golang). Pointing it at :golang-cover makes the
       # whole suite drive the instrumented plugin.
       #
-      # ITEST_TIMEOUT, not the Makefile's 20m default. THIS LANE RUNS THE
+      # main-timeout, not the Makefile's 20m default. THIS LANE RUNS THE
       # WHOLE MAIN SUITE IN ONE go test BINARY, as integration-arm64.yml
       # and integration-hosted.yml do; the amd64 shard lane splits the
       # same suite nine ways and Makefile:171's 20m is that lane's
@@ -257,36 +253,22 @@ jobs:
       # integration-arm64.yml 165m over 110.2, integration-hosted.yml 145m
       # over 96.5. The slack is sized on growth: the suite went from 155
       # tests to 203 in one release (#1112).
-      - name: Run integration tests against cover plugin
-        env:
-          INTEGRATION_PLUGIN_REF: ${{ env.COVER_PLUGIN_REF }}
-          ITEST_TIMEOUT: 150m
-        run: make integration-test
-
-      # The failure-injection suite (#128) exercises paths the main
-      # suite can't reach (NAK handling, post-expiry retry loop) — the
-      # ratchet counts both runs' coverage, so both must drive the
-      # instrumented plugin.
       #
-      # if: always() for the same reason as the other lanes (#742), and
-      # with an extra one here: a red main suite would otherwise skip
-      # this step, the counters flushed below would hold data from one
-      # suite instead of two, and the ratchet at the end of this job
-      # would compare a partial measurement against a full baseline.
-      # Found by scripts/check-lane-hygiene.sh, not by #742, which
-      # listed only the two non-gating lanes.
-      #
-      # 20m is the Makefile default, written out because this lane's two
-      # budgets are read together and a default sized for the shard lane
-      # must not decide this step by accident. The suite measured 4m38s
-      # here on run 34523956617 and 272.3s in the durations table, so 20m
-      # holds it four times over.
-      - name: Run failure-injection tests against cover plugin
-        if: always()
-        env:
-          INTEGRATION_PLUGIN_REF: ${{ env.COVER_PLUGIN_REF }}
-          ITEST_TIMEOUT: 20m
-        run: make integration-test-failure
+      # The failure-injection suite (#128) reaches paths the main suite
+      # cannot (NAK handling, post-expiry retry loop). run-suites runs it
+      # whatever main returned, so the counters flushed below always hold
+      # both suites and the ratchet never compares one suite against a
+      # two-suite baseline (#742, #733). 20m is the Makefile default
+      # written out; it measured 4m38s here on run 34523956617.
+      - name: Run the suites against the cover plugin
+        uses: ./.github/actions/run-suites
+        with:
+          plugin-ref: ${{ env.COVER_PLUGIN_REF }}
+          main: integration-test
+          main-timeout: 150m
+          failure: integration-test-failure
+          failure-timeout: 20m
+          log: coverage
 
       # Flush counter files. Go's binary coverage runtime only writes
       # `covcounters.*` on graceful exit, which `docker plugin disable`
