@@ -38,6 +38,24 @@ type fakeSender struct {
 	cfgs   []runtime.ReleaseConfig
 	err    error
 	errFor func(lease.Record) error
+
+	linkRecs []lease.Record
+	linkCfgs []runtime.LinkReleaseConfig
+	linkErr  error
+}
+
+func (f *fakeSender) sendOnLink(rec lease.Record, cfg runtime.LinkReleaseConfig) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.linkRecs = append(f.linkRecs, rec)
+	f.linkCfgs = append(f.linkCfgs, cfg)
+	return f.linkErr
+}
+
+func (f *fakeSender) linkCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.linkRecs)
 }
 
 func (f *fakeSender) send(rec lease.Record, cfg runtime.ReleaseConfig) error {
@@ -62,9 +80,9 @@ func installSender(t *testing.T, f *fakeSender) *fakeSender {
 	if f == nil {
 		f = &fakeSender{}
 	}
-	prev := rtSendRelease
-	rtSendRelease = f.send
-	t.Cleanup(func() { rtSendRelease = prev })
+	prev, prevLink := rtSendRelease, rtSendReleaseOnLink
+	rtSendRelease, rtSendReleaseOnLink = f.send, f.sendOnLink
+	t.Cleanup(func() { rtSendRelease, rtSendReleaseOnLink = prev, prevLink })
 	return f
 }
 
@@ -1051,15 +1069,24 @@ func TestReleaseLease_TheRetainedRecordIsNeverAnOlderOne(t *testing.T) {
 
 func TestReleaseLease_EveryReasonForNotSendingIsNamed(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		sendErr  error
-		noRecord bool
-		noSource bool
-		want     releaseOutcome
+		name       string
+		sendErr    error
+		noRecord   bool
+		noSource   bool
+		parentGone bool
+		linkErr    error
+		want       releaseOutcome
 	}{
 		{name: "the datagram went out", want: releaseSent},
 		{name: "no record for this family", noRecord: true, want: releaseNoRecord},
-		{name: "no address on the parent", noSource: true, want: releaseNoSource},
+		{name: "no v4 address on the parent, released over the link", noSource: true, want: releaseSent},
+		{name: "the parent is gone", parentGone: true, want: releaseNoSource},
+		{name: "the link release names no interface", noSource: true, linkErr: runtime.ErrLinkReleaseNoInterface, want: releaseNoSource},
+		{name: "the link release is not v4", noSource: true, linkErr: runtime.ErrLinkReleaseFamily, want: releaseBadRecord},
+		{name: "the link release names no server", noSource: true, linkErr: lease.ErrReleaseNoServer, want: releaseNoServer},
+		{name: "the link socket refused it", noSource: true, linkErr: errors.New("sendto: network is down"), want: releaseSendFailed},
+		{name: "the relayed server has no gateway", noSource: true, linkErr: runtime.ErrLinkReleaseNoRoute, want: releaseSendFailed},
+		{name: "the gateway did not answer", noSource: true, linkErr: runtime.ErrLinkReleaseHopSilent, want: releaseSendFailed},
 		{name: "the record holds no address", sendErr: lease.ErrReleaseNoAddr, want: releaseNoAddress},
 		{name: "the record names no server", sendErr: lease.ErrReleaseNoServer, want: releaseNoServer},
 		{name: "the record is in no known family", sendErr: lease.ErrReleaseFamily, want: releaseBadRecord},
@@ -1079,13 +1106,16 @@ func TestReleaseLease_EveryReasonForNotSendingIsNamed(t *testing.T) {
 			hook := logtest.NewLocal(log.StandardLogger())
 			defer hook.Reset()
 
-			installSender(t, &fakeSender{err: tc.sendErr})
+			installSender(t, &fakeSender{err: tc.sendErr, linkErr: tc.linkErr})
 			m := releasingManager(t, p, ReleaseOnStop, false)
 			if tc.noRecord {
 				m.recordID = ""
 			}
 			if tc.noSource {
 				hostParent(t, "fe80::2/64")
+			}
+			if tc.parentGone {
+				m.opts.Bridge = "gone0"
 			}
 
 			if got := m.releaseFamily(false); got != (tc.want == releaseSent) {
@@ -1122,6 +1152,72 @@ func TestReleaseLease_EveryReasonForNotSendingIsNamed(t *testing.T) {
 			}
 			if len(said) != 1 || said[0] != string(tc.want) {
 				t.Errorf("the log named outcomes %v, want exactly [%s]", said, tc.want)
+			}
+		})
+	}
+}
+
+// Of the ways the parent offers no source, only an existing parent with no v4 address takes the link release (#1288).
+func TestReleaseLease_OnlyAParentWithNoV4AddressReleasesOverTheLink(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		v6       bool
+		addrs    []string
+		bridge   string
+		listErr  error
+		wantLink bool
+		wantSend bool
+		want     releaseOutcome
+	}{
+		{name: "v4, the parent carries only a v6 link-local", addrs: []string{"fe80::2/64"}, wantLink: true, want: releaseSent},
+		{name: "v4, the parent carries only an RFC 3927 address", addrs: []string{"169.254.7.7/16"}, wantLink: true, want: releaseSent},
+		{name: "v4, the parent carries an address", addrs: []string{"192.168.99.2/24"}, wantSend: true, want: releaseSent},
+		{name: "v4, the parent is gone", addrs: []string{"fe80::2/64"}, bridge: "gone0", want: releaseNoSource},
+		{name: "v4, the parent's addresses cannot be read", addrs: []string{"fe80::2/64"}, listErr: syscall.EIO, want: releaseNoSource},
+		{name: "v4, the network names no parent", addrs: []string{"fe80::2/64"}, bridge: "-", want: releaseNoSource},
+		{name: "v6, the parent has IPv6 disabled", v6: true, addrs: []string{"192.168.99.2/24"}, want: releaseNoSource},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &Plugin{}
+			sender := installSender(t, nil)
+			m := releasingManager(t, p, ReleaseOnRemove, tc.v6)
+			hostParent(t, tc.addrs...)
+			if tc.listErr != nil {
+				prev := nlAddrList
+				nlAddrList = func(netlink.Link, int) ([]netlink.Addr, error) { return nil, tc.listErr }
+				t.Cleanup(func() { nlAddrList = prev })
+			}
+			opts := m.opts
+			switch tc.bridge {
+			case "":
+			case "-":
+				opts.Bridge = ""
+			default:
+				opts.Bridge = tc.bridge
+			}
+			rec, ok := m.releaseRecord(tc.v6)
+			if !ok {
+				t.Fatal("no record to release")
+			}
+			held, _ := m.releasedAddr(tc.v6)
+
+			if got := releaseFromRecord(rec, opts, tc.v6, held, nil, m.logFields(tc.v6)); got != tc.want {
+				t.Errorf("releaseFromRecord = %s, want %s", got, tc.want)
+			}
+			if got, want := sender.linkCount(), map[bool]int{true: 1}[tc.wantLink]; got != want {
+				t.Fatalf("the link release ran %d time(s), want %d", got, want)
+			}
+			if got, want := sender.callCount(), map[bool]int{true: 1}[tc.wantSend]; got != want {
+				t.Errorf("the host-source release ran %d time(s), want %d", got, want)
+			}
+			if !tc.wantLink {
+				return
+			}
+			if cfg := sender.linkCfgs[0]; cfg.Interface != "br0" {
+				t.Errorf("the link release went out on %q, want the parent br0", cfg.Interface)
+			}
+			if got := sender.linkRecs[0]; got.ID != m.recordID || got.Family != lease.FamilyV4 {
+				t.Errorf("the link release carried record %s (%v), want the v4 record %s", got.ID, got.Family, m.recordID)
 			}
 		})
 	}
