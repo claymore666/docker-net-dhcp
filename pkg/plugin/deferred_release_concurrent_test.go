@@ -306,7 +306,7 @@ func TestDeferredRelease_ARecordClosedAfterThePassReadItIsNotSent(t *testing.T) 
 	}
 	p.closeRecord(idA)
 
-	p.handOneRecordBack(idA, func(lease.Record) bool { return true }, opts, deferredTestNetwork, false)
+	p.handOneRecordBack(idA, func(lease.Record) bool { return true }, opts, deferredTestNetwork, false, nil)
 
 	if got := sender.callCount(); got != 0 {
 		t.Errorf("the sender saw %d releases of a record another pass had already closed", got)

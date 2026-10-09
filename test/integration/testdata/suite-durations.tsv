@@ -612,6 +612,12 @@
 # them. Gateway is three arms of one network and one container at about
 # 12 each; IgnoreConflicts is two creates, one refused, and one leased
 # container; ForceCreate adds a veth, two creates and one container.
+#
+# TestReleaseLease_OnRemoveHandsBackFromAParentWithNoIPv4 is INFERRED
+# (#1288): TestReleaseLease_OnRemoveHoldsTheAddressThenHandsItBack's walk
+# (100.00) on a veth parent of its own, whose create and delete are well
+# under a second, so the same 100.00. The first run that executes it
+# costs it.
 TestAdvertDNS_ReachesTheResolverAndDHCPv6ComesFirst	75.00
 TestAdvertRoutes_BecomeContainerRoutesUnlessSkipRoutes	150.00
 TestAuditLog_DefaultOff	12.63
@@ -784,6 +790,7 @@ TestRecovery_DaemonRestart_PreservesContainer	30.00
 TestRecovery_PluginDisableEnable_PreservesEndpoint	12.86
 TestReleaseLease_DefaultNetworksStillKeepTheirAddresses	26.00
 TestReleaseLease_OnRemoveHandsAnIPAMAddressBackToo	100.00
+TestReleaseLease_OnRemoveHandsBackFromAParentWithNoIPv4	100.00
 TestReleaseLease_OnRemoveHandsTheV6AddressBackToo	108.00
 TestReleaseLease_OnRemoveHoldsTheAddressThenHandsItBack	100.00
 TestReleaseLease_OnRemoveKeepsTheAddressForARestartInsideTheWindow	105.00
