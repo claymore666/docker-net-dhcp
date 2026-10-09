@@ -56,7 +56,7 @@ jobs:
       # scripts/check-go-pins.sh fails the build when they drift apart.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.27.1'
+          go-version: '1.27.2'
           cache: true
 
       # Drifted go.mod/go.sum slips through silently until someone
@@ -205,7 +205,7 @@ jobs:
       # one of them.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.27.1'
+          go-version: '1.27.2'
           cache: true
 
       # The CI gate scripts are code too — their table-driven tests run
@@ -1137,10 +1137,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.27.1'
+          go-version: '1.27.2'
           cache: true
+      # staticcheck v0.8.1 pins x/tools below the export data v5 that Go 1.27.2
+      # writes (#1291, dominikh/go-tools#1832); the shim module lifts x/tools.
       - name: Install staticcheck
-        run: go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
+        run: |
+          d="$(mktemp -d)" && cd "$d" && go mod init staticcheck-shim >/dev/null
+          go get honnef.co/go/tools/cmd/staticcheck@v0.8.1 golang.org/x/tools@v0.51.0
+          go install honnef.co/go/tools/cmd/staticcheck
 
       # TWO VIEWS, NOT ONE WIDENED FLAG (#871).
       #
@@ -1184,7 +1189,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.27.1'
+          go-version: '1.27.2'
           cache: true
       # actionlint shells out to shellcheck for `run:` blocks. The agent
       # itself is pinned (above), but the runner-supplied shellcheck is
@@ -1346,7 +1351,7 @@ jobs:
       # toolchain, which should represent what ships in the plugin.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.27.1'
+          go-version: '1.27.2'
           cache: true
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.3.0
