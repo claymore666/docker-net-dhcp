@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"time"
@@ -206,7 +207,14 @@ func disableHostIPv6Under(dir, name string) error {
 		if err := makeProcSysWritable(); err != nil {
 			log.WithError(err).Debug("Could not make /proc/sys writable; attempting the disable_ipv6 write anyway")
 		}
-		done <- os.WriteFile(ipv6DisablePath(dir, name), []byte("1\n"), 0o644)
+		// Opened after the remount so the handle sees it; the rooted write refuses a name leaving dir (#1289).
+		root, err := os.OpenRoot(dir)
+		if err != nil {
+			done <- err
+			return
+		}
+		defer root.Close()
+		done <- root.WriteFile(filepath.Join(name, "disable_ipv6"), []byte("1\n"), 0o644)
 	}()
 	return <-done
 }
