@@ -116,6 +116,12 @@ this project will not do, is on the [roadmap](docs/roadmap.md).
 - Tests assert on the wire and on the server: packet captures and the
   DHCP server's lease log, not the plugin's own counters
   ([how this plugin is tested](docs/testing.md)).
+- A separate lab runs each release against real DHCP servers (Kea, ISC
+  dhcpd, dnsmasq) installed the way their users install them, on their
+  own VMs, one isolated cell per server; every scenario is judged
+  against the server's own lease table, and the evidence of each run is
+  published ([the lab](docs/testing.md#real-server-lab),
+  [docker-net-dhcp-lab](https://github.com/claymore666/docker-net-dhcp-lab)).
 - Every pull request carries a public review verdict, and every release
   ships signatures, SLSA provenance and an SBOM
   ([verifying releases](docs/verifying-releases.md)).
