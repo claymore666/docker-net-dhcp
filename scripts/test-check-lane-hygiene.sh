@@ -8,7 +8,7 @@
 # them hard to test any other way: each failure is an ABSENCE. A lane
 # without a teardown leaves state on a machine nothing inspects; a
 # workflow without `edited` in its types simply never runs. So the cases
-# below check that the gate reports the absence — and, in every section,
+# below check that the gate reports the absence and, in every section,
 # that the corresponding presence still reads as clean, because a gate
 # that fires on both is one nobody can satisfy.
 set -uo pipefail
