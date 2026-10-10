@@ -31,7 +31,7 @@ func TestIpamCanonicalPool6(t *testing.T) {
 		}
 	}
 	for _, in := range []string{
-		"", "::/0", "::/64", "::/120", "::ffff:192.168.0.0/112", "::ffff:0:0/96", "ff02::/16",
+		"", "::/0", "::/64", "::/120", "::ffff:192.168.0.0/112", "::ffff:0:0/96", "::ffc0:0:0/90", "ff02::/16",
 		"fd00:6470:6865::/127", "fd00:6470:6865::1/128", "192.168.99.0/24", "not-a-prefix", "fe80::1%eth0/64",
 	} {
 		_, err := ipamCanonicalPool6(in)
@@ -383,6 +383,7 @@ func TestRequestAddress_V6GatewayAndAuxEchoed(t *testing.T) {
 	for _, tc := range []struct{ name, addr, typ, want string }{
 		{"gateway", "fd00:6470:6865::1", ipamOptGateway, "fd00:6470:6865::1/64"},
 		{"aux", "fd00:6470:6865::2", "", "fd00:6470:6865::2/64"},
+		{"gateway re-requested untyped", "fd00:6470:6865::1", "", "fd00:6470:6865::1/64"},
 	} {
 		res, err := p.RequestAddress(context.Background(), RequestAddressRequest{
 			PoolID: b.PoolID6, Address: tc.addr, Options: map[string]string{ipamOptRequestAddressType: tc.typ}})
@@ -417,5 +418,18 @@ func TestRequestAddress_UnboundV6GatewayIsTheNetworkAddress(t *testing.T) {
 		PoolID: id, Options: map[string]string{ipamOptRequestAddressType: ipamOptGateway}})
 	if err != nil || res.Address != ipamTestPool6 {
 		t.Errorf("got %q, %v; want %s", res.Address, err, ipamTestPool6)
+	}
+}
+
+func TestIpamEchoAddress_DefaultPrefixIsTheFamilysHostLength(t *testing.T) {
+	for _, tc := range []struct{ addr, pool, want string }{
+		{"fd00:6470:6865::9", "", "fd00:6470:6865::9/128"},
+		{"192.168.99.9", "", "192.168.99.9/32"},
+		{"fd00:6470:6865::9", ipamTestPool6, "fd00:6470:6865::9/64"},
+	} {
+		res, err := ipamEchoAddress(tc.addr, tc.pool)
+		if err != nil || res.Address != tc.want {
+			t.Errorf("ipamEchoAddress(%q, %q) = %q, %v; want %q", tc.addr, tc.pool, res.Address, err, tc.want)
+		}
 	}
 }
