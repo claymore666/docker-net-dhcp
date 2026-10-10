@@ -38,7 +38,10 @@
 //     neither. IPv6 is switched on with `-o ipv6=true` or
 //     `-o ipv6_mode=`, and CreateEndpoint reports the address (#960).
 //     A typed IPv6 `--subnet` is a pool of its own (#1132), with
-//     `ipv6_mode=dhcp` only; `--ipv6` without one stays refused.
+//     `ipv6_mode=dhcp` only; `--ipv6` without one stays refused. The
+//     DHCPv6 server picks the address and `--ip6` is a hint to it; a
+//     reply naming another address than `--ip6`, or one outside the
+//     subnet, is refused and released.
 //
 // # The exported surface is a wire contract, not a library API
 //

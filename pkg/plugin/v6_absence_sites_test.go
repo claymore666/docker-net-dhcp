@@ -105,6 +105,40 @@ func TestV6Absence_V4OnlySitesCannotAcquireV6(t *testing.T) {
 	}
 }
 
+// A v6 pool's reserve answers RequestAddress with an address or an error; the classifier's tolerated absences would
+// log "creating the endpoint without a DHCPv6 address" for a start that fails (#1132 D5).
+var v6AbsenceFatalSites = []string{"ipam_reserve6.go"}
+
+const v6AbsenceFatalReturn = "return none, fmt.Errorf("
+
+func TestV6Absence_PoolSitesFailEveryAbsence(t *testing.T) {
+	for _, name := range v6AbsenceFatalSites {
+		body, err := os.ReadFile(filepath.Join(".", name))
+		if err != nil {
+			t.Fatalf("reading %s: %v\nIf it was renamed, rename it in v6AbsenceFatalSites too.", name, err)
+		}
+		lines := strings.Split(string(body), "\n")
+		found := 0
+		for i, line := range lines {
+			if !strings.Contains(line, v6AbsenceAcquireCall) {
+				continue
+			}
+			found++
+			end := min(i+1+v6AbsenceWindow, len(lines))
+			window := strings.Join(lines[i+1:end], "\n")
+			if !strings.Contains(line, ", true,") || !strings.Contains(window, v6AbsenceFatalReturn) ||
+				strings.Contains(window, v6AbsenceConsult) {
+				t.Errorf("%s:%d is a DHCPv6 pool site: it must acquire v6 (literal true) and return the "+
+					"failure within %d lines without consulting %s, since no absence leaves it an "+
+					"address to answer.\n%s", name, i+1, v6AbsenceWindow, v6AbsenceConsult, window)
+			}
+		}
+		if found == 0 {
+			t.Errorf("%s is listed as a DHCPv6 pool site and contains no %s call", name, v6AbsenceAcquireCall)
+		}
+	}
+}
+
 func TestV6Absence_EveryAcquisitionSiteConsultsTheClassifier(t *testing.T) {
 	total := 0
 	for _, name := range v6AbsenceSiteFiles {
@@ -150,6 +184,9 @@ func TestV6Absence_EveryAcquisitionSiteConsultsTheClassifier(t *testing.T) {
 		named[n] = true
 	}
 	for _, n := range v6AbsenceV4OnlySites {
+		named[n] = true
+	}
+	for _, n := range v6AbsenceFatalSites {
 		named[n] = true
 	}
 	for _, e := range entries {

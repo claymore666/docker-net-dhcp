@@ -322,3 +322,46 @@ func TestRecords6_ASplitLeaseKeepsItsPrefixServerThroughACompactionAndAReopen(t 
 		})
 	}
 }
+
+// A v6 IPAM reservation is RESERVED at RequestAddress and folded CREATED at CreateEndpoint, keeping the DUID (#1132).
+
+func TestRecords6_ReservedThenCreatedOn6KeepsTheIdentity(t *testing.T) {
+	r, _ := testRecords(t)
+	const network = "net-1"
+	mac := []byte{0x02, 0x42, 0xac, 0x11, 0x00, 0x07}
+	id6 := testIdentity6(t, "02:42:ac:11:00:07")
+
+	if err := r.Reserved6("rsv-v6", network, mac, nil); err == nil {
+		t.Fatal("Reserved6 accepted an empty identity; the next restart would mint a new DUID")
+	}
+	if err := r.Reserved6("rsv-v6", network, mac, id6.Bytes()); err != nil {
+		t.Fatalf("Reserved6: %v", err)
+	}
+	rb, err := r.Rebuilt()
+	if err != nil {
+		t.Fatalf("Rebuilt: %v", err)
+	}
+	rec, ok := rb.ByID("rsv-v6")
+	if !ok || rec.Phase != lease.PhaseReserved || rec.Scope != Scope6(network) || rec.Family != lease.FamilyV6 {
+		t.Fatalf("after Reserved6: found=%v phase=%v scope=%q family=%v, want RESERVED in %q, v6",
+			ok, rec.Phase, rec.Scope, rec.Family, Scope6(network))
+	}
+
+	if err := r.CreatedOn6("rsv-v6", network, mac); err != nil {
+		t.Fatalf("CreatedOn6: %v", err)
+	}
+	rb, err = r.Rebuilt()
+	if err != nil {
+		t.Fatalf("Rebuilt: %v", err)
+	}
+	rec, _ = rb.ByID("rsv-v6")
+	if rec.Phase != lease.PhaseCreated {
+		t.Fatalf("after CreatedOn6 the phase is %v, want CREATED", rec.Phase)
+	}
+	if got := r.identity6("rsv-v6"); !bytes.Equal(got.DUID, id6.DUID) || got.IAID != id6.IAID {
+		t.Errorf("identity after the fold is %+v, want %+v", got, id6)
+	}
+	if len(rb.Rejects) != 0 {
+		t.Errorf("the fold rejected %v, want none", rb.Rejects)
+	}
+}
