@@ -618,6 +618,10 @@
 # (100.00) on a veth parent of its own, whose create and delete are well
 # under a second, so the same 100.00. The first run that executes it
 # costs it.
+#   six rows   the TestIPv4Off* rows are INFERRED, not measured: they arrive with #1135 and no corpus run could
+#              have costed them. Each v6-fixture row is one fixture, one container, one plugin restart and two
+#              6 s settles, above TestDHCPv6_NoAddressModes_StartTheEndpoint (80.63) divided by its three
+#              arms; the refusal row is one rejected create. The first run costs them.
 TestAdvertDNS_ReachesTheResolverAndDHCPv6ComesFirst	75.00
 TestAdvertRoutes_BecomeContainerRoutesUnlessSkipRoutes	150.00
 TestAuditLog_DefaultOff	12.63
@@ -729,6 +733,12 @@ TestIPv6Temporary_BridgeHoldsAStableAndATemporaryAddress	20.00
 TestIPv6Temporary_IPAMMacvlanHoldsAStableAndATemporaryAddress	30.00
 TestIPv6Temporary_MacvlanHoldsAStableAndATemporaryAddress	25.00
 TestIPv6Temporary_MacvlanWithoutTheOptionAsksForNoIATA	25.00
+TestIPv4OffBridgeDHCP	75.00
+TestIPv4OffBridgeSLAAC	80.00
+TestIPv4OffIPAMWithoutIPv6	75.00
+TestIPv4OffIPv6OffRefused	2.00
+TestIPv4OffIPvlanDHCP	75.00
+TestIPv4OffMacvlanDHCP	75.00
 TestIPv6_AcceptedAtCreate	0.02
 TestIPv6_DNS6Propagation	34.17
 TestIPv6_TheV4OnlyPathIsUnchanged	11.57
