@@ -547,3 +547,37 @@ func TestIPAMReserveLinkIPv6_V6KeepsTheLinkLocal(t *testing.T) {
 		t.Fatalf("IPv6 off on %v and the RA guard on %v, want off on [rsv4] only and the guard on [rsv6] only", off, guard)
 	}
 }
+
+// A restart during a DHCPv6 outage keeps the re-bound v6 record retained, so the next start asks again with its
+// DUID and address, as #1047 pins for v4 (RFC 9915 section 11, #1132).
+func TestRequestAddress_V6OutageKeepsTheReboundRecordForTheNextStart(t *testing.T) {
+	p, b, srv, _ := a6Fixture(t)
+	first, restarted, next := f0MAC(0x01), f0MAC(0x02), f0MAC(0x03)
+	f0Tombstone(t, p, first, f0Addr)
+	id6 := s2Tombstone6(t, p, first, a6Leased)
+	stored := s3Identity(t, f0Rec(t, p, id6))
+	res4, err := a6Request(p, b.PoolID, "", restarted)
+	if err != nil {
+		t.Fatalf("v4 RequestAddress: %v", err)
+	}
+	srv.err = context.DeadlineExceeded
+	if _, err := a6Request(p, b.PoolID6, "", restarted); err == nil {
+		t.Fatal("v6 RequestAddress succeeded against a silent server")
+	}
+	if rec := f0Rec(t, p, id6); rec.Phase != lease.PhaseRetained || rec.Lease.Addr.Addr().String() != "fd00:6470:6865::20" {
+		t.Fatalf("after the outage the re-bound record is %v holding %v, want Retained holding fd00:6470:6865::20", rec.Phase, rec.Lease.Addr)
+	}
+	if err := p.ReleaseAddress(ReleaseAddressRequest{PoolID: b.PoolID, Address: strings.SplitN(res4.Address, "/", 2)[0]}); err != nil {
+		t.Fatalf("v4 ReleaseAddress: %v", err)
+	}
+	srv.err = nil
+	if _, err := a6Request(p, b.PoolID, "", next); err != nil {
+		t.Fatalf("v4 RequestAddress after the outage: %v", err)
+	}
+	if _, err := a6Request(p, b.PoolID6, "", next); err != nil {
+		t.Fatalf("v6 RequestAddress after the outage: %v", err)
+	}
+	if srv.opts.RecordID != id6 || !s3SameIdentity(srv.opts.Identity6, stored) || srv.opts.PreferredV6 != "fd00:6470:6865::20" {
+		t.Fatalf("the next start ran on %q with %+v asking %q, want %q with the stored identity and address", srv.opts.RecordID, srv.opts.Identity6, srv.opts.PreferredV6, id6)
+	}
+}
