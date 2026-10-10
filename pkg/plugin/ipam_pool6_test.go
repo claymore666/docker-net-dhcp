@@ -399,18 +399,6 @@ func TestRequestAddress_V6GatewayAndAuxEchoed(t *testing.T) {
 	}
 }
 
-func TestRequestAddress_V6PoolRefusesUntilTheAddressSideLands(t *testing.T) {
-	p, b := v6BoundFixture(t)
-	for _, addr := range []string{"", "fd00:6470:6865::20"} {
-		_, err := p.RequestAddress(context.Background(), RequestAddressRequest{
-			PoolID: b.PoolID6, Address: addr,
-			Options: map[string]string{ipamOptMacAddress: ipamTestMAC}})
-		if err == nil || !errors.Is(err, util.ErrIPAM) || !strings.Contains(err.Error(), "follows in the same release") {
-			t.Errorf("address %q: got %v, want the not-yet-built refusal", addr, err)
-		}
-	}
-}
-
 func TestRequestAddress_UnboundV6GatewayIsTheNetworkAddress(t *testing.T) {
 	p, _ := ipamFixture(t)
 	id, _ := ipamPoolID6(ipamLocalAddressSpace, ipamTestPool6, nil)

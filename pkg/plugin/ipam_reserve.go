@@ -453,6 +453,10 @@ func ipamACKInPool(addr netip.Addr, pool string) error {
 // addIPAMReserveLink holds the macvlan parent gate until the link is deleted, since a parent registers one
 // rx_handler and the link lives a whole DHCP round trip; remove() runs LinkDel, then Unlock (#110).
 func (p *Plugin) addIPAMReserveLink(ctx context.Context, name, peer, mode string, opts DHCPNetworkOptions, mac net.HardwareAddr) (func(), error) {
+	return p.addIPAMReserveLinkFor(ctx, name, peer, mode, opts, mac, false)
+}
+
+func (p *Plugin) addIPAMReserveLinkFor(ctx context.Context, name, peer, mode string, opts DHCPNetworkOptions, mac net.HardwareAddr, v6 bool) (func(), error) {
 	if mode == ModeMacvlan || mode == ModeIPvlan {
 		// The exchange runs on the link the endpoint will sit on, the vlan sub-interface when one is set (#902).
 		if _, err := p.ensureVlanLink(ctx, opts, "ipam_reserve"); err != nil {
@@ -473,7 +477,7 @@ func (p *Plugin) addIPAMReserveLink(ctx context.Context, name, peer, mode string
 			guard.Unlock()
 			return nil, explainChildLinkAdd(err, mode, opts.linkParent(), parent.Attrs().Index)
 		}
-		childIPv6Off(name)
+		ipamReserveLinkIPv6(name, v6)
 		if err := nlLinkSetUp(link); err != nil {
 			if delErr := nlLinkDel(link); delErr != nil {
 				log.WithError(delErr).WithField("link", name).Warn("Reservation link cleanup failed; remove it with `ip link del`")
@@ -512,7 +516,7 @@ func (p *Plugin) addIPAMReserveLink(ctx context.Context, name, peer, mode string
 		return nil, fmt.Errorf("failed to find the reservation veth peer: %w", err)
 	}
 	// The DHCP client runs on veth, which carries the MAC; the peer is a bridge port.
-	childIPv6Off(name)
+	ipamReserveLinkIPv6(name, v6)
 	for _, l := range []netlink.Link{veth, peerLink} {
 		if err := nlLinkSetUp(l); err != nil {
 			remove()
@@ -665,7 +669,7 @@ func (p *Plugin) sweepIPAMReservations(now time.Time) int {
 		if !ok {
 			continue
 		}
-		if r.record != "" {
+		if r.record != "" && !p.ipamReservationEnded(r.record) {
 			p.ipamGiveUpAttempt(r.record, true, now)
 			swept++
 			log.WithField("record", r.record).

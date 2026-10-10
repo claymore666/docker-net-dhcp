@@ -15,6 +15,7 @@ import (
 	"github.com/claymore666/dhcp-golib/lease"
 	log "github.com/sirupsen/logrus"
 
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
 
@@ -238,10 +239,9 @@ func (p *Plugin) RequestAddress(ctx context.Context, req RequestAddressRequest) 
 		return ipamEchoAddress(req.Address, pool)
 	}
 
-	// Before the MAC and reserve arms, which lease IPv4 only: the v6 address side is not built, and a v4 lease must
-	// not answer a v6 call (#1132).
+	// Before the MAC and reserve arms, which lease IPv4 only: a v4 lease must not answer a v6 call (#1132).
 	if v6Pool {
-		return none, fmt.Errorf("%w: pool %v is this network's IPv6 pool, and the plugin does not hand out addresses from it yet: the address side follows in the same release. Until then create the network without an IPv6 --subnet, and switch IPv6 on with `-o ipv6=true`", util.ErrIPAM, req.PoolID)
+		return p.requestAddress6(ctx, networkID, sn, req)
 	}
 
 	mac, err := ipamRequestedMAC(req.Options)
@@ -415,8 +415,13 @@ func (p *Plugin) ReleaseAddress(req ReleaseAddressRequest) error {
 	if err != nil {
 		return nil
 	}
-	rec, ok := ipamLiveRecord(rb, networkID, addr)
+	scope := networkID
+	if addr.Is6() {
+		scope = dhcp.Scope6(networkID)
+	}
+	rec, ok := ipamLiveRecord(rb, scope, addr)
 	if !ok {
+		p.ipamDropReservation6(rb, scope, req.PoolID, addr)
 		p.ipamReleaseUnknown.Add(1)
 		return nil
 	}
