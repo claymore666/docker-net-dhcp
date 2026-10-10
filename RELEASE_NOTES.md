@@ -91,6 +91,9 @@ so `docker plugin upgrade` from v2.5.0 asks for nothing new.
   behind a relay. An IPv6 Release still needs a link-local address on the
   parent, and a plugin-made bridge or `vlan` sub-interface still refuses
   `release_lease` at create (#1288).
+- The plugin ships dhcp-golib v1.5.0 (v2.5.0: v1.4.4). The library's
+  link-release path in that tag is what carries the #1288 release from a
+  parent with no IPv4 address (#1307).
 - The plugin image is built with Go 1.27.2 (v2.5.0: 1.27.1), which fixes
   four standard-library `net/http` advisories (GO-2026-6611, GO-2026-6612,
   GO-2026-6613, GO-2026-6617) (#1291).
