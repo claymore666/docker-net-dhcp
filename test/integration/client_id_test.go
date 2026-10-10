@@ -127,9 +127,7 @@ func TestClientID_DefaultIsMACDerived(t *testing.T) {
 	}
 }
 
-// leaseClientIDField returns the client-id of a dnsmasq lease line, <expiry> <mac> <ip> <hostname> <client-id>; the
-// hostname field carries the container name since #961, so the override check must not look past this field, and
-// dnsmasq writes option 61 as colon-hex only, so the override is looked for in that form (#1272).
+// leaseClientIDField returns the client-id field: the hostname holds the container name (#961), option 61 is colon-hex (#1272).
 func leaseClientIDField(line string) (string, bool) {
 	fields := strings.Fields(line)
 	if len(fields) < 5 {
