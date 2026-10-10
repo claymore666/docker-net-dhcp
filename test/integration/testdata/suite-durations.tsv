@@ -10,8 +10,8 @@
 #
 # POPULATION: TOP-LEVEL TEST FUNCTIONS, PARENTS ONLY.
 # One row per `func TestX(t *testing.T)` in test/integration/*_test.go —
-# 263 of them, the main suite's 256 and the failure suite's 7. MEASURED
-# on this table: 263 data rows, and 263 `func TestX(t *testing.T)` in
+# 272 of them, the main suite's 265 and the failure suite's 7. MEASURED
+# on this table: 272 data rows, and 272 `func TestX(t *testing.T)` in
 # test/integration/*_test.go counted independently of them.
 #
 # THIS NUMBER HAS NOW BEEN WRONG TWICE, and the second time is the
@@ -622,6 +622,11 @@
 #              have costed them. Each v6-fixture row is one fixture, one container, one plugin restart and two
 #              6 s settles, above TestDHCPv6_NoAddressModes_StartTheEndpoint (80.63) divided by its three
 #              arms; the refusal row is one rejected create. The first run costs them.
+#   nine rows  the #1132 TestIPAMv6Pool_* rows beside TypedSubnetCreates* are INFERRED: each is one v6 fixture
+#              (TypedSubnetCreates*, 30.00, less its network) plus what it adds. A started container is
+#              TestIPAMv6_DockerShowsTheAddressTheServersReplyCarried (20.00); a refused start adds its release
+#              wait; the exhausted row is two DHCPv6 timeouts of about 26 s; restart and on-stop are their
+#              TestIPAMv6_* twins plus the fixture; the slaac row is one refused create. The first run costs them.
 TestAdvertDNS_ReachesTheResolverAndDHCPv6ComesFirst	75.00
 TestAdvertRoutes_BecomeContainerRoutesUnlessSkipRoutes	150.00
 TestAuditLog_DefaultOff	12.63
@@ -720,6 +725,15 @@ TestIPAM_StaticIPIsHonouredWithASubnet	24.00
 TestIPAM_StaticIPWithoutASubnetIsStillTheAddressAsked	7.00
 TestIPAM_TwoEndpointsCannotShareOneHardwareAddress	16.00
 TestIPAM_TwoNetworksCannotShareOnePool	40.00
+TestIPAMv6Pool_AReplyOutsideTheTypedPrefixIsRefusedAndReleased	35.00
+TestIPAMv6Pool_AnExhaustedServerFailsInsideTheBudget	80.00
+TestIPAMv6Pool_AnIP6InTheRangeIsTheAddress	30.00
+TestIPAMv6Pool_AnIP6OutsideThePrefixIsRefusedBeforeAnySolicit	25.00
+TestIPAMv6Pool_AnIgnoredHintIsRefusedNamingBothAndReleased	35.00
+TestIPAMv6Pool_NoIP6HintGetsTheServersAddress	30.00
+TestIPAMv6Pool_OnStopSendsOneReleasePerFamily	30.00
+TestIPAMv6Pool_RestartKeepsTheV6AddressAndDUID	40.00
+TestIPAMv6Pool_SLAACWithAPoolIsRefusedAtCreate	20.00
 TestIPAMv6Pool_TypedSubnetCreatesAndInspectShowsBothPools	30.00
 TestIPAMv6_ASLAACAddressFollowsTheFreshMACAndMacAddressPinsIt	90.00
 TestIPAMv6_ASilentManagedServerFailsTheStartInsideAMinute	35.00

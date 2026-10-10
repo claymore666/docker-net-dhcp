@@ -260,6 +260,35 @@ func (r *Records) Created6(id, networkID string, chaddr, identity []byte) error 
 	})
 }
 
+// Reserved6 is Reserved in the v6 scope, written at RequestAddress on a network with an IPv6 pool; the identity is
+// required for the reason Created6 gives (#1132).
+func (r *Records) Reserved6(id, networkID string, chaddr, identity []byte) error {
+	if len(identity) == 0 {
+		return fmt.Errorf("dhcp: a DHCPv6 reservation for %v carries no identity "+
+			"(RFC 9915 section 11: the DUID is what makes this the same client after a restart)", id)
+	}
+	return r.append(lease.RecordEvent{
+		ID:       id,
+		Op:       lease.OpReserve,
+		Scope:    Scope6(networkID),
+		Family:   lease.FamilyV6,
+		CHAddr:   chaddr,
+		Identity: identity,
+	})
+}
+
+// CreatedOn6 folds a RESERVED v6 record into CREATED at CreateEndpoint; no identity is sent, since it is write-once
+// and already on the record (#1132).
+func (r *Records) CreatedOn6(id, networkID string, chaddr []byte) error {
+	return r.append(lease.RecordEvent{
+		ID:     id,
+		Op:     lease.OpCreate,
+		Scope:  Scope6(networkID),
+		Family: lease.FamilyV6,
+		CHAddr: chaddr,
+	})
+}
+
 // The lease makes the first message a Confirm (RFC 9915 section 18.2.12, #820); a new DUID would be told NotOnLink.
 
 // Resume6 is Resume in the v6 scope, handing back the stored identity as well as the lease (#911).

@@ -246,9 +246,11 @@ DHCPv6 where it asks for DHCPv6 and the prefix where it does not. `-o
 ipv6=true` is the short spelling of `dhcp`. They work on both lines.
 On the IPAM line `--ipv6` needs a typed IPv6 `--subnet <prefix>` (a /126
 or shorter) and `-o ipv6_mode=dhcp`: the plugin allocates no IPv6 pool of
-its own, so the subnet is the pool Docker keeps its books in. The address
-side follows in the same release ([#1132]); until then a container on
-such a network does not start. Without a subnet `--ipv6` is refused
+its own, so the subnet is the pool Docker keeps its books in ([#1132]).
+The DHCPv6 server picks each address, and `--ip6` asks it for one; a
+reply naming another address than `--ip6`, or one outside the subnet, is
+refused and released, and the container does not start. Without a subnet
+`--ipv6` is refused
 ([#960]), and `-o ipv6=true` or `-o ipv6_mode=<mode>` switches IPv6 on
 instead. The modes are set out in
 [the driver reference](docs/reference.md#driver-options-network-level),

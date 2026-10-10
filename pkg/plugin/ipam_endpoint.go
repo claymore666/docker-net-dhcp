@@ -75,6 +75,13 @@ func (p *Plugin) createIPAMEndpoint(ctx context.Context, callStart time.Time, r 
 	if rsv.record == "" {
 		return res, fmt.Errorf("%w: the reservation for %v has no lease record, so its address could not survive to Join", util.ErrIPAM, mac)
 	}
+	rsv6, ok6 := p.takeIPAMReservation6(binding, mac)
+	if binding.PoolID6 != "" {
+		if err := checkIPAMReservation6(rsv6, ok6, mac, r.Interface.AddressIPv6); err != nil {
+			giveUp()
+			return res, err
+		}
+	}
 
 	hostname := p.initialDHCPHostname(ctx, r.NetworkID, r.EndpointID)
 
@@ -113,7 +120,13 @@ func (p *Plugin) createIPAMEndpoint(ctx context.Context, callStart time.Time, r 
 	// The v6 half is the last step that can fail, after the v4 record is folded, so a fatal verdict gives up both
 	// records and no failure follows a v6 lease (#960).
 	var v6IP string
-	if opts.ipv6Enabled() {
+	if binding.PoolID6 != "" {
+		if v6IP, err = p.consumeIPAMReservation6(r.NetworkID, r.EndpointID, mac, rsv6); err != nil {
+			remove()
+			giveUp()
+			return res, err
+		}
+	} else if opts.ipv6Enabled() {
 		addr, err := p.createIPAMEndpointV6(ctx, callStart, r, opts, mac, rsv.record6, hostname)
 		if err != nil {
 			remove()
@@ -141,7 +154,7 @@ func (p *Plugin) createIPAMEndpoint(ctx context.Context, callStart time.Time, r 
 		"endpoint": shortID(r.EndpointID),
 		"mode":     mode,
 		"ip":       rsv.info.IP,
-		"ipv6":     res.Interface.AddressIPv6,
+		"ipv6":     res.Interface.AddressIPv6 + r.Interface.AddressIPv6,
 		"gateway":  gateway,
 	}).Info("Endpoint created from the address this plugin's IPAM driver reserved for it")
 
