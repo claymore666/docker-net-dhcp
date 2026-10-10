@@ -53,7 +53,7 @@ reads the policy and cannot see the rule:
 
 ```bash
 sudo iptables -I DOCKER-USER -i lan0 -o lan0 -j ACCEPT
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.5.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.6.0 \
   --ipam-driver null -o bridge=lan0 -o parent=eth1 -o force_create=true lan-dhcp
 ```
 
@@ -330,7 +330,7 @@ default 34 s `lease_timeout` look for that line in the plugin log: the error
 ```bash
 # On arm64 use the -arm64 tag. A network stores this exact reference
 # as its driver, so it must name the plugin you installed.
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.5.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.6.0 \
   --ipam-driver null -o bridge=my-bridge my-dhcp-net
 ```
 
@@ -339,11 +339,13 @@ On engine 26 (26.1.4, measured 2026-09-24) the daemon refuses
 `docker network create --ipv6` on a network with the null IPAM driver.
 On 29.8.1 it accepts the create, but a `--ip6` address still does not
 reach the plugin: the Solicit carried no requested address (measured the
-same day).
+same day). To serve `--ip6`, name this plugin as the IPAM driver as well
+and type an IPv6 `--subnet`; see
+[Address allocation](reference.md#address-allocation).
 
 ```bash
 # arm64: the -arm64 tag here too.
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.5.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.6.0 \
   --ipam-driver null -o bridge=my-bridge -o ipv6_mode=dhcp my-dhcp-net
 ```
 
@@ -425,7 +427,7 @@ services:
 networks:
   dhcp:
     # arm64: the -arm64 tag, matching the plugin you installed.
-    driver: ghcr.io/claymore666/docker-net-dhcp:v2.5.0
+    driver: ghcr.io/claymore666/docker-net-dhcp:v2.6.0
     driver_opts:
       bridge: my-bridge
       ipv6_mode: 'dhcp'

@@ -8,7 +8,7 @@ The notes below go back to the first release of this project.
 
 [predecessor]: https://github.com/devplayer0/docker-net-dhcp
 
-## v2.6.0 (unreleased)
+## v2.6.0
 
 A network created with `--ipv4=false` runs no DHCPv4, and an IPAM-mode
 network takes a typed IPv6 `--subnet` as its IPv6 pool, with `--ip6` as
@@ -121,7 +121,7 @@ so `docker plugin upgrade` from v2.5.0 asks for nothing new.
   which reads Go 1.27.2's export data (#1291).
 - The recorded engine request fixtures are re-recorded on Docker 29.9.0,
   which asks the plugin whether a network needs a gateway address before
-  `CreateNetwork` (#644).
+  `CreateNetwork` (#1298).
 - The README and the testing guide describe the real-server lab, which runs
   each release against Kea, ISC dhcpd and dnsmasq, and record the v2.5.0
   run (#1295).
