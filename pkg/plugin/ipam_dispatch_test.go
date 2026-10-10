@@ -217,7 +217,7 @@ func TestRequestPool_RefusesWhatV2_1DoesNotDo(t *testing.T) {
 		says []string
 	}{
 		// Shape A: IPv6 on an IPAM network needs no pool, so the message says what switches it on (#960).
-		{"an IPv6 pool", RequestPoolRequest{AddressSpace: ipamLocalAddressSpace, V6: true}, []string{"--ipv6", "no IPv6 pool", "type an IPv6 `--subnet", "-o ipv6=true", "-o ipv6_mode="}},
+		{"an IPv6 pool", RequestPoolRequest{AddressSpace: ipamLocalAddressSpace, V6: true}, []string{"--ipv6 is refused on a network that uses this plugin as its IPAM driver", "the plugin allocates no IPv6 pool", "drop --ipv6", "type an IPv6 `--subnet", "-o ipv6=true", "-o ipv6_mode="}},
 		{"an --ip-range", RequestPoolRequest{AddressSpace: ipamLocalAddressSpace, Pool: ipamTestPool, SubPool: "192.168.99.128/25"}, []string{"--ip-range"}},
 	}
 	for _, c := range cases {

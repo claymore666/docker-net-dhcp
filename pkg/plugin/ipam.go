@@ -135,7 +135,7 @@ func (p *Plugin) apiRequestPool(w http.ResponseWriter, r *http.Request) {
 // stored PoolID (#110).
 func (p *Plugin) RequestPool(req RequestPoolRequest) (RequestPoolResponse, error) {
 	if req.V6 && req.Pool == "" {
-		return RequestPoolResponse{}, fmt.Errorf("%w: --ipv6 without an IPv6 --subnet is refused on a network that uses this plugin as its IPAM driver, because the plugin allocates no IPv6 pool of its own. Either type an IPv6 `--subnet <prefix>` (such as fd00:1::/64) to give Docker a pool to keep its books in, or drop --ipv6 and switch IPv6 on with `-o ipv6=true` or `-o ipv6_mode=<mode>`, and each container gets its IPv6 address from the DHCPv6 server or the router advertisement on its link", util.ErrIPAM)
+		return RequestPoolResponse{}, fmt.Errorf("%w: --ipv6 is refused on a network that uses this plugin as its IPAM driver unless an IPv6 --subnet is typed, because the plugin allocates no IPv6 pool of its own. Either type an IPv6 `--subnet <prefix>` (such as fd00:1::/64) to give Docker a pool to keep its books in, or drop --ipv6 and switch IPv6 on with `-o ipv6=true` or `-o ipv6_mode=<mode>`, and each container gets its IPv6 address from the DHCPv6 server or the router advertisement on its link", util.ErrIPAM)
 	}
 	if req.SubPool != "" {
 		return RequestPoolResponse{}, fmt.Errorf("%w: --ip-range is not supported: addresses come from the LAN's DHCP server, which this plugin does not narrow", util.ErrIPAM)
