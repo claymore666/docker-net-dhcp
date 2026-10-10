@@ -121,7 +121,7 @@ so `docker plugin upgrade` from v2.5.0 asks for nothing new.
   which reads Go 1.27.2's export data (#1291).
 - The recorded engine request fixtures are re-recorded on Docker 29.9.0,
   which asks the plugin whether a network needs a gateway address before
-  `CreateNetwork` (#644).
+  `CreateNetwork` (#1298).
 - The README and the testing guide describe the real-server lab, which runs
   each release against Kea, ISC dhcpd and dnsmasq, and record the v2.5.0
   run (#1295).

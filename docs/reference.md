@@ -102,7 +102,7 @@ service's network attachment:
 
 **[Container-level flags](#driver-options-per-endpoint)** the plugin
 reads: `--mac-address`, `--hostname`, and, on a network that names this
-plugin as its IPAM driver, `--ip` and, with an IPv6 `--subnet`, `--ip6`
+plugin as its IPAM driver, `--ip` and, with a typed IPv6 subnet, `--ip6`
 ([Address allocation](#address-allocation); `--ip6` has no effect on an
 `--ipam-driver null` network, #960).
 

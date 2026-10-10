@@ -79,7 +79,7 @@ and what each item is for is in [SECURITY.md](SECURITY.md#scope--what-this-plugi
 | You want | Use |
 | --- | --- |
 | The container takes its address from the LAN, Docker keeps no pool | `--ipam-driver null` (the default shape, all three modes) |
-| Docker knows the address: `docker run --ip`, Compose `ipv4_address`, `docker inspect` | the plugin as IPAM driver as well (`--ipam-driver <plugin>`), `bridge` and `macvlan`, IPv4 and IPv6; `--ip6` and `ipv6_address` are served when an IPv6 `--subnet` is typed ([#1132]) |
+| Docker knows the address: `docker run --ip`, Compose `ipv4_address`, `docker inspect` | the plugin as IPAM driver as well (`--ipam-driver <plugin>`), `bridge` and `macvlan`, IPv4 and IPv6; `--ip6` and `ipv6_address` are served when an IPv6 `--subnet` is typed and `ipv6_mode` is `dhcp` ([#1132]) |
 | `ipvlan` | `--ipam-driver null` |
 
 | | IPv4 | IPv6 | as IPAM driver |
