@@ -37,6 +37,8 @@
 //     endpoint that fails at container start with an error naming
 //     neither. IPv6 is switched on with `-o ipv6=true` or
 //     `-o ipv6_mode=`, and CreateEndpoint reports the address (#960).
+//     A typed IPv6 `--subnet` is a pool of its own (#1132), with
+//     `ipv6_mode=dhcp` only; `--ipv6` without one stays refused.
 //
 // # The exported surface is a wire contract, not a library API
 //

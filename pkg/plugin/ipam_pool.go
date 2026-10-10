@@ -32,11 +32,20 @@ const ipamPoolIDPrefix = "dhcp/"
 // ipamPoolID is the canonical request, not a hash: the daemon-start replay sends back the pool this driver returned
 // (controller.go, reservePools), so masking the typed prefix makes both askings derive one identity (#110).
 func ipamPoolID(space, pool string, opts map[string]string) (string, error) {
+	return ipamPoolIDOf(space, pool, opts, ipamCanonicalPool)
+}
+
+// ipamPoolID6 is the v6 twin: the same identity shape over a typed v6 prefix (#1132).
+func ipamPoolID6(space, pool string, opts map[string]string) (string, error) {
+	return ipamPoolIDOf(space, pool, opts, ipamCanonicalPool6)
+}
+
+func ipamPoolIDOf(space, pool string, opts map[string]string, canon func(string) (string, error)) (string, error) {
 	if space != ipamLocalAddressSpace && space != ipamGlobalAddressSpace {
 		return "", fmt.Errorf("address space %q is not one of this driver's (%s, %s): %w",
 			space, ipamLocalAddressSpace, ipamGlobalAddressSpace, util.ErrIPAM)
 	}
-	canonical, err := ipamCanonicalPool(pool)
+	canonical, err := canon(pool)
 	if err != nil {
 		return "", err
 	}
@@ -59,6 +68,34 @@ func ipamCanonicalPool(pool string) (string, error) {
 		return "", fmt.Errorf("pool %q is not IPv4; this plugin's IPAM driver allocates IPv4 pools only, and IPv6 on its networks is switched on with `-o ipv6=true` or `-o ipv6_mode=<mode>`, with no pool: %w", pool, util.ErrIPAM)
 	}
 	return p.Masked().String(), nil
+}
+
+// ipamV6MappedPrefix is the IPv4-mapped range; a pool overlapping it would hold 4in6 addresses (RFC 4291 section 2.5.5.2).
+var ipamV6MappedPrefix = netip.MustParsePrefix("::ffff:0:0/96")
+
+// ipamCanonicalPool6 accepts only a typed unicast v6 prefix of length 126 or less. Docker has no "any" v6 pool
+// literal and ::/0 overlaps the host's own routes, so the create would never return; /127 and /128 have no address
+// left for a gateway request (RFC 6164 section 3) (#1132).
+func ipamCanonicalPool6(pool string) (string, error) {
+	if pool == "" {
+		return "", fmt.Errorf("an IPv6 pool needs a typed `--subnet <IPv6 prefix>`: %w", util.ErrIPAM)
+	}
+	p, err := netip.ParsePrefix(pool)
+	if err != nil || !p.Addr().Is6() {
+		return "", fmt.Errorf("the IPv6 `--subnet` %q is not an IPv6 prefix such as fd00:1::/64: %w", pool, util.ErrIPAM)
+	}
+	m := p.Masked()
+	switch {
+	case p.Addr().Is4In6() || ipamV6MappedPrefix.Overlaps(m):
+		return "", fmt.Errorf("the IPv6 `--subnet` %q is an IPv4-mapped prefix, not a unicast IPv6 one: %w", pool, util.ErrIPAM)
+	case m.Addr().IsUnspecified():
+		return "", fmt.Errorf("the IPv6 `--subnet` %q is the unspecified prefix and overlaps every route the host has: %w", pool, util.ErrIPAM)
+	case m.Addr().IsMulticast():
+		return "", fmt.Errorf("the IPv6 `--subnet` %q is a multicast prefix: %w", pool, util.ErrIPAM)
+	case p.Bits() > 126:
+		return "", fmt.Errorf("the IPv6 `--subnet` %q is a /%d, which leaves no address for a gateway or a lease; use /126 or shorter: %w", pool, p.Bits(), util.ErrIPAM)
+	}
+	return m.String(), nil
 }
 
 // ipamPoolIDSuffix refuses an unknown key, since an ignored key would let two requests share one identity (#110).
@@ -122,20 +159,22 @@ func ipamPoolIDNames(poolID string) (key, name string) {
 
 // ipamPoolNetworkAddress answers an address-less gateway request with the pool's network address: libnetwork's
 // remote allocator turns an empty reply into ErrNoIPReturned (v26.1.5 and v28.0.0), and the network address cannot
-// shadow a lease (RFC 1122 section 3.2.1.3). On a /31 or /32 every address is a host address (RFC 3021 section 2.1),
-// so the request is refused and names --gateway; engine 28 and up does not ask (#110).
+// shadow a lease (RFC 1122 section 3.2.1.3; on v6 it is the subnet-router anycast address, RFC 4291 section 2.6.1).
+// On a /31 or /32 every address is a host address (RFC 3021 section 2.1), and a v6 /127 or /128 likewise
+// (RFC 6164 section 3), so the request is refused and names --gateway; engine 28 and up does not ask (#110, #1132).
 func ipamPoolNetworkAddress(poolID string) (RequestAddressResponse, error) {
 	pool, err := ipamPoolOfID(poolID)
 	if err != nil {
 		return RequestAddressResponse{}, err
 	}
-	if pool.Bits() > 30 {
-		return RequestAddressResponse{}, fmt.Errorf("%w: this Docker Engine asks an IPAM driver for a gateway address at `docker network create`, and the pool %v has no address that is not a host address: every address in a /31 and a /32 can be handed to a container by the DHCP server, so one taken for the gateway here would be one this plugin later refuses to lease. Create the network with --gateway <address>, which is passed straight through, or use a shorter prefix. Docker Engine 28 and later does not ask and needs neither", util.ErrIPAM, pool)
+	if pool.Bits() > pool.Addr().BitLen()-2 {
+		return RequestAddressResponse{}, fmt.Errorf("%w: this Docker Engine asks an IPAM driver for a gateway address at `docker network create`, and the pool %v has no address that is not a host address: every address in a /%d and a /%d can be handed to a container by the DHCP server, so one taken for the gateway here would be one this plugin later refuses to lease. Create the network with --gateway <address>, which is passed straight through, or use a shorter prefix. Docker Engine 28 and later does not ask and needs neither", util.ErrIPAM, pool, pool.Addr().BitLen()-1, pool.Addr().BitLen())
 	}
 	return RequestAddressResponse{Address: pool.String()}, nil
 }
 
-// ipamPoolOfID derives the pool from the id, since the issued entry is consumed at CreateNetwork (#110).
+// ipamPoolOfID derives the pool from the id, either family, since the issued entry is consumed at CreateNetwork
+// (#110, #1132).
 func ipamPoolOfID(poolID string) (netip.Prefix, error) {
 	rest, ok := strings.CutPrefix(poolID, ipamPoolIDPrefix)
 	if !ok {
@@ -153,8 +192,8 @@ func ipamPoolOfID(poolID string) (netip.Prefix, error) {
 	if err != nil {
 		return netip.Prefix{}, fmt.Errorf("pool %q carries no CIDR prefix: %w", poolID, util.ErrIPAM)
 	}
-	if !p.Addr().Is4() {
-		return netip.Prefix{}, fmt.Errorf("pool %q is not IPv4: %w", poolID, util.ErrIPAM)
+	if p.Addr().Is4In6() {
+		return netip.Prefix{}, fmt.Errorf("pool %q is an IPv4-mapped prefix: %w", poolID, util.ErrIPAM)
 	}
 	return p.Masked(), nil
 }
@@ -168,6 +207,21 @@ type ipamBinding struct {
 	// Gateway and Aux are kept because an aux request and an endpoint replay are wire-identical (moby libnetwork/network.go, endpoint.go).
 	Gateway string   `json:"gateway,omitempty"`
 	Aux     []string `json:"aux,omitempty"`
+	// The v6 pool of the same network, empty when it has none; set, the file is schema v3 so an older build refuses it
+	// (#1132).
+	PoolID6  string   `json:"pool_id6,omitempty"`
+	Pool6    string   `json:"pool6,omitempty"`
+	Gateway6 string   `json:"gateway6,omitempty"`
+	Aux6     []string `json:"aux6,omitempty"`
+}
+
+// poolIDs lists every PoolID the network answers to, the v4 one first (#1132).
+func (b *ipamBinding) poolIDs() []string {
+	ids := []string{b.PoolID}
+	if b.PoolID6 != "" {
+		ids = append(ids, b.PoolID6)
+	}
+	return ids
 }
 
 type issuedPool struct {

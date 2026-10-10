@@ -244,13 +244,19 @@ Add `-o ipv6_mode=dhcp` for a DHCPv6 lease beside the v4 one, or
 advertisement; `auto` reads the advertisement and does what it says,
 DHCPv6 where it asks for DHCPv6 and the prefix where it does not. `-o
 ipv6=true` is the short spelling of `dhcp`. They work on both lines.
-On the IPAM line leave out Docker's `--ipv6`: it is refused there,
-because the plugin allocates no IPv6 pool ([#960]). The modes are set out in
+On the IPAM line `--ipv6` needs a typed IPv6 `--subnet <prefix>` (a /126
+or shorter) and `-o ipv6_mode=dhcp`: the plugin allocates no IPv6 pool of
+its own, so the subnet is the pool Docker keeps its books in. The address
+side follows in the same release ([#1132]); until then a container on
+such a network does not start. Without a subnet `--ipv6` is refused
+([#960]), and `-o ipv6=true` or `-o ipv6_mode=<mode>` switches IPv6 on
+instead. The modes are set out in
 [the driver reference](docs/reference.md#driver-options-network-level),
 and the two shapes in
 [the same page](docs/reference.md#address-allocation).
 
 [#949]: https://github.com/claymore666/docker-net-dhcp/issues/949
+[#1132]: https://github.com/claymore666/docker-net-dhcp/issues/1132
 [#960]: https://github.com/claymore666/docker-net-dhcp/issues/960
 
 After that, plain Compose. No static addresses, no sidecar, nothing per
