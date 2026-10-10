@@ -8,7 +8,7 @@ The notes below go back to the first release of this project.
 
 [predecessor]: https://github.com/devplayer0/docker-net-dhcp
 
-## v2.6.0 (unreleased)
+## v2.6.0
 
 A network created with `--ipv4=false` runs no DHCPv4, and an IPAM-mode
 network takes a typed IPv6 `--subnet` as its IPv6 pool, with `--ip6` as
