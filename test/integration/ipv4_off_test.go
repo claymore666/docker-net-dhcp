@@ -174,10 +174,8 @@ func awaitIPv4OffHealth(t *testing.T, ctx context.Context, cli *docker.Client, e
 // The fixture is this test's own segment, so any DHCPv4 message in its server's log is the plugin's.
 func assertNoDHCPv4OnTheWire(t *testing.T, f *harness.V6Fixture) {
 	t.Helper()
-	for _, msg := range []string{"DHCPDISCOVER", "DHCPREQUEST", "DHCPACK"} {
-		if n := f.CountLogLines(msg); n > 0 {
-			t.Errorf("the segment's server logged %d %s on a network that has no IPv4", n, msg)
-		}
+	if n := f.CountDHCPv4Messages(); n > 0 {
+		t.Errorf("the segment's server logged %d DHCPv4 messages on a network that has no IPv4", n)
 	}
 }
 
