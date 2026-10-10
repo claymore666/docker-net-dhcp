@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Copyright the docker-net-dhcp contributors.
 # SPDX-License-Identifier: GPL-3.0-only
-# Four per-workflow invariants that only one lane was missing (#742).
+# Per-workflow invariants that only one lane was missing (#742).
 #
-# Expires-when: the per-workflow lines live in one reusable workflow every
-#   lane calls, so one lane cannot lack a line its siblings carry (#742).
+# Expires-when: a plugin-installing lane gets its teardown, and a body-reading
+#   gate its `edited` trigger, from a shared definition it cannot omit (#742, #733).
 #
 # HALF OF #742 WAS THE SAME FINDING FOUR TIMES: a workflow missing a
 # line every sibling already had. None of the four could go red on its
@@ -24,12 +24,10 @@
 #      standing runner, where it is the only lane it actually matters
 #      for: everywhere else the machine is discarded after one job.
 #
-#   B. THE FAILURE SUITE RUNS ANYWAY. A step invoking
-#      `integration-test-failure` must carry `if: always()`, or a red
-#      main suite silently skips failure injection — reporting on half
-#      the lane at precisely the moment something is already wrong.
-#      This is the pre-#375 semantics integration.yml documents as the
-#      bug `fail-fast: false` fixed there.
+#   B. (retired by #733) The failure suite running after a red main
+#      suite is now scripts/integration-suites.sh's own exit logic, which
+#      every lane calls through .github/actions/run-suites and which
+#      scripts/test-integration-suites.sh pins.
 #
 #   C. `edited` FOR BODY-READING GATES. check-test-weakening.sh,
 #      check-no-ai-attribution.sh, check-issue-ref.sh and
@@ -43,8 +41,7 @@
 # The fourth — test.yaml having no concurrency group at all — is
 # asserted in check-concurrency-parity.sh instead, which already
 # declares which lanes are in that group and is the file a reader
-# looking for a concurrency rule will open. Stated here because a gate
-# covering three of four findings reads like an oversight otherwise.
+# looking for a concurrency rule will open.
 #
 # WHY TEXT AND NOT A YAML PARSE. PyYAML is not a dependency of this
 # repository and adding one for a gate is a supply-chain cost out of
@@ -119,11 +116,9 @@ strip() { grep -vE '^[[:space:]]*#' "$1"; }
 # first non-blank line indented no further than its own dash.
 #
 # The dedent rule is load-bearing, not tidiness. Without it a block ran
-# on to the end of the file, absorbing the next job's `strategy.matrix`
-# — so integration.yml, whose failure suite is a separate matrix JOB
-# covered by `fail-fast: false` and correctly has no step-level `if:`,
-# was reported as broken by check B. A block that never ends makes every
-# per-step question a whole-file question.
+# on to the end of the file, absorbing the next job's steps, so one job's
+# `if: always()` answered for another's. A block that never ends makes
+# every per-step question a whole-file question.
 steps_of() {
     strip "$1" | awk '
         /^[[:space:]]*-[[:space:]]+[A-Za-z_-]+:/ {
@@ -144,13 +139,13 @@ steps_of() {
     '
 }
 
-# One row per step: <n> <if: always() key> <create> <rm> <failure suite>
+# One row per step: <n> <if: always() key> <create> <rm>
 # <local action path, or ->.
 # The if: counts only as the step's own key, and each command only as a
 # command of its run: shell; in an echo, a name: or a run: string they
 # guard and run nothing (#883).
 step_facts() {
-    local n ifa cand raw c cr td fs
+    local n ifa cand raw c cr td
     steps_of "$1" | awk -v RS='\x01' '
         {
             k = split($0, L, "\n"); dash = -1; ifa = 0; raw = ""; u = "-"
@@ -169,17 +164,16 @@ step_facts() {
             }
             n++
             if (dash < 0) next
-            cand = (index($0, "docker plugin") || index($0, "integration-test-failure")) ? 1 : 0
+            cand = index($0, "docker plugin") ? 1 : 0
             printf "%d\t%d\t%d\t%s\t%s\n", n, ifa, cand, (cand ? raw : "-"), u
         }' |
     while IFS=$'\t' read -r n ifa cand raw use; do
-        cr=0; td=0; fs=0
+        cr=0; td=0
         if [ "$cand" = 1 ] || [ "$use" != - ]; then
             while IFS= read -r c; do
                 case "$c" in
                     "docker plugin create"|"docker plugin create "*) cr=1 ;;
                     "docker plugin rm"|"docker plugin rm "*) td=1 ;;
-                    "make "*) [[ " $c " == *" integration-test-failure "* ]] && fs=1 ;;
                 esac
             done < <(
                 if [ "$cand" = 1 ]; then
@@ -189,7 +183,7 @@ step_facts() {
                     workflow_shell_lines --raw "$(action_file "$use")" | shell_simple_commands
                 fi)
         fi
-        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$n" "$ifa" "$cr" "$td" "$fs" "$use"
+        printf '%s\t%s\t%s\t%s\t%s\n' "$n" "$ifa" "$cr" "$td" "$use"
     done
 }
 
@@ -218,7 +212,7 @@ for f in "${WF_FILES[@]}"; do
                  "calls a local action. Its commands would count as none." >&2
             exit 2
         fi
-    done < <(step_facts "$f" | cut -f6 | grep -v '^-$')
+    done < <(step_facts "$f" | cut -f5 | grep -v '^-$')
 
     # --- A. teardown for a lane that installs a plugin -----------------
     if printf '%s\n' "$body" | grep -F 'docker plugin create' >/dev/null ||
@@ -246,26 +240,6 @@ for f in "${WF_FILES[@]}"; do
         fi
     fi
 
-    # --- B. the failure suite runs even after a red main suite ---------
-    # One awk over the block stream, not a shell loop: a step block spans
-    # many lines, and `read` would hand back one line at a time — which
-    # is a check that asks whether ONE LINE contains both the invocation
-    # and the `if:`, i.e. a check that reports every lane as broken. It
-    # did, on the first run, including two this branch had just fixed.
-    # `make integration-test-failure`, not the bare target name: the
-    # matrix `target: integration-test-failure` in integration.yml is a
-    # DECLARATION, run from a `make ${{ matrix.target }}` step in a
-    # separate job where `fail-fast: false` is what keeps the suites
-    # independent. A step-level `if:` there would be wrong, not missing.
-    if step_facts "$f" | awk -F '\t' '
-            $5 == 1 && $2 != 1 { bad = 1 }
-            END { exit !bad }
-         '; then
-        note "$rel invokes 'integration-test-failure' in a step without 'if: always()'."
-        echo "      A red main suite then skips failure injection entirely, so the lane" >&2
-        echo "      reports on half of itself exactly when something is already wrong." >&2
-    fi
-
     # --- C. `edited` where a gate reads the PR body --------------------
     if printf '%s\n' "$body" | grep -E "$BODY_GATES" >/dev/null; then
         if printf '%s\n' "$body" | grep -E '^[[:space:]]*pull_request:' >/dev/null; then
@@ -288,4 +262,4 @@ if [ "$fail" -ne 0 ]; then
     exit 1
 fi
 
-echo "PASS  ${#WF_FILES[@]} workflow(s): teardown, failure-suite if:always, body-gate 'edited'"
+echo "PASS  ${#WF_FILES[@]} workflow(s): teardown, body-gate 'edited'"

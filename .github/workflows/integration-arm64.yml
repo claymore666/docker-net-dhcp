@@ -114,12 +114,8 @@ jobs:
         run: |
           echo "::warning title=Anonymous Docker Hub pulls::DOCKERHUB_USERNAME / DOCKERHUB_TOKEN are not available to this job (#562)."
 
-      # The toolchain and fixture deps are baked into the runner image; the
-      # check is integration.yml's own copy (#746). The architecture check
-      # is this lane's axis and stays here.
-      - name: Verify the runner image
-        uses: ./.github/actions/verify-runner-image
-
+      # The architecture check is this lane's axis; the image check is in
+      # lane-preflight below, shared with integration.yml (#746, #733).
       - name: Verify the runner is arm64
         run: |
           [ "$(uname -m)" = "aarch64" ] || { echo "::error::expected aarch64, got $(uname -m)"; exit 1; }
@@ -149,13 +145,14 @@ jobs:
           fi
           exit "$rc"
 
-      - name: Cleanup orphans from previous runs
-        run: bash test/integration/cleanup-orphans.sh
-
+      # Image verification and orphan cleanup as integration.yml runs them.
       # This runner's engine is not the one the fixtures were recorded on,
-      # so the engine is reported and a minor apart is a notice (#1015).
-      - name: Engine version
-        run: bash scripts/check-fixture-engine-drift.sh --report
+      # so drift is reported and a minor apart is a notice (#1015, #733).
+      - name: Prepare the lane
+        uses: ./.github/actions/lane-preflight
+        with:
+          plugin-ref: ${{ env.INTEGRATION_PLUGIN_REF }}
+          drift: report
 
       # The plugin's /var/run/docker bind receives the daemon's later sandbox mounts only from a shared source (#417).
       # A standing runner keeps the image it was started from, and one built before dc54f0a never shared its root, so
@@ -186,9 +183,7 @@ jobs:
           ref: ${{ env.INTEGRATION_PLUGIN_REF }}
           dir: plugin
 
-      # shell: bash is LOAD-BEARING for pipefail, exactly as in
-      # integration.yml (#297).
-      # ITEST_TIMEOUT, not the Makefile's 20m default. THIS LANE RUNS THE
+      # main-timeout, not the Makefile's 20m default. THIS LANE RUNS THE
       # WHOLE MAIN SUITE IN ONE go test BINARY, as coverage.yml and
       # integration-hosted.yml do; the amd64 lane splits the same suite
       # across nine shards, so the 20m ceiling that leaves every shard
@@ -219,33 +214,23 @@ jobs:
       # 2m05s, 188 rounded up, inside timeout-minutes: 190 above.
       #
       # The failure suite keeps the 20m default: it measured 7m53s here.
-      - name: Run main suite
-        shell: bash
+      # run-suites runs it whatever main returned, and its summary step is
+      # if: always() (#742, #733).
+      - name: Run the suites
+        uses: ./.github/actions/run-suites
         env:
-          ITEST_TIMEOUT: 165m
           # The test binary's Go runtime memory (Sys) at exit may not pass 256 MB (#1180). Measured: Sys 36 MB
           # and 23 MB in the two amd64 shards with the bound off (run 37126837978); RSS peak 24 MB over an
           # 80-minute arm64 run that skipped the log read and 13 IPAM tests. The whole-suite arm64 Sys is not
           # measured yet; 256 is margin for it. The read that killed the binary twice (an 842 MB dockerd log
           # held whole, about 2.1x at once) puts Sys near 1.8 GB.
           ITEST_HEAP_BOUND_MB: 256
-        run: make integration-test 2>&1 | tee /tmp/itest-arm64-main.log
-
-      # if: always() for the same reason as integration-hosted.yml (#742):
-      # a red main suite must not take the failure suite with it. On this
-      # lane it also keeps the timing summary below honest, which reads
-      # both logs and would otherwise report on a file that was never
-      # written.
-      - name: Run failure suite
-        if: always()
-        shell: bash
-        run: make integration-test-failure 2>&1 | tee /tmp/itest-arm64-failure.log
-
-      - name: Test timing summary
-        if: always()
-        run: |
-          scripts/integration-timing.sh /tmp/itest-arm64-main.log
-          scripts/integration-timing.sh /tmp/itest-arm64-failure.log
+        with:
+          plugin-ref: ${{ env.INTEGRATION_PLUGIN_REF }}
+          main: integration-test
+          main-timeout: 165m
+          failure: integration-test-failure
+          log: arm64
 
       # THE ONLY STANDING RUNNER WAS THE ONLY LANE WITH NO TEARDOWN
       # (#742). Every other lane runs on an ephemeral one-job runner,
@@ -258,7 +243,7 @@ jobs:
       #
       # The `docker plugin rm -f` earlier in the build step is a
       # PRE-install cleanup, not a teardown: it runs before the plugin
-      # this job installs exists. Same block as integration.yml:560-564,
+      # this job installs exists. Same step as integration.yml's teardown,
       # for the same reason and with more force behind it here.
       - name: Tear down integration plugin
         if: always()

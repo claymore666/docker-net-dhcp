@@ -294,18 +294,11 @@ jobs:
           ref: ${{ env.INTEGRATION_PLUGIN_REF }}
           dir: plugin
 
-      # The Makefile targets require root (netns/veth/UDP-67). Hosted
-      # runs as the `runner` user with passwordless sudo, so wrap with
-      # sudo — and forward PATH (for the setup-go toolchain) and the
-      # plugin ref explicitly, since sudo resets the environment.
-      #
-      # ITEST_TIMEOUT, and FORWARDED THROUGH sudo, which is the whole
-      # trick here. `sudo` resets the environment, so a step-level `env:`
-      # alone reads as a budget and delivers nothing: make would take
-      # Makefile:171's 20m default and the alarm would fire mid-suite
-      # exactly as it did on the coverage lane. The value is named once
-      # in `env:` and forwarded by name, the same shape this step already
-      # uses for the plugin ref.
+      # The Makefile targets require root (netns/veth/UDP-67) and hosted
+      # runs as `runner` with passwordless sudo, whose env_reset would turn
+      # a step `env:` budget into make's 20m default. run-suites wraps make
+      # in sudo itself and forwards PATH, the plugin ref and each ceiling
+      # by name (#733).
       #
       # THIS ARM RUNS THE WHOLE MAIN SUITE IN ONE go test BINARY, like
       # integration-arm64.yml and coverage.yml, each with a ceiling sized
@@ -324,17 +317,28 @@ jobs:
       #
       # 145 / 96.5 = 1.50x of headroom over this lane's own projection,
       # 48.5 minutes of slack, above the 1.48x floor #934 set (#1112).
-      - name: Run integration tests
+      #
+      # The failure suite runs whatever main returned, the point of this
+      # lane (#742): a red main suite must not hide the one run on a bare
+      # host, systemd, enforcing AppArmor and a distro Kea. 20m is the
+      # Makefile default written out; it took 7m05s on run 35586110297.
+      - name: Run the whole suite
         if: matrix.shard == 'full'
-        env:
-          ITEST_TIMEOUT: 145m
-        run: sudo env "PATH=$PATH" "INTEGRATION_PLUGIN_REF=$INTEGRATION_PLUGIN_REF" "ITEST_TIMEOUT=$ITEST_TIMEOUT" make integration-test
+        uses: ./.github/actions/run-suites
+        with:
+          plugin-ref: ${{ env.INTEGRATION_PLUGIN_REF }}
+          main: integration-test
+          main-timeout: 145m
+          failure: integration-test-failure
+          failure-timeout: 20m
+          log: hosted
 
       # The sharded arm. The suite, the 1-based index and the total are
       # all read out of the matrix id, so this step states no partition
       # of its own -- there is nothing here to drift from
       # integration.yml's matrix except the list above, which is checked.
-      - name: Run one shard
+      - name: Read the shard id
+        id: shard
         if: matrix.shard != 'full'
         env:
           SHARD_ID: ${{ matrix.shard }}
@@ -350,28 +354,15 @@ jobs:
           idx="${rest%%-of-*}"
           of="${rest##*-of-}"
           echo "hosted shard: SUITE=${suite} SHARD=${idx} OF=${of}"
-          sudo env "PATH=$PATH" "INTEGRATION_PLUGIN_REF=$INTEGRATION_PLUGIN_REF" \
-              make integration-test-shard "SHARD=${idx}" "OF=${of}" "SUITE=${suite}"
+          echo "args=integration-test-shard SHARD=${idx} OF=${of} SUITE=${suite}" >> "$GITHUB_OUTPUT"
 
-      # if: always() IS THE WHOLE POINT OF RUNNING THIS LANE (#742). Without
-      # it a red main suite skips the failure-injection suite entirely, so
-      # the one place a bare host, systemd, enforcing AppArmor and a distro
-      # Kea are exercised reports on half of itself precisely when
-      # something is already wrong. That is the pre-#375 semantics
-      # integration.yml:109-114 documents as the bug `fail-fast: false`
-      # fixed there; it was never applied here. Observed live in run
-      # 32166474894.
-      #
-      # 20m is the Makefile default, written out and forwarded for the
-      # same two reasons as the main step: this lane's budgets are read
-      # together, and under sudo an unforwarded value is not a budget at
-      # all. The suite took 7m05s here on run 35586110297, so 20m holds
-      # it with room (#1112).
-      - name: Run failure-injection tests
-        if: always() && matrix.shard == 'full'
-        env:
-          ITEST_TIMEOUT: 20m
-        run: sudo env "PATH=$PATH" "INTEGRATION_PLUGIN_REF=$INTEGRATION_PLUGIN_REF" "ITEST_TIMEOUT=$ITEST_TIMEOUT" make integration-test-failure
+      - name: Run one shard
+        if: matrix.shard != 'full'
+        uses: ./.github/actions/run-suites
+        with:
+          plugin-ref: ${{ env.INTEGRATION_PLUGIN_REF }}
+          main: ${{ steps.shard.outputs.args }}
+          log: hosted
 
       # Belt-and-braces on an ephemeral VM, kept for parity with
       # integration.yml so the two workflows read the same.

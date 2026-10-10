@@ -153,8 +153,8 @@ this project will not do, is on the [roadmap](docs/roadmap.md).
   because it is unmeasured: on a cgroup v2 host it cannot start a
   container at all, so nothing there tests this plugin.
   Every change is also tested against the engine the integration suite
-  runs on, **29.8.2** today, read from that run's `Fixture engine drift`
-  step.
+  runs on, **29.8.2** today, read from the engine drift check in that
+  run's `Prepare the lane` step.
 - **Plugin interface `docker.networkdriver/1.0`**, which is what the
   plugin manifest declares. The plugin negotiates the Docker API version
   with the daemon. It publishes both numbers on `/Plugin.Health` as

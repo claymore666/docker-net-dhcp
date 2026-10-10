@@ -4,19 +4,13 @@
 #
 # Meta-test for check-lane-hygiene.sh (#742).
 #
-# The three invariants this gate carries share a property that makes
-# them hard to test any other way: each failure is an ABSENCE. A step
-# without `if: always()` is skipped, not failed; a lane without a
-# teardown leaves state on a machine nothing inspects; a workflow
-# without `edited` in its types simply never runs. So the cases below
-# check that the gate reports the absence — and, in every section, that
-# the corresponding presence still reads as clean, because a gate that
-# fires on both is one nobody can satisfy.
-#
-# The last section is the one that caught a real defect in this gate: a
-# step block that never ended swallowed the next job's matrix, turning
-# every per-step question into a whole-file question and reporting two
-# workflows this branch had just fixed.
+# The two invariants this gate carries share a property that makes
+# them hard to test any other way: each failure is an ABSENCE. A lane
+# without a teardown leaves state on a machine nothing inspects; a
+# workflow without `edited` in its types simply never runs. So the cases
+# below check that the gate reports the absence and, in every section,
+# that the corresponding presence still reads as clean, because a gate
+# that fires on both is one nobody can satisfy.
 set -uo pipefail
 
 # shellcheck source=scripts/tmpdir-guard.sh
@@ -79,52 +73,6 @@ guarded_tmpdir d
     || no "a pre-install rm was accepted as a teardown"
 rm -rf "$d"
 
-# --- B. the failure suite runs after a red main suite -------------------
-
-mk_suite() {
-    # $1 dir, $2 "always"|"none"
-    local d="$1"
-    {
-        printf 'name: lane\non:\n  workflow_dispatch:\njobs:\n  suite:\n'
-        printf '    runs-on: ubuntu-latest\n    steps:\n'
-        printf '      - name: Run main suite\n        run: make integration-test\n'
-        printf '      - name: Run failure suite\n'
-        [ "$2" = always ] && printf '        if: always()\n'
-        printf '        run: make integration-test-failure\n'
-    } > "$d/lane.yml"
-}
-
-guarded_tmpdir d; mk_suite "$d" none
-[ "$(verdict "$d")" = 1 ] \
-    && ok "a failure suite without if: always() is reported" \
-    || no "a failure suite without if: always() should exit 1"
-rm -rf "$d"
-
-guarded_tmpdir d; mk_suite "$d" always
-[ "$(verdict "$d")" = 0 ] \
-    && ok "the same lane with if: always() is clean" \
-    || no "a failure suite with if: always() should be clean"
-rm -rf "$d"
-
-# A matrix DECLARATION of the target is not an invocation. integration.yml
-# runs its failure suite as a separate matrix job where `fail-fast: false`
-# keeps the suites independent, and a step-level `if:` there would be
-# wrong rather than missing.
-guarded_tmpdir d
-{
-    printf 'name: lane\non:\n  workflow_dispatch:\njobs:\n  suite:\n'
-    printf '    runs-on: ubuntu-latest\n'
-    printf '    strategy:\n      fail-fast: false\n      matrix:\n        include:\n'
-    printf '          - suite: main\n            target: integration-test\n'
-    printf '          - suite: failure\n            target: integration-test-failure\n'
-    printf '    steps:\n'
-    printf '      - name: Run suite\n        run: make ${{ matrix.target }}\n'
-} > "$d/lane.yml"
-[ "$(verdict "$d")" = 0 ] \
-    && ok "a matrix target named integration-test-failure is not a step invocation" \
-    || no "a matrix declaration was misread as an un-guarded step"
-rm -rf "$d"
-
 # --- a mention guards and runs nothing (#883) --------------------------
 # Each decoy passed while the gate matched `if: always()` and the command
 # as text anywhere in a step. The control is the same step with the
@@ -164,24 +112,8 @@ decoy 1 "A: an if: always() line inside a run block is not the step's if" \
 decoy 1 "A control: the teardown with no if: at all" \
     '      - name: Tear down' '        run: docker plugin rm -f "$REF" || true'
 
-decoy 1 "B: echo \"if: always()\" before the failure suite is not an if:" \
-    '      - name: Run failure suite' \
-    '        run: echo "if: always()" && make integration-test-failure' \
-    '      - name: Tear down' '        if: always()' '        run: docker plugin rm -f "$REF"'
-decoy 1 "B: if: always() in a step name is not an if:" \
-    '      - name: "Run failure suite, if: always()"' '        run: make integration-test-failure' \
-    '      - name: Tear down' '        if: always()' '        run: docker plugin rm -f "$REF"'
-decoy 1 "B control: the failure suite with no if: at all" \
-    '      - name: Run failure suite' '        run: make integration-test-failure' \
-    '      - name: Tear down' '        if: always()' '        run: docker plugin rm -f "$REF"'
-decoy 0 "B: a step that only echoes the target runs no failure suite" \
-    '      - name: Note' '        run: echo "make integration-test-failure runs in the matrix"' \
-    '      - name: Tear down' '        if: always()' '        run: docker plugin rm -f "$REF"'
 decoy 0 "A: a teardown whose first key is if: always() is a teardown" \
     '      - if: always()' '        name: Tear down' '        run: docker plugin rm -f "$REF" || true'
-decoy 1 "B: a failure suite whose first key is id: still needs its if:" \
-    '      - id: failure' '        name: Run failure suite' '        run: make integration-test-failure' \
-    '      - name: Tear down' '        if: always()' '        run: docker plugin rm -f "$REF"'
 
 # --- C. `edited` where a gate reads the PR body -------------------------
 

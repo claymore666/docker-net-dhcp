@@ -1052,12 +1052,11 @@ jobs:
       - name: Privileged lanes share one concurrency key
         run: bash scripts/check-concurrency-parity.sh
 
-      # Three per-workflow invariants whose failure mode is ABSENCE, not
-      # error: a failure suite skipped by a red main suite, a standing
-      # runner left with an enabled plugin, and a PR body that can be
-      # edited after a body-reading gate has passed on it (#742). None
-      # of them can go red on its own, so they are asserted against the
-      # workflow text at the only point they are visible — the edit.
+      # Two per-workflow invariants whose failure mode is ABSENCE, not
+      # error: a standing runner left with an enabled plugin, and a PR
+      # body that can be edited after a body-reading gate has passed on
+      # it (#742). Neither can go red on its own, so both are asserted
+      # against the workflow text at the only point they are visible.
       - name: Lane hygiene
         run: bash scripts/check-lane-hygiene.sh
 

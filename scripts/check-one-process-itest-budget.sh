@@ -25,7 +25,10 @@
 # `run:` invokes `make integration-test` or `make integration-test-failure`
 # is running a whole suite in one process, and a fourth such lane is in
 # scope the moment it is written, with nobody having to remember to add
-# it here.
+# it here. A step calling .github/actions/run-suites is read the same way
+# through its `main` and `failure` inputs, with `main-timeout` and
+# `failure-timeout` as the ceilings (#733); property B holds there by
+# construction, in scripts/integration-suites.sh's sudo argv.
 #
 # HOW THE DEFECT ACTUALLY SURFACES, twice in one release: `Makefile:171`
 # sets `ITEST_TIMEOUT ?= 20m`, sized for one of the amd64 lane's nine
@@ -136,6 +139,13 @@ MAIN_SUITE = "integration-test"
 # so `integration-test-shard` cannot be read as `integration-test`.
 MAKE_RE = re.compile(r"\bmake\b[^\n]*?\b(integration-test(?:-failure)?)(?![\w-])")
 
+# The lanes call the suites through this composite (#733): its `main` and
+# `failure` inputs are make arguments, its `*-timeout` inputs the ceilings
+# scripts/integration-suites.sh hands to make, through sudo by name.
+RUN_SUITES = "./.github/actions/run-suites"
+SUITE_INPUTS = (("main", "main-timeout"), ("failure", "failure-timeout"))
+TARGET_RE = re.compile(r"(?<![\w-])(integration-test(?:-failure)?)(?![\w-])")
+
 DURATION_RE = re.compile(r"^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$")
 
 MARGIN_MINUTES = 1
@@ -213,6 +223,44 @@ for path in files:
         ceilings = []
         for step in steps:
             if not isinstance(step, dict):
+                continue
+            uses = step.get("uses")
+            if isinstance(uses, str) and uses.strip().rstrip("/") == RUN_SUITES:
+                inputs = step.get("with") or {}
+                if not isinstance(inputs, dict):
+                    inputs = {}
+                name = step.get("name") or RUN_SUITES
+                where = "%s: job %s: step '%s'" % (path, job_id, name)
+                for scope, env in (("the step's env", env_of(step)),
+                                   ("the job's env", job_env), ("the workflow's env", wf_env)):
+                    if VAR in env:
+                        findings.append(
+                            "%s calls run-suites with %s set in %s. "
+                            "integration-suites.sh refuses it, because an exported value "
+                            "overrides the Makefile's default for both suites; state the "
+                            "ceiling in the step's main-timeout / failure-timeout inputs."
+                            % (where, VAR, scope))
+                for target_input, timeout_input in SUITE_INPUTS:
+                    args = inputs.get(target_input)
+                    if not isinstance(args, str):
+                        continue
+                    targets = TARGET_RE.findall(args)
+                    if not targets:
+                        continue
+                    members += 1
+                    lanes.add(path)
+                    value = inputs.get(timeout_input)
+                    if value == "":
+                        value = None
+                    ceilings.append(minutes(value, "%s: %s" % (where, timeout_input))
+                                    if value is not None else default_minutes)
+                    if MAIN_SUITE in targets and value is None:
+                        findings.append(
+                            "%s runs the whole main suite through its %s input and sets no "
+                            "%s, so it inherits %s's %s -- a SHARD's budget applied to "
+                            "every test at once. State the lane's own ceiling beside its "
+                            "derivation." % (where, target_input, timeout_input, makefile,
+                                             default_text))
                 continue
             run = step.get("run")
             if not isinstance(run, str):
@@ -296,9 +344,10 @@ for path in files:
                     % (job_where, cap_minutes, sum(ceilings), required))
 
 if members == 0:
-    refuse("no step in %s invokes `make %s`. Either the lanes were renamed or this "
-           "gate's population has rotted -- and a rule with nothing to check reports "
-           "clean while observing nothing." % (wf_dir, "` or `make ".join(WHOLE_SUITE)))
+    refuse("no step in %s invokes `make %s`, directly or through %s. Either the "
+           "lanes were renamed or this gate's population has rotted -- and a rule "
+           "with nothing to check reports clean while observing nothing."
+           % (wf_dir, "` or `make ".join(WHOLE_SUITE), RUN_SUITES))
 
 # The derivation prints on EVERY outcome, red included. What the gate
 # found and what it costed unset steps at is the first thing a reader
