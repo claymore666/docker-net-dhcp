@@ -10,8 +10,8 @@
 #
 # POPULATION: TOP-LEVEL TEST FUNCTIONS, PARENTS ONLY.
 # One row per `func TestX(t *testing.T)` in test/integration/*_test.go —
-# 244 of them, the main suite's 237 and the failure suite's 7. MEASURED
-# on this table: 244 data rows, and 244 `func TestX(t *testing.T)` in
+# 263 of them, the main suite's 256 and the failure suite's 7. MEASURED
+# on this table: 263 data rows, and 263 `func TestX(t *testing.T)` in
 # test/integration/*_test.go counted independently of them.
 #
 # THIS NUMBER HAS NOW BEEN WRONG TWICE, and the second time is the
@@ -720,6 +720,7 @@ TestIPAM_StaticIPIsHonouredWithASubnet	24.00
 TestIPAM_StaticIPWithoutASubnetIsStillTheAddressAsked	7.00
 TestIPAM_TwoEndpointsCannotShareOneHardwareAddress	16.00
 TestIPAM_TwoNetworksCannotShareOnePool	40.00
+TestIPAMv6Pool_TypedSubnetCreatesAndInspectShowsBothPools	30.00
 TestIPAMv6_ASLAACAddressFollowsTheFreshMACAndMacAddressPinsIt	90.00
 TestIPAMv6_ASilentManagedServerFailsTheStartInsideAMinute	35.00
 TestIPAMv6_ASingleRestartChangesTheMACAndKeepsDUIDIAIDAndAddress	30.00
