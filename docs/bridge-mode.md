@@ -339,7 +339,9 @@ On engine 26 (26.1.4, measured 2026-09-24) the daemon refuses
 `docker network create --ipv6` on a network with the null IPAM driver.
 On 29.8.1 it accepts the create, but a `--ip6` address still does not
 reach the plugin: the Solicit carried no requested address (measured the
-same day).
+same day). To serve `--ip6`, name this plugin as the IPAM driver as well
+and type an IPv6 `--subnet`; see
+[Address allocation](reference.md#address-allocation).
 
 ```bash
 # arm64: the -arm64 tag here too.
