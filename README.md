@@ -105,10 +105,11 @@ Where the plugin refuses, the message names the reason.
 
 ## Planned
 
-v2.5.0 adds DHCPv6 prefix delegation ([#214]), fixes to lease release
-and option validation, and the CI consolidation. v2.6.0 is planned for
-the CI consolidation tracking issue ([#733]). The full list, with what
-this project will not do, is on the [roadmap](docs/roadmap.md).
+v2.6.0 adds networks created with `--ipv4=false` ([#1135]), an IPv6 pool
+from a typed IPv6 `--subnet` in the IPAM shape ([#1132]),
+`release_lease` from a parent with no IPv4 address ([#1288]) and the CI
+consolidation ([#733]). Nothing is planned beyond it yet. The full list,
+with what this project will not do, is on the [roadmap](docs/roadmap.md).
 
 ## How to check any of this
 
@@ -137,6 +138,7 @@ this project will not do, is on the [roadmap](docs/roadmap.md).
 [#904]: https://github.com/claymore666/docker-net-dhcp/issues/904
 [#214]: https://github.com/claymore666/docker-net-dhcp/issues/214
 [#733]: https://github.com/claymore666/docker-net-dhcp/issues/733
+[#1288]: https://github.com/claymore666/docker-net-dhcp/issues/1288
 [#1135]: https://github.com/claymore666/docker-net-dhcp/issues/1135
 [#1027]: https://github.com/claymore666/docker-net-dhcp/issues/1027
 
