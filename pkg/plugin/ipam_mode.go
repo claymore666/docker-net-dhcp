@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/claymore666/dhcp-golib/lease"
+	"github.com/claymore666/dhcp-golib/proto"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
@@ -133,9 +134,30 @@ func rebuildIPAMIndex(x *ipamIndex) []string {
 		if sn.Binding == nil {
 			continue
 		}
-		x.bind(sn.Binding.PoolID, id)
+		for _, poolID := range sn.Binding.poolIDs() {
+			x.bind(poolID, id)
+		}
 	}
 	return records
+}
+
+// ipamRefuseV6PoolMode refuses a v6 pool on any ipv6_mode but dhcp: the engine demands an address for it from
+// RequestAddress, and only a DHCPv6 exchange yields one without a link that heard a router advertisement (#1132).
+func ipamRefuseV6PoolMode(opts DHCPNetworkOptions) error {
+	mode, err := opts.ipv6Mode()
+	if err != nil {
+		return err
+	}
+	if mode == proto.Mode6DHCP {
+		return nil
+	}
+	return fmt.Errorf("%w: an IPv6 --subnet gives this network an IPv6 pool whose addresses come from the DHCPv6 server, and this network is ipv6_mode=%s. Set `-o ipv6_mode=dhcp` (or `-o ipv6=true`) to keep the IPv6 --subnet. For SLAAC, router-advertised or automatic IPv6, drop --ipv6 and the IPv6 --subnet, and switch IPv6 on with `-o ipv6_mode=<mode>`: that shape needs no pool", util.ErrIPAM, mode)
+}
+
+// ipamRefuseV6PoolAlone refuses an IPv6 pool from this driver with no IPv4 pool beside it: the issue would never be
+// bound, and the engine would later ask an unbound pool for an address (#1132).
+func ipamRefuseV6PoolAlone() error {
+	return fmt.Errorf("%w: an IPv6 --subnet from this plugin's IPAM driver needs an IPv4 pool from it beside it, and this network has none (--ipv4=false, or an IPv4 pool from another driver). Drop the IPv6 --subnet and switch IPv6 on with `-o ipv6_mode=<mode>`", util.ErrIPAM)
 }
 
 // ipamNetwork reads disk only: IPAM RPCs arrive during the daemon's start-up replay, before its API serves (#110).

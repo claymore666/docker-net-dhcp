@@ -113,6 +113,48 @@ func (p *Plugin) ipamBindingFor(networkID string, ipv4 []*IPAMData, iface string
 	return b, nil
 }
 
+// ipamBind6 adds the v6 pool to a binding: the same take-and-index rules as the v4 pool, over the issue RequestPool
+// banked for the typed v6 --subnet (#1132).
+func (p *Plugin) ipamBind6(networkID string, b *ipamBinding, ipv6 []*IPAMData, iface string) error {
+	var d *IPAMData
+	for _, c := range ipv6 {
+		if c != nil && (c.AddressSpace == ipamLocalAddressSpace || c.AddressSpace == ipamGlobalAddressSpace) {
+			if d != nil {
+				return fmt.Errorf("%w: this plugin allocates one IPv6 pool per network and Docker asked for more than one", util.ErrIPAM)
+			}
+			d = c
+		}
+	}
+	if d == nil {
+		return nil
+	}
+	pool, err := ipamCanonicalPool6(d.Pool)
+	if err != nil {
+		return err
+	}
+	poolID, ok, otherName := p.ipamPools.take(d.AddressSpace, pool, iface, time.Now())
+	if !ok {
+		if otherName != "" && otherName != iface {
+			return fmt.Errorf("%w: this network's IPv6 pool identity was built for interface %q (from `--ipam-opt parent=` or `--ipam-opt bridge=`) and the network itself is being created on %q. The two have to name the same interface", util.ErrIPAM, otherName, iface)
+		}
+		return fmt.Errorf("%w: this plugin has no issued IPv6 pool %v in address space %v to bind. Either the plugin restarted between `docker network create` asking for the pool and creating the network, or another `docker network create` for the same subnet is running on this host and consumed it. Re-run `docker network create`, one at a time", util.ErrIPAM, pool, d.AddressSpace)
+	}
+	if other, taken := p.ipamIndex.boundTo(poolID, networkID); taken {
+		return fmt.Errorf("%w: network %v already holds IPv6 pool %v. Two DHCP networks with the same IPv6 subnet need one of them to name its interface: add `--ipam-opt parent=<nic>` (or `--ipam-opt bridge=<name>`), or give this one its own `--subnet`", util.ErrIPAM, shortID(other), pool)
+	}
+	b.PoolID6, b.Pool6 = poolID, pool
+	if d.Gateway != "" {
+		b.Gateway6 = bareAddress(d.Gateway)
+	}
+	for _, v := range d.AuxAddresses {
+		if s, ok := v.(string); ok && s != "" {
+			b.Aux6 = append(b.Aux6, bareAddress(s))
+		}
+	}
+	sort.Strings(b.Aux6)
+	return nil
+}
+
 // bareAddress strips a prefix length: CreateNetwork gets CIDR addresses and RequestAddress the same ones bare.
 func bareAddress(s string) string {
 	if p, err := netip.ParsePrefix(s); err == nil {
@@ -381,11 +423,24 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 			// `--ipam-opt parent=<parent>.<id>` (#902).
 			iface = opts.linkParent()
 		}
+		v6Pool := ipamDataIsOurs(r.IPv6Data)
+		if v6Pool {
+			if err := ipamRefuseV6PoolMode(opts); err != nil {
+				return err
+			}
+		}
 		b, err := p.ipamBindingFor(r.NetworkID, r.IPv4Data, iface)
 		if err != nil {
 			return err
 		}
+		if v6Pool {
+			if err := p.ipamBind6(r.NetworkID, b, r.IPv6Data, iface); err != nil {
+				return err
+			}
+		}
 		binding = b
+	} else if ipamDataIsOurs(r.IPv6Data) {
+		return ipamRefuseV6PoolAlone()
 	}
 
 	if mode := opts.effectiveMode(); mode == ModeMacvlan || mode == ModeIPvlan {
@@ -586,7 +641,9 @@ func (p *Plugin) saveNetworkAndBind(networkID string, opts DHCPNetworkOptions, b
 		return nil
 	}
 	if binding != nil {
-		p.ipamIndex.bind(binding.PoolID, networkID)
+		for _, id := range binding.poolIDs() {
+			p.ipamIndex.bind(id, networkID)
+		}
 	}
 	return nil
 }
