@@ -51,6 +51,9 @@ type EndpointHealth struct {
 
 // unboundState names an endpoint with no bound lease, which on the RFC 3927 fallback still has an address (#904).
 func (m *dhcpManager) unboundState() (state, address string) {
+	if !m.opts.ipv4Enabled() {
+		return ipv4OffStateName, ""
+	}
 	if v4, _ := m.lastIPs(); isLinkLocalAddr(v4) {
 		return linkLocalStateName, v4.String()
 	}

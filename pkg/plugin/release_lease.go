@@ -314,7 +314,9 @@ func (m *dhcpManager) releaseFamily(v6 bool) bool {
 
 // releaseHeldLeases reports whether any family released, since one tombstone carries both addresses (#962).
 func (m *dhcpManager) releaseHeldLeases() (releasedV4, releasedV6 bool) {
-	releasedV4 = m.releaseFamily(false)
+	if m.opts.ipv4Enabled() {
+		releasedV4 = m.releaseFamily(false)
+	}
 	if m.opts.ipv6Enabled() {
 		releasedV6 = m.releaseFamily(true)
 	}

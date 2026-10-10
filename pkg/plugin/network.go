@@ -332,10 +332,17 @@ func splitSandboxKeyIn(dirs []string, sandboxKey string) (dir, name string) {
 func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 	log.WithField("options", r.Options).Debug("CreateNetwork options")
 
+	if err := refuseIPv4Option(r.Options[util.OptionsKeyGeneric]); err != nil {
+		return err
+	}
 	// decodeOptsSet, since the IPv6 refusals need to know which fields the operator wrote; see ipv6Mode.
 	opts, optsSet, err := decodeOptsSet(r.Options[util.OptionsKeyGeneric])
 	if err != nil {
 		return fmt.Errorf("failed to decode network options: %w", err)
+	}
+	// The engine's top-level key, not the -o submap: the flag is stored so Join, replay and a restart read it (#1135).
+	if opts.IPv4Off, err = engineIPv4Off(r.Options); err != nil {
+		return err
 	}
 
 	if err := validateIPAMData(r.IPv4Data); err != nil {
@@ -347,6 +354,10 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 	}
 
 	if err := validateIPv6Options(opts, optsSet); err != nil {
+		return err
+	}
+
+	if err := validateIPv4Off(opts); err != nil {
 		return err
 	}
 
@@ -400,6 +411,7 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 			"mode":          mode,
 			"parent":        opts.Parent,
 			"vlan":          opts.Vlan,
+			"ipv4":          opts.ipv4Enabled(),
 			"ipv6":          opts.ipv6Enabled(),
 			"ipv6_mode":     opts.IPv6Mode,
 			"validate_dhcp": opts.ValidateDHCP,
@@ -437,6 +449,7 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		"network":   r.NetworkID,
 		"bridge":    opts.Bridge,
 		"parent":    opts.Parent,
+		"ipv4":      opts.ipv4Enabled(),
 		"ipv6":      opts.ipv6Enabled(),
 		"ipv6_mode": opts.IPv6Mode,
 		"ipam":      binding != nil,
@@ -542,7 +555,10 @@ func (p *Plugin) createParentAttachedNetwork(networkID string, opts DHCPNetworkO
 		return err
 	}
 	// Pre-flight DHCP probe, opt-in via validate_dhcp, before saveOptions so a failed probe leaves no state (#108).
-	if opts.ValidateDHCP {
+	if opts.ValidateDHCP && !opts.ipv4Enabled() {
+		log.WithField("network", networkID).
+			Warn("validate_dhcp probes DHCPv4, and this network was created with --ipv4=false: no probe ran (#1135)")
+	} else if opts.ValidateDHCP {
 		// The budget covers the probe and its wait for the parent gate, which runDHCPProbe takes itself (#577).
 		probePolicy, err := resolveServerPolicy(opts)
 		if err != nil {
@@ -914,6 +930,7 @@ func (p *Plugin) netOptionsRaw(ctx context.Context, id string) (DHCPNetworkOptio
 	if err != nil {
 		return dummy, fmt.Errorf("failed to parse options: %w", err)
 	}
+	opts.IPv4Off = p.inspectIPv4Off(n)
 
 	// Backfill a network that predates persistence; guarded on absence, so no file is lost.
 	if absent {
@@ -978,6 +995,10 @@ func (p *Plugin) createEndpoint(ctx context.Context, r CreateEndpointRequest) (_
 	opts, err := p.netOptions(ctx, r.NetworkID)
 	if err != nil {
 		return res, fmt.Errorf("failed to get network options: %w", err)
+	}
+
+	if err := refuseExplicitV4(opts, explicitV4); err != nil {
+		return res, err
 	}
 
 	// Before the IPAM split, the ifname hint and a tombstone's MAC, so a refusal leaves nothing behind (#1036).
@@ -1119,12 +1140,14 @@ func (p *Plugin) createEndpoint(ctx context.Context, r CreateEndpointRequest) (_
 
 		// The CREATED record holds the option-61 value as sent, type byte included, and Join resumes it as
 		// INIT-REBOOT (#899).
-		recordID = p.recordCreated(r.NetworkID,
-			endpointRecordKey(opts.effectiveMode(), r.EndpointID, ctrLink.Attrs().HardwareAddr),
-			dhcp.ClientIdentity(clientID))
-		p.updateJoinHint(r.EndpointID, func(hint *joinHint) {
-			hint.RecordID = recordID
-		})
+		if opts.ipv4Enabled() {
+			recordID = p.recordCreated(r.NetworkID,
+				endpointRecordKey(opts.effectiveMode(), r.EndpointID, ctrLink.Attrs().HardwareAddr),
+				dhcp.ClientIdentity(clientID))
+			p.updateJoinHint(r.EndpointID, func(hint *joinHint) {
+				hint.RecordID = recordID
+			})
+		}
 
 		// The DHCPv6 identity has its own record, kept apart by dhcp.Scope6 since both share a chaddr, and minted once:
 		// RFC 9915 section 11 says a DUID "SHOULD NOT change over time if at all possible" (#911).
@@ -1200,8 +1223,10 @@ func (p *Plugin) createEndpoint(ctx context.Context, r CreateEndpointRequest) (_
 			return nil
 		}
 
-		if err := initialIP(false); err != nil {
-			return err
+		if opts.ipv4Enabled() {
+			if err := initialIP(false); err != nil {
+				return err
+			}
 		}
 		if opts.ipv6Enabled() {
 			if err := initialIP(true); err != nil {
@@ -1817,7 +1842,7 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 		res.InterfaceName.DstName = hint.Ifname
 	}
 
-	if hint.Gateway != "" {
+	if hint.Gateway != "" && opts.ipv4Enabled() {
 		log.WithFields(log.Fields{
 			"network":  shortID(r.NetworkID),
 			"endpoint": shortID(r.EndpointID),
@@ -1844,8 +1869,10 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 		// Without this the engine gives a container whose endpoints name no gateway a second link on docker_gwbridge
 		// with its default route, and the lease's default route then fails as "file exists" (moby needDefaultGW, #904).
 		res.DisableGatewayService = true
-	} else if err := p.addRoutes(&opts, false, routeSrc, r, hint, &res); err != nil {
-		return res, err
+	} else if opts.ipv4Enabled() {
+		if err := p.addRoutes(&opts, false, routeSrc, r, hint, &res); err != nil {
+			return res, err
+		}
 	}
 	if opts.ipv6Enabled() {
 		if err := p.addRoutes(&opts, true, routeSrc, r, hint, &res); err != nil {
@@ -1853,11 +1880,18 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 		}
 	}
 
-	p.appendDHCPStaticRoutes(opts, r, hint, &res)
+	if opts.ipv4Enabled() {
+		p.appendDHCPStaticRoutes(opts, r, hint, &res)
+	}
 	if opts.ipv6Enabled() {
 		// Hint or reacquired, before the engine moves the link in, so no advertisement wins the default route (#1145).
 		p.guardSandboxDefaults(r)
 		p.applyV6JoinHint(opts, r, hint, &res)
+	}
+	// Without a gateway of either family the engine attaches docker_gwbridge, which gives the container IPv4 after all
+	// (moby needDefaultGW, #1135).
+	if !opts.ipv4Enabled() && res.GatewayIPv6 == "" {
+		res.DisableGatewayService = true
 	}
 	res.StaticRoutes = uniqueStaticRoutes(res.StaticRoutes)
 
