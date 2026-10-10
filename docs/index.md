@@ -36,7 +36,9 @@ and what each item is for is in [SECURITY.md](https://github.com/claymore666/doc
 - **IPv6 in the same shape as IPv4.** `-o ipv6_mode=` picks DHCPv6, SLAAC,
   or whatever the router advertisement says, per network, with the same
   identity rules and the same counters. `-o ipv6_pd=64` also asks for a
-  delegated prefix, for a container that routes one.
+  delegated prefix, for a container that routes one. A network created
+  with `--ipv4=false` (Docker 28 or later) runs no DHCPv4, and its
+  containers get IPv6 only ([#1135]).
 - **One identity per container, kept across restarts.** In `bridge` and
   `macvlan` the plugin keeps the MAC, and with it the DHCP client id and
   the DHCPv6 DUID, across `docker restart`, a daemon restart and a plugin
@@ -73,7 +75,7 @@ and what each item is for is in [SECURITY.md](https://github.com/claymore666/doc
 | You want | Use |
 | --- | --- |
 | The container takes its address from the LAN, Docker keeps no pool | `--ipam-driver null` (the default shape, all three modes) |
-| Docker knows the address: `docker run --ip`, Compose `ipv4_address`, `docker inspect` | the plugin as IPAM driver as well (`--ipam-driver <plugin>`), `bridge` and `macvlan`, IPv4 and IPv6; `--ip6` and `ipv6_address` are not served ([#960]) |
+| Docker knows the address: `docker run --ip`, Compose `ipv4_address`, `docker inspect` | the plugin as IPAM driver as well (`--ipam-driver <plugin>`), `bridge` and `macvlan`, IPv4 and IPv6; `--ip6` and `ipv6_address` are served when an IPv6 `--subnet` is typed ([#1132]) |
 | `ipvlan` | `--ipam-driver null` |
 
 | | IPv4 | IPv6 | as IPAM driver |
@@ -126,6 +128,7 @@ this project will not do, is on the [roadmap](roadmap.md).
 [#949]: https://github.com/claymore666/docker-net-dhcp/issues/949
 [#214]: https://github.com/claymore666/docker-net-dhcp/issues/214
 [#733]: https://github.com/claymore666/docker-net-dhcp/issues/733
+[#1135]: https://github.com/claymore666/docker-net-dhcp/issues/1135
 [#1027]: https://github.com/claymore666/docker-net-dhcp/issues/1027
 
 ## Requirements
@@ -144,7 +147,7 @@ this project will not do, is on the [roadmap](roadmap.md).
   because it is unmeasured: on a cgroup v2 host it cannot start a
   container at all, so nothing there tests this plugin.
   Every change is also tested against the engine the integration suite
-  runs on, **29.8.2** today, read from the engine drift check in that
+  runs on, **29.9.0** today, read from the engine drift check in that
   run's `Prepare the lane` step.
 - **Plugin interface `docker.networkdriver/1.0`**, which is what the
   plugin manifest declares. The plugin negotiates the Docker API version
