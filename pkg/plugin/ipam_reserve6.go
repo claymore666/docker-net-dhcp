@@ -25,6 +25,28 @@ import (
 // requestAddress6 answers RequestAddress on the network's IPv6 pool. The DHCPv6 server is the only allocator and
 // `--ip6` is the IA Address hint; the v4 arms never run here, so a v4 lease cannot answer a v6 call (#1132).
 func (p *Plugin) requestAddress6(ctx context.Context, networkID string, sn storedNetwork, req RequestAddressRequest) (RequestAddressResponse, error) {
+	resp, err := p.requestAddress6Once(ctx, networkID, sn, req)
+	if err != nil {
+		if mac, merr := ipamRequestedMAC(req.Options); merr == nil && mac != nil {
+			p.ipamAbandonReservation4(sn.Binding.PoolID, mac)
+		}
+	}
+	return resp, err
+}
+
+// ipamAbandonReservation4 gives up the v4 reservation answered just before a failed v6 RequestAddress: the engine
+// sends no ReleaseAddress for it, so a retry under the same MAC would meet the duplicate rule until the sweep (#1132).
+func (p *Plugin) ipamAbandonReservation4(poolID string, mac net.HardwareAddr) {
+	r, ok := p.ipamReserves.take(ipamReserveKey(poolID, mac))
+	if !ok {
+		return
+	}
+	p.ipamGiveUpRecord(r.record, time.Now())
+	log.WithFields(log.Fields{"pool": poolID, "address": r.addr.Addr().String()}).
+		Info("The IPv6 address request failed, so the IPv4 address reserved for the same endpoint is given back")
+}
+
+func (p *Plugin) requestAddress6Once(ctx context.Context, networkID string, sn storedNetwork, req RequestAddressRequest) (RequestAddressResponse, error) {
 	var none RequestAddressResponse
 	mac, err := ipamRequestedMAC(req.Options)
 	if err != nil {

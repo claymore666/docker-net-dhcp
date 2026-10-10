@@ -556,8 +556,7 @@ func TestRequestAddress_V6OutageKeepsTheReboundRecordForTheNextStart(t *testing.
 	f0Tombstone(t, p, first, f0Addr)
 	id6 := s2Tombstone6(t, p, first, a6Leased)
 	stored := s3Identity(t, f0Rec(t, p, id6))
-	res4, err := a6Request(p, b.PoolID, "", restarted)
-	if err != nil {
+	if _, err := a6Request(p, b.PoolID, "", restarted); err != nil {
 		t.Fatalf("v4 RequestAddress: %v", err)
 	}
 	srv.err = context.DeadlineExceeded
@@ -566,9 +565,6 @@ func TestRequestAddress_V6OutageKeepsTheReboundRecordForTheNextStart(t *testing.
 	}
 	if rec := f0Rec(t, p, id6); rec.Phase != lease.PhaseRetained || rec.Lease.Addr.Addr().String() != "fd00:6470:6865::20" {
 		t.Fatalf("after the outage the re-bound record is %v holding %v, want Retained holding fd00:6470:6865::20", rec.Phase, rec.Lease.Addr)
-	}
-	if err := p.ReleaseAddress(ReleaseAddressRequest{PoolID: b.PoolID, Address: strings.SplitN(res4.Address, "/", 2)[0]}); err != nil {
-		t.Fatalf("v4 ReleaseAddress: %v", err)
 	}
 	srv.err = nil
 	if _, err := a6Request(p, b.PoolID, "", next); err != nil {
@@ -579,5 +575,60 @@ func TestRequestAddress_V6OutageKeepsTheReboundRecordForTheNextStart(t *testing.
 	}
 	if srv.opts.RecordID != id6 || !s3SameIdentity(srv.opts.Identity6, stored) || srv.opts.PreferredV6 != "fd00:6470:6865::20" {
 		t.Fatalf("the next start ran on %q with %+v asking %q, want %q with the stored identity and address", srv.opts.RecordID, srv.opts.Identity6, srv.opts.PreferredV6, id6)
+	}
+}
+
+// The engine sends no ReleaseAddress for the v4 address after a failed v6 RequestAddress, so the plugin gives that
+// reservation up itself and a retry under the same MAC is not refused as a duplicate (#1132).
+func TestRequestAddress_V6FailureGivesUpTheV4Reservation(t *testing.T) {
+	p, b, srv, _ := a6Fixture(t)
+	mac := f0MAC(0x04)
+	if _, err := a6Request(p, b.PoolID, "", mac); err != nil {
+		t.Fatalf("v4 RequestAddress: %v", err)
+	}
+	srv.err = context.DeadlineExceeded
+	if _, err := a6Request(p, b.PoolID6, "", mac); err == nil {
+		t.Fatal("v6 RequestAddress succeeded against a silent server")
+	}
+	if _, ok := p.ipamReserves.peek(ipamReserveKey(b.PoolID, mac)); ok {
+		t.Fatal("the v4 reservation outlived the failed v6 request")
+	}
+	rb, err := p.records.Rebuilt()
+	if err != nil {
+		t.Fatalf("Rebuilt: %v", err)
+	}
+	var v4 []string
+	for _, rec := range rb.Records {
+		if rec.Scope == ipamTestNetwork {
+			v4 = append(v4, rec.Phase.String())
+		}
+	}
+	if len(v4) != 1 || v4[0] != lease.PhaseRetained.String() {
+		t.Fatalf("v4 records after the failure are %v, want one Retained, since it holds a lease (#962)", v4)
+	}
+	srv.err = nil
+	if _, err := a6Request(p, b.PoolID, "", mac); err != nil {
+		t.Fatalf("v4 retry under the same MAC: %v", err)
+	}
+	if _, err := a6Request(p, b.PoolID6, "", mac); err != nil {
+		t.Fatalf("v6 retry under the same MAC: %v", err)
+	}
+}
+
+// A v6 request refused before any exchange gives the v4 reservation up the same way (#1132).
+func TestRequestAddress_V6RefusalGivesUpTheV4Reservation(t *testing.T) {
+	p, b, _, _ := a6Fixture(t)
+	mac := f0MAC(0x05)
+	if _, err := a6Request(p, b.PoolID, "", mac); err != nil {
+		t.Fatalf("v4 RequestAddress: %v", err)
+	}
+	if _, err := a6Request(p, b.PoolID6, "192.168.99.5", mac); !errors.Is(err, util.ErrIPAM) {
+		t.Fatalf("a v4 --ip6 hint answered %v, want a refusal", err)
+	}
+	if _, ok := p.ipamReserves.peek(ipamReserveKey(b.PoolID, mac)); ok {
+		t.Fatal("the v4 reservation outlived the refused v6 request")
+	}
+	if _, err := a6Request(p, b.PoolID, "", mac); err != nil {
+		t.Fatalf("v4 retry under the same MAC: %v", err)
 	}
 }
