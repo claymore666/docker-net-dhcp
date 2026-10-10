@@ -1996,6 +1996,17 @@ be true.</p>
    no release ships with less per-package coverage than the previous
    one. If a package beat its floor during the cycle, raise the baseline
    as part of the release branch.</p>
+<p><strong>A Go toolchain bump changes the unit of the floors.</strong> Each floor
+   file carries one <code>toolchain &lt;go env GOVERSION&gt;</code> line, because the cover
+   tool counts statements differently between Go releases (#1301). The
+   ratchet compares only floors measured on the toolchain the run uses.
+   Floors from another toolchain print a <code>TOOLCHAIN</code> line and give way to
+   the branch's own file when that one matches the run, which is how a
+   release PR whose merge base is <code>main</code> on the older toolchain passes. If
+   neither file matches the run, the ratchet fails with <code>re-baseline
+   needed</code>: measure the floors from a coverage run on the new toolchain
+   and set the <code>toolchain</code> line to match. Do that in the pull request that
+   moves the Go pin, not at the release.</p>
 <p><strong>Read that run with <code>scripts/coverage-read.sh &lt;run-id&gt;</code></strong> and never
    by eye (#794). It prints every package's measured number beside
    <em>both</em> floor sets (<code>dev</code>'s and <code>main</code>'s), because <code>main</code>'s floors can

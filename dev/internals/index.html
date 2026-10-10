@@ -1071,7 +1071,16 @@ namespace to it. Two things differ:</p>
    leave it; the macvlan and ipvlan children, the IPAM reservation link
    and the <code>validate_dhcp</code> probe link are treated the same (v2.5.0, #1247).</li>
 <li>A one-shot DHCP acquisition runs on the container end (still in the
-   host namespace). The plugin provides the initial IP address to Docker.</li>
+   host namespace). The plugin provides the initial IP address to Docker.
+   On a network created with <code>--ipv4=false</code> this step runs no DHCPv4: the
+   flag is read from the engine at <code>CreateNetwork</code>, stored with the
+   network's options so Join, replay and a plugin restart see it without
+   asking the engine, and every IPv4 step of the flow (the one-shot, the
+   persistent client, the release, the gateway and routes in Join, the
+   <code>validate_dhcp</code> probe) is gated on it. Join also tells Docker not to
+   attach <code>docker_gwbridge</code> when the network has no IPv6 gateway either,
+   because that attach would give the container an IPv4 address after all
+   (v2.6.0, #1135).</li>
 <li>Docker moves the container end of the <code>veth</code> pair into the
    container's network namespace and sets the IP address. At this point
    that first acquisition is finished with.</li>
@@ -1157,7 +1166,8 @@ acquired, and nothing below it:</p>
   With a Docker-generated MAC there is nothing narrower, so the
   ambiguous case is counted as <code>ipam_rebind_ambiguous</code> instead of
   guessed.</li>
-<li>IPv6 is acquired later, since v2.3.0. <code>RequestAddress</code> leases the v4
+<li>IPv6 is acquired later, since v2.3.0, unless the network has an IPv6
+  pool. <code>RequestAddress</code> leases the v4
   address only; the DHCPv6 exchange runs at <code>CreateEndpoint</code> on the
   endpoint's own link, as the null shape's one-shot does, and
   <code>CreateEndpoint</code> reports the v6 address to the daemon. The v6 lease
@@ -1165,8 +1175,21 @@ acquired, and nothing below it:</p>
   container's v4 address back carries its DUID, IAID and last v6 address
   too, and a v6 failure that ends the endpoint gives up both records
   (#960).</li>
+<li>A network with a typed IPv6 <code>--subnet</code> has an IPv6 pool of its own
+  (v2.6.0, #1132), and for that pool the acquisition moves to
+  <code>RequestAddress</code> as well (<code>pkg/plugin/ipam_reserve6.go</code>). The engine
+  asks for the v4 address and then the v6 one, each on its own
+  throwaway link and budget; the v6 call runs the DHCPv6 exchange with
+  <code>--ip6</code> as the requested address, refuses a Reply that names another
+  address or lies outside the typed prefix (the lease is released), and
+  writes a RESERVED v6 record that <code>CreateEndpoint</code> consumes instead of
+  running its own exchange. <code>ReleaseAddress</code> on the v6 pool gives a
+  stranded record up, and when the v6 call fails the plugin gives up the
+  v4 reservation itself, because the engine sends no <code>ReleaseAddress</code> for
+  the v4 address it was given just before.</li>
 <li>The pool binding lives in the network's own state file, and a file
-  carrying one is stamped schema 2
+  carrying one is stamped schema 2, or schema 3 when it carries an IPv6
+  pool so that an older build refuses it instead of misreading it
   (<a href="https://github.com/claymore666/docker-net-dhcp/blob/main/pkg/plugin/state.go"><code>pkg/plugin/state.go</code></a>).
   The IPAM handlers read that file and never call Docker: the daemon
   replays <code>RequestPool</code> and one <code>RequestAddress</code> per stored endpoint
@@ -2119,7 +2142,7 @@ container and checks the interface the engine actually created. There is
 no version threshold to hit. The upstream fix (moby/moby#52866,
 stopping the remote-driver proxy from dropping <code>DstName</code>) merged to moby
 master on 2026-08-26, is milestoned for engine 29.8.0, and that engine
-was released on 2026-09-03. The lane's engine is 29.8.2, read from the
+was released on 2026-09-03. The lane's engine is 29.9.0, read from the
 engine drift check in the run's <code>Prepare the lane</code> step, so the probe now succeeds there and
 the dependent tests run. They still skip on any box whose engine is
 older, and a skip there is expected and is not a signal that the run

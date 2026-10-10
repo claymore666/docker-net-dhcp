@@ -1754,9 +1754,10 @@ service's network attachment:</p>
 </tbody>
 </table>
 <p><strong><a href="#driver-options-per-endpoint">Container-level flags</a></strong> the plugin
-reads: <code>--mac-address</code>, <code>--hostname</code>, <code>--ip6</code> (no effect today, #960),
-and <code>--ip</code> on a network that names this plugin as its IPAM driver
-(<a href="#address-allocation">Address allocation</a>).</p>
+reads: <code>--mac-address</code>, <code>--hostname</code>, and, on a network that names this
+plugin as its IPAM driver, <code>--ip</code> and, with a typed IPv6 subnet, <code>--ip6</code>
+(<a href="#address-allocation">Address allocation</a>; <code>--ip6</code> has no effect on an
+<code>--ipam-driver null</code> network, #960).</p>
 <p><strong><a href="#plugin-settings">Plugin settings</a></strong>, set with <code>docker plugin set
 &lt;plugin&gt; NAME=value</code>:</p>
 <table>
@@ -1838,10 +1839,10 @@ for unattended):</p>
 <a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>sudo<span class="w"> </span>mkdir<span class="w"> </span>-p<span class="w"> </span>/var/lib/net-dhcp
 <a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>
 <a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="c1"># amd64</span>
-<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>docker<span class="w"> </span>plugin<span class="w"> </span>install<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.5.0
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>docker<span class="w"> </span>plugin<span class="w"> </span>install<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.6.0
 <a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>
 <a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="c1"># arm64 (v1.7.0 onward). The architecture is in the tag, see below</span>
-<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>docker<span class="w"> </span>plugin<span class="w"> </span>install<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.5.0-arm64
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>docker<span class="w"> </span>plugin<span class="w"> </span>install<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.6.0-arm64
 </code></pre></div>
 <p><strong>If the directory is missing</strong>, the install pulls the plugin, then
 fails to start it and exits non-zero with an OCI mount error naming
@@ -1852,7 +1853,7 @@ it answers <code>plugin ... found but disabled</code>. Neither second error
 mentions the cause. Recover by creating the directory and enabling the
 plugin that is already there:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>sudo<span class="w"> </span>mkdir<span class="w"> </span>-p<span class="w"> </span>/var/lib/net-dhcp
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>docker<span class="w"> </span>plugin<span class="w"> </span><span class="nb">enable</span><span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.5.0
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>docker<span class="w"> </span>plugin<span class="w"> </span><span class="nb">enable</span><span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.6.0
 </code></pre></div>
 <p>On arm64 that second line takes the <code>-arm64</code> tag, like every other
 reference on this page. The bare one names a plugin the host never
@@ -2233,14 +2234,16 @@ install had to create before upgrading, which under this rule is a major.</p>
   leased address in Docker's own address management and covers <code>bridge</code>
   and <code>macvlan</code> for IPv4 and IPv6. <code>ipvlan</code> is refused in that shape
   (#949). IPv6 there is switched on with <code>-o ipv6=true</code> or
-  <code>-o ipv6_mode=&lt;mode&gt;</code>, and Docker's <code>--ipv6</code> is refused (#960). See
+  <code>-o ipv6_mode=&lt;mode&gt;</code>, or, since v2.6.0, with Docker's <code>--ipv6</code>, a typed
+  IPv6 <code>--subnet</code> and <code>-o ipv6_mode=dhcp</code> (#1132); <code>--ipv6</code> with no IPv6
+  <code>--subnet</code> is refused (#960). See
   <a href="#address-allocation">Address allocation</a>.</li>
 <li>One DHCP-served network per container is the supported shape.</li>
 </ul>
 <h3 id="bridge-default">bridge (default)<a class="headerlink" href="#bridge-default" title="Permanent link">&para;</a></h3>
 <p>You bring an existing Linux bridge that is L2-connected to the LAN
 (see <a href="../bridge-mode/"><code>bridge-mode.md</code></a> for the bridge setup itself):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.5.0<span class="w"> </span><span class="se">\</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.6.0<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">    </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">    </span>-o<span class="w"> </span><span class="nv">bridge</span><span class="o">=</span>my-bridge<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">    </span>my-dhcp-net
@@ -2256,7 +2259,7 @@ enslaves the NIC as its port. The host takes no address on that bridge.
 Deleting the network deletes the bridge, and the kernel releases the
 NIC as it was: no master, promiscuity 0, still up.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>sudo<span class="w"> </span>iptables<span class="w"> </span>-I<span class="w"> </span>DOCKER-USER<span class="w"> </span>-i<span class="w"> </span>lan0<span class="w"> </span>-o<span class="w"> </span>lan0<span class="w"> </span>-j<span class="w"> </span>ACCEPT
-<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.5.0<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.6.0<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">    </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">    </span>-o<span class="w"> </span><span class="nv">bridge</span><span class="o">=</span>lan0<span class="w"> </span>-o<span class="w"> </span><span class="nv">parent</span><span class="o">=</span>eth1<span class="w"> </span>-o<span class="w"> </span><span class="nv">force_create</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w">    </span>lan-dhcp
@@ -2317,7 +2320,7 @@ but the refusal covers the network as a whole.</p>
 kernel-generated MACs as macvlan children of a host NIC
 (<code>macvlan_mode=passthru</code> is the exception, see
 <a href="#macvlan-and-ipvlan-sub-modes">sub-modes</a>):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.5.0<span class="w"> </span><span class="se">\</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.6.0<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">    </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">    </span>-o<span class="w"> </span><span class="nv">mode</span><span class="o">=</span>macvlan<span class="w"> </span>-o<span class="w"> </span><span class="nv">parent</span><span class="o">=</span>eth0<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">    </span>lan-dhcp
@@ -2335,7 +2338,7 @@ reservation key that survives a restart unless the network sets
 an address, use <a href="#requesting-a-specific-address"><code>--ip</code></a>; for
 reservations on the server, use macvlan. See
 <a href="#dhcp-identity">DHCP identity</a>.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.5.0<span class="w"> </span><span class="se">\</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.6.0<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">    </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">    </span>-o<span class="w"> </span><span class="nv">mode</span><span class="o">=</span>ipvlan<span class="w"> </span>-o<span class="w"> </span><span class="nv">parent</span><span class="o">=</span>eth0<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="w">    </span>lan-dhcp
@@ -2460,7 +2463,7 @@ on Linux 6.12:</p>
 The children attach to the sub-interface <code>&lt;parent&gt;.&lt;id&gt;</code>, the name
 Docker's own <code>macvlan</code> driver uses, so their DHCP traffic and everything
 after it leaves the parent tagged:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.5.0<span class="w"> </span><span class="se">\</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.6.0<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">    </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">    </span>-o<span class="w"> </span><span class="nv">mode</span><span class="o">=</span>macvlan<span class="w"> </span>-o<span class="w"> </span><span class="nv">parent</span><span class="o">=</span>eth0<span class="w"> </span>-o<span class="w"> </span><span class="nv">vlan</span><span class="o">=</span><span class="m">100</span><span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">    </span>lan-vlan100
@@ -2534,8 +2537,8 @@ network of this plugin uses it.</p>
 <p>Every example above passes <code>--ipam-driver null</code>. Since v2.1.0 the plugin
 also serves an IPAM driver of its own (#110), and the line names the
 plugin twice:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.5.0<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">    </span>--ipam-driver<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.5.0<span class="w"> </span><span class="se">\</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.6.0<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">    </span>--ipam-driver<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.6.0<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">    </span>-o<span class="w"> </span><span class="nv">mode</span><span class="o">=</span>macvlan<span class="w"> </span>-o<span class="w"> </span><span class="nv">parent</span><span class="o">=</span>eth0<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">    </span>lan-dhcp
 </code></pre></div>
@@ -2610,14 +2613,15 @@ and an ipvlan interface cannot change its MAC, so every container would
 fail to start. The network create is refused, and <code>--ipam-driver null</code>
 is unchanged and supported for ipvlan. Lifting the refusal needs a
 change in Docker's engine (#949).</p>
-<p><strong>IPv6 is switched on with a driver option, and <code>--ipv6</code> is refused.</strong>
-<code>-o ipv6=true</code> or <code>-o ipv6_mode=&lt;mode&gt;</code> switches IPv6 on, with every
+<p><strong>IPv6 is switched on with a driver option, or with <code>--ipv6</code> and an IPv6
+<code>--subnet</code>.</strong> <code>-o ipv6=true</code> or <code>-o ipv6_mode=&lt;mode&gt;</code> switches IPv6 on, with every
 mode an <code>--ipam-driver null</code> network of the same driver mode takes, and
 nothing else on the create line changes. The address comes from the
 container's link when the endpoint is created, from the DHCPv6 server or
 the router's advertisement, and Docker shows it as <code>GlobalIPv6Address</code>.
-The plugin allocates no IPv6 pool, so Docker's <code>--ipv6</code> is refused with
-a message that names the two options, and <code>--ip6</code> is not served. The
+The plugin allocates no IPv6 pool of its own, so Docker's <code>--ipv6</code> with
+no IPv6 <code>--subnet</code> is refused with a message that names the two options
+and the subnet, and <code>--ip6</code> is not served in that shape. The
 DHCPv6 identity (DUID and IAID) is derived from the MAC the endpoint had
 at its first start and stored, so <code>docker restart</code> keeps it, and the
 address with it, although Docker gives the endpoint a new MAC; the
@@ -2626,6 +2630,30 @@ network restarted together with Docker-generated MACs, which both get a
 new identity (#960, #1118). A
 <code>slaac</code> address is formed from the MAC the endpoint has now, so it
 changes at every restart unless <code>--mac-address</code> pins the MAC.</p>
+<p><strong>A typed IPv6 <code>--subnet</code> makes the network's IPv6 pool (v2.6.0,
+<a href="https://github.com/claymore666/docker-net-dhcp/issues/1132">#1132</a>).</strong>
+<code>--ipv6 --subnet &lt;IPv4 prefix&gt; --subnet &lt;IPv6 prefix&gt; -o ipv6_mode=dhcp</code>
+(a /126 or shorter) gives Docker an IPv6 pool from this driver beside the
+IPv4 one, so Docker, <code>docker inspect</code> and Compose know each container's
+IPv6 address, and <code>docker run --ip6</code> and Compose's <code>ipv6_address</code> are
+served. The DHCPv6 server is the only allocator: when Docker asks for the
+address the plugin runs a DHCPv6 exchange on a short-lived link, the same
+way it does for IPv4, and <code>--ip6</code> goes to the server as the requested
+address. A Reply naming another address than <code>--ip6</code>, or one outside the
+typed subnet, is refused and released, the message names both addresses,
+and the container does not start. A silent or exhausted server fails the
+start inside the same 26s budget as the IPv4 reservation. A container
+restart keeps the address and the DUID, a plugin restart keeps the
+address, and <code>release_lease</code> sends one Release per family. These are
+refused at <code>docker network create</code>, naming the subnet or the option: a
+/127 or /128, <code>::/0</code>, a multicast or IPv4-mapped prefix, an IPv6 pool with
+an <code>ipv6_mode</code> other than <code>dhcp</code> (<code>slaac</code> and <code>auto</code> produce no address
+for Docker's request), and an IPv6 pool with no IPv4 pool from
+this driver beside it, which includes a <code>--ipv4=false</code> network. <code>--ip6</code>
+with <code>ipv6_temporary=true</code> and two containers with one <code>--mac-address</code>
+are refused when a container starts or connects. The options file of such
+a network is written at state schema v3, so an older build refuses it
+and leaves it as found.</p>
 <p><strong><code>link_local_fallback</code> is refused in this shape.</strong> Docker takes the
 address from the IPAM driver before the endpoint exists and never learns
 of a later change, so a container that fell back to 169.254/16 would keep
@@ -2915,7 +2943,7 @@ value as an invalid duration.</p>
 </tr>
 </tbody>
 </table>
-<p><strong>A network created with <code>--ipv4=false</code></strong> (Docker 28 and later, since v2.6.0, <a href="https://github.com/claymore666/docker-net-dhcp/issues/1135">#1135</a>) is not a row above, because it is no option you pass: the plugin records the engine's flag as <code>ipv4_off</code> in its stored options. Such a network has no IPv4 pool, so the plugin runs no DHCPv4 for its endpoints, installs no IPv4 default route, and tells Docker not to attach its <code>docker_gwbridge</code> for a gateway. It needs an <code>ipv6_mode</code> other than <code>off</code> (<code>--ipv4=false</code> with <code>ipv6_mode=off</code> is refused at <code>docker network create</code>, since the endpoint would have no address at all), and <code>mode=ipvlan</code> needs <code>ipv6_mode=dhcp</code>, because <code>slaac</code> and <code>auto</code> are refused there. <code>/Plugin.Health</code> shows <code>lease_state</code> <code>ipv4_off</code> with no <code>address</code>. With this plugin's IPAM mode and no <code>--ipv6</code> the engine never asks the IPAM driver for anything, so the network behaves as a driver-mode one. Writing the key under <code>-o</code> is refused with this remedy, as is an explicit IPv4 address on an endpoint of such a network.</p>
+<p><strong>A network created with <code>--ipv4=false</code></strong> (Docker 28 and later, since v2.6.0, <a href="https://github.com/claymore666/docker-net-dhcp/issues/1135">#1135</a>) is not a row above, because it is no option you pass: the plugin records the engine's flag as <code>ipv4_off</code> in its stored options. Such a network has no IPv4 pool, so the plugin runs no DHCPv4 for its endpoints, installs no IPv4 default route, and tells Docker not to attach its <code>docker_gwbridge</code> for a gateway. It needs an <code>ipv6_mode</code> other than <code>off</code> (<code>--ipv4=false</code> with <code>ipv6_mode=off</code> is refused at <code>docker network create</code>, since the endpoint would have no address at all), and <code>mode=ipvlan</code> needs <code>ipv6_mode=dhcp</code>, because <code>slaac</code> and <code>auto</code> are refused there. <code>/Plugin.Health</code> shows <code>lease_state</code> <code>ipv4_off</code> with no <code>address</code>. With this plugin's IPAM mode and no <code>--ipv6</code> the engine never asks the IPAM driver for anything, so the network behaves as a driver-mode one; with <code>--ipv6</code> and an IPv6 <code>--subnet</code> the create is refused, because the IPv6 pool needs an IPv4 pool from this driver beside it (#1132). Writing the key under <code>-o</code> is refused with this remedy, as is an explicit IPv4 address on an endpoint of such a network.</p>
 <h3 id="dhcp-classless-static-routes-option-121">DHCP classless static routes (option 121)<a class="headerlink" href="#dhcp-classless-static-routes-option-121" title="Permanent link">&para;</a></h3>
 <p>When the DHCP server hands out classless static routes (option 121, RFC
 3442, and the identically-formatted Microsoft option 249), the plugin
@@ -3184,11 +3212,16 @@ counter moves.</p>
 (Interface.AddressIPv6) into the Solicit as the requested IA Address, the
 DHCPv6 equivalent of option 50 and, like option 50, a request the server
 may decline. With the null IPAM driver the documented shapes use, Docker
-hands the plugin none, so <code>--ip6</code> has no effect today (measured on engine
-29.8.1, 2026-09-24). The same mechanism is what makes an address survive
-<code>docker restart</code>: the tombstoned v6 address goes back out as the hint.
-With this plugin as the IPAM driver <code>--ip6</code> is not served either: the
-plugin allocates no IPv6 pool (<a href="https://github.com/claymore666/docker-net-dhcp/issues/960">#960</a>).</p>
+hands the plugin none, so <code>--ip6</code> has no effect on such a network
+(measured on engine 29.8.1, 2026-09-24). The same mechanism is what makes
+an address survive <code>docker restart</code>: the tombstoned v6 address goes back
+out as the hint. With this plugin as the IPAM driver and a typed IPv6
+<code>--subnet</code>, <code>--ip6</code> is served: it is the hint the DHCPv6 server gets when
+Docker asks for the address (v2.6.0,
+<a href="https://github.com/claymore666/docker-net-dhcp/issues/1132">#1132</a>,
+<a href="#address-allocation">Address allocation</a>). Without an IPv6 <code>--subnet</code> the
+plugin allocates no IPv6 pool and <code>--ip6</code> is not served
+(<a href="https://github.com/claymore666/docker-net-dhcp/issues/960">#960</a>).</p>
 <p>Container-level knobs that interact with the plugin:</p>
 <ul>
 <li><code>--mac-address</code> / Compose <code>mac_address</code> fixes the MAC so the DHCP
@@ -3292,9 +3325,11 @@ next free pool address unless a UI-side reservation exists for that MAC.</p>
 <p>There is no <code>ip6</code> driver-opt. The plugin puts the IPv6 address Docker
 hands it at endpoint creation into the Solicit as the requested address,
 the v6 counterpart of <code>--ip</code>. With the null IPAM driver the documented
-shapes use, Docker hands none, so <code>--ip6</code> has no effect today (measured on
-engine 29.8.1, 2026-09-24). With this plugin as the IPAM driver <code>--ip6</code>
-is not served either: the plugin allocates no IPv6 pool
+shapes use, Docker hands none, so <code>--ip6</code> has no effect on such a network
+(measured on engine 29.8.1, 2026-09-24). With this plugin as the IPAM
+driver and a typed IPv6 <code>--subnet</code>, <code>--ip6</code> is served (v2.6.0,
+<a href="https://github.com/claymore666/docker-net-dhcp/issues/1132">#1132</a>);
+with no IPv6 <code>--subnet</code> the plugin allocates no IPv6 pool and it is not
 (<a href="https://github.com/claymore666/docker-net-dhcp/issues/960">#960</a>).</p>
 <p>On a network created with <strong>this plugin as its IPAM driver</strong> (#110),
 <code>docker run --ip</code>, <code>docker network connect --ip</code> and Compose's
@@ -4310,7 +4345,7 @@ required</strong>, because <code>/run/docker/plugins</code> is <code>drwx------ 
 Without it <code>curl -s</code> prints nothing and exits 7, which is what an absent
 socket also gives, so a permission problem looks exactly like a dead
 endpoint:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="nv">PLUGIN_ID</span><span class="o">=</span><span class="k">$(</span>docker<span class="w"> </span>plugin<span class="w"> </span>inspect<span class="w"> </span>-f<span class="w"> </span><span class="s1">&#39;{{.Id}}&#39;</span><span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.5.0<span class="k">)</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="nv">PLUGIN_ID</span><span class="o">=</span><span class="k">$(</span>docker<span class="w"> </span>plugin<span class="w"> </span>inspect<span class="w"> </span>-f<span class="w"> </span><span class="s1">&#39;{{.Id}}&#39;</span><span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.6.0<span class="k">)</span>
 <a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a>sudo<span class="w"> </span>curl<span class="w"> </span>-s<span class="w"> </span>--unix-socket<span class="w"> </span>/run/docker/plugins/<span class="nv">$PLUGIN_ID</span>/net-dhcp.sock<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a><span class="w">    </span>http://localhost/Plugin.Health<span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>.
 </code></pre></div>
@@ -5182,13 +5217,13 @@ disagree, and a unit test asserts by reflection that <strong>every</strong>
 <code>/Plugin.Health</code> field is exposed here, so a counter added later cannot
 quietly go missing from your dashboards.</p>
 <p>On the plugin socket, always:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="nv">PLUGIN_ID</span><span class="o">=</span><span class="k">$(</span>docker<span class="w"> </span>plugin<span class="w"> </span>inspect<span class="w"> </span>-f<span class="w"> </span><span class="s1">&#39;{{.Id}}&#39;</span><span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.5.0<span class="k">)</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="nv">PLUGIN_ID</span><span class="o">=</span><span class="k">$(</span>docker<span class="w"> </span>plugin<span class="w"> </span>inspect<span class="w"> </span>-f<span class="w"> </span><span class="s1">&#39;{{.Id}}&#39;</span><span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.6.0<span class="k">)</span>
 <a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a>sudo<span class="w"> </span>curl<span class="w"> </span>-s<span class="w"> </span>--unix-socket<span class="w"> </span>/run/docker/plugins/<span class="nv">$PLUGIN_ID</span>/net-dhcp.sock<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-20-3" name="__codelineno-20-3" href="#__codelineno-20-3"></a><span class="w">    </span>http://localhost/metrics
 </code></pre></div>
 <p>Prometheus cannot scrape a UNIX socket, so for an actual scrape target
 set <code>METRICS_ADDR</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a><span class="nv">PLUGIN</span><span class="o">=</span>ghcr.io/claymore666/docker-net-dhcp:v2.5.0
+<div class="highlight"><pre><span></span><code><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a><span class="nv">PLUGIN</span><span class="o">=</span>ghcr.io/claymore666/docker-net-dhcp:v2.6.0
 <a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a>docker<span class="w"> </span>plugin<span class="w"> </span>disable<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PLUGIN</span><span class="s2">&quot;</span>
 <a id="__codelineno-21-3" name="__codelineno-21-3" href="#__codelineno-21-3"></a>docker<span class="w"> </span>plugin<span class="w"> </span><span class="nb">set</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PLUGIN</span><span class="s2">&quot;</span><span class="w"> </span><span class="nv">METRICS_ADDR</span><span class="o">=</span><span class="m">127</span>.0.0.1:9099
 <a id="__codelineno-21-4" name="__codelineno-21-4" href="#__codelineno-21-4"></a>docker<span class="w"> </span>plugin<span class="w"> </span><span class="nb">enable</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PLUGIN</span><span class="s2">&quot;</span>
@@ -5316,7 +5351,7 @@ available:</p>
 </code></pre></div>
 <p>Raise verbosity with a disable, a set, and an enable, in that order,
 because <code>docker plugin set</code> is refused while the plugin is running:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a><span class="nv">PLUGIN</span><span class="o">=</span>ghcr.io/claymore666/docker-net-dhcp:v2.5.0
+<div class="highlight"><pre><span></span><code><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a><span class="nv">PLUGIN</span><span class="o">=</span>ghcr.io/claymore666/docker-net-dhcp:v2.6.0
 <a id="__codelineno-26-2" name="__codelineno-26-2" href="#__codelineno-26-2"></a>docker<span class="w"> </span>plugin<span class="w"> </span>disable<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PLUGIN</span><span class="s2">&quot;</span>
 <a id="__codelineno-26-3" name="__codelineno-26-3" href="#__codelineno-26-3"></a>docker<span class="w"> </span>plugin<span class="w"> </span><span class="nb">set</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PLUGIN</span><span class="s2">&quot;</span><span class="w"> </span><span class="nv">LOG_LEVEL</span><span class="o">=</span>trace
 <a id="__codelineno-26-4" name="__codelineno-26-4" href="#__codelineno-26-4"></a>docker<span class="w"> </span>plugin<span class="w"> </span><span class="nb">enable</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PLUGIN</span><span class="s2">&quot;</span>
@@ -5381,7 +5416,7 @@ external (shareable across projects, survives <code>compose down</code>):</p>
 <p>Compose-managed alternative (network lifecycle tied to the project):</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-30-1" name="__codelineno-30-1" href="#__codelineno-30-1"></a><span class="nt">networks</span><span class="p">:</span>
 <a id="__codelineno-30-2" name="__codelineno-30-2" href="#__codelineno-30-2"></a><span class="w">  </span><span class="nt">lan</span><span class="p">:</span>
-<a id="__codelineno-30-3" name="__codelineno-30-3" href="#__codelineno-30-3"></a><span class="w">    </span><span class="nt">driver</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ghcr.io/claymore666/docker-net-dhcp:v2.5.0</span>
+<a id="__codelineno-30-3" name="__codelineno-30-3" href="#__codelineno-30-3"></a><span class="w">    </span><span class="nt">driver</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ghcr.io/claymore666/docker-net-dhcp:v2.6.0</span>
 <a id="__codelineno-30-4" name="__codelineno-30-4" href="#__codelineno-30-4"></a><span class="w">    </span><span class="nt">driver_opts</span><span class="p">:</span>
 <a id="__codelineno-30-5" name="__codelineno-30-5" href="#__codelineno-30-5"></a><span class="w">      </span><span class="nt">mode</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">macvlan</span>
 <a id="__codelineno-30-6" name="__codelineno-30-6" href="#__codelineno-30-6"></a><span class="w">      </span><span class="nt">parent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">eth0</span>
