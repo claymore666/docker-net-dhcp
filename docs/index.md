@@ -240,7 +240,8 @@ or shorter) and `-o ipv6_mode=dhcp`: the plugin allocates no IPv6 pool of
 its own, so the subnet is the pool Docker keeps its books in ([#1132]).
 The DHCPv6 server picks each address, and `--ip6` asks it for one; a
 reply naming another address than `--ip6`, or one outside the subnet, is
-refused and released, and the container does not start. Without a subnet `--ipv6` is refused
+refused and released, and the container does not start. Without a subnet
+`--ipv6` is refused
 ([#960]), and `-o ipv6=true` or `-o ipv6_mode=<mode>` switches IPv6 on
 instead. The modes are set out in
 [the driver reference](reference.md#driver-options-network-level), and

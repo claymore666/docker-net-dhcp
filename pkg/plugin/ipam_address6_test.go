@@ -520,3 +520,30 @@ func TestRequestAddress_V6ReservesAndCreateEndpointConsumes(t *testing.T) {
 		t.Fatalf("v6 records %+v, want one Created", live)
 	}
 }
+
+// Design D2: `--ip6` is the IA Address hint the one-shot sends, and without it a fresh MAC sends none (#1132).
+func TestRequestAddress_V6SendsIP6AsTheHint(t *testing.T) {
+	for _, tc := range []struct{ ip6, want string }{{"fd00:6470:6865::20", "fd00:6470:6865::20"}, {"", ""}} {
+		p, b, srv, _ := a6Fixture(t)
+		if _, err := a6Request(p, b.PoolID6, tc.ip6, f0MAC(0x01)); err != nil {
+			t.Fatalf("--ip6 %q: %v", tc.ip6, err)
+		}
+		if srv.opts.PreferredV6 != tc.want {
+			t.Errorf("--ip6 %q: the one-shot hinted %q, want %q", tc.ip6, srv.opts.PreferredV6, tc.want)
+		}
+	}
+}
+
+// Row 26: a v6 reservation link keeps IPv6 and gets the RA guard; a v4 one has IPv6 turned off (#1132, #1247).
+func TestIPAMReserveLinkIPv6_V6KeepsTheLinkLocal(t *testing.T) {
+	prevOff, prevGuard := childHostIPv6Off, ipamReserveLinkRAGuard
+	t.Cleanup(func() { childHostIPv6Off, ipamReserveLinkRAGuard = prevOff, prevGuard })
+	var off, guard []string
+	childHostIPv6Off = func(n string) error { off = append(off, n); return nil }
+	ipamReserveLinkRAGuard = func(n string) error { guard = append(guard, n); return nil }
+	ipamReserveLinkIPv6("rsv6", true)
+	ipamReserveLinkIPv6("rsv4", false)
+	if len(off) != 1 || off[0] != "rsv4" || len(guard) != 1 || guard[0] != "rsv6" {
+		t.Fatalf("IPv6 off on %v and the RA guard on %v, want off on [rsv4] only and the guard on [rsv6] only", off, guard)
+	}
+}
