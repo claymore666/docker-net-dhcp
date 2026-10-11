@@ -31,9 +31,17 @@ var (
 	onV6IPAMMacvlan = v6Attach{mode: "macvlan", kind: "macvlan", ipam: true}
 )
 
+// parentAttached is the macvlan and ipvlan shapes, whose network takes the fixture's veth end as its parent (#1316).
+func (a v6Attach) parentAttached() bool {
+	return a.mode == "macvlan" || a.mode == "ipvlan"
+}
+
 func (a v6Attach) net(name string) string {
-	if a.mode == "macvlan" {
+	switch a.mode {
+	case "macvlan":
 		name += "m"
+	case "ipvlan":
+		name += "p"
 	}
 	if a.ipam {
 		name += "i"
@@ -54,7 +62,7 @@ func (a v6Attach) createNet(t *testing.T, ctx context.Context, name string, opts
 // ctrLink names the container's link: libnetwork appends the first free index to Join's DstPrefix, which is the
 // bridge's name on the bridge shape and "eth" on the parent-attached ones (network.go Join, #125, #960).
 func (a v6Attach) ctrLink(f *harness.V6Fixture) string {
-	if a.mode == "macvlan" {
+	if a.parentAttached() {
 		return "eth0"
 	}
 	return f.Bridge() + "0"
@@ -67,11 +75,16 @@ const attachEvidenceBudget = 10 * time.Second
 // fixture's bridge, the segment whose server runs the mode under test (#960).
 func startOnV6SegmentAs(t *testing.T, ctx context.Context, cli *docker.Client, f *harness.V6Fixture, at v6Attach, netName string, extra map[string]string) (string, error) {
 	t.Helper()
+	return startContainerOn(t, ctx, cli, netName, at, v6SegmentOpts(f, at, extra))
+}
+
+// v6SegmentOpts is the driver options startOnV6SegmentAs creates its network with; an empty value in extra deletes the default (#1316).
+func v6SegmentOpts(f *harness.V6Fixture, at v6Attach, extra map[string]string) map[string]string {
 	opts := map[string]string{
 		"ipv6":          "true",
 		"propagate_dns": "true",
 	}
-	if at.mode == "macvlan" {
+	if at.parentAttached() {
 		opts["parent"] = f.MacvlanParent()
 	} else {
 		opts["bridge"] = f.Bridge()
@@ -83,7 +96,7 @@ func startOnV6SegmentAs(t *testing.T, ctx context.Context, cli *docker.Client, f
 		}
 		opts[k] = v
 	}
-	return startContainerOn(t, ctx, cli, netName, at, opts)
+	return opts
 }
 
 // assertAttachedAs checks that a started container's link has the shape's kind and that the fixture's own server
