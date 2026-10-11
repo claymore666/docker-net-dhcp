@@ -2677,8 +2677,9 @@ rollback around removing the IPAM-mode networks first.</p>
 <hr />
 <h2 id="driver-options-network-level">Driver options (network-level)<a class="headerlink" href="#driver-options-network-level" title="Permanent link">&para;</a></h2>
 <p>Passed as <code>-o key=value</code> on <code>docker network create</code>, or under
-<code>driver_opts:</code> in Compose. Booleans take <code>'true'</code> / <code>'false'</code>
-(quote them in YAML).</p>
+<code>driver_opts:</code> in Compose. A boolean is <code>true</code>, <code>false</code>, <code>1</code> or <code>0</code>
+(quote them in YAML); <code>t</code>, <code>f</code>, <code>T</code>, <code>F</code>, <code>TRUE</code>, <code>FALSE</code>, <code>True</code> and <code>False</code> read the same. Any other
+value is refused.</p>
 <p><strong>An option written with no value at all is an option you did not set.</strong>
 <code>-o lease_timeout=</code>, and <code>driver_opts: {lease_timeout: "${VAR}"}</code> in
 Compose with <code>VAR</code> unset, are read exactly as leaving the option out:
