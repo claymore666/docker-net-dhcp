@@ -73,3 +73,70 @@ func TestMTUPropagate_DefaultIsUnchanged(t *testing.T) {
 			harness.TestMTU, out)
 	}
 }
+
+// eth0MTUOutput returns the container's `ip link show eth0` once it shows want, or the last read when budget runs out (#1320).
+func eth0MTUOutput(t *testing.T, ctx context.Context, id, want string) (string, bool) {
+	t.Helper()
+	// The MTU is applied from the post-Join bound event, which can trail the IP by a lost reply (harness.RetransmitBudget).
+	deadline := time.Now().Add(harness.RetransmitBudget(2))
+	var out string
+	for time.Now().Before(deadline) {
+		out = harness.ExecOutput(t, ctx, id, "ip", "link", "show", "eth0")
+		if strings.Contains(out, want) {
+			return out, true
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return out, false
+}
+
+// TestMTUPropagate_BridgeAndIpvlan checks that propagate_mtu=true gives eth0 option 26's MTU on bridge and ipvlan, and that
+// eth0 keeps its inherited MTU without the opt-in (#1320).
+func TestMTUPropagate_BridgeAndIpvlan(t *testing.T) {
+	for _, tc := range []struct {
+		mode      string
+		propagate bool
+	}{
+		{"bridge", true},
+		{"bridge", false},
+		{"ipvlan", true},
+		{"ipvlan", false},
+	} {
+		name := tc.mode + "-default"
+		var opts map[string]string
+		if tc.propagate {
+			name = tc.mode + "-optin"
+			opts = map[string]string{"propagate_mtu": "true"}
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+
+			netName := "dh-itest-mtu-" + name
+			t.Cleanup(func() {
+				if t.Failed() {
+					fixture.DumpLogs(func(s string) { t.Log(s) })
+					fixture.DumpBridgeLogs(func(s string) { t.Log(s) })
+					harness.DumpPluginLog(t)
+				}
+			})
+
+			harness.CreateNetwork(t, ctx, netName, tc.mode, opts)
+			id, _, _ := harness.RunContainer(t, ctx, netName, netName+"-ctr")
+
+			want := "mtu " + harness.TestMTU
+			if tc.propagate {
+				if out, ok := eth0MTUOutput(t, ctx, id, want); !ok {
+					t.Errorf("propagate_mtu=true but eth0 never showed %q:\n%s", want, out)
+				}
+				return
+			}
+			// Watch for as long as the opt-in case allows the 1400 to arrive: a single read could land before it (#1320).
+			for end := time.Now().Add(harness.RetransmitBudget(2)); time.Now().Before(end); time.Sleep(200 * time.Millisecond) {
+				if out := harness.ExecOutput(t, ctx, id, "ip", "link", "show", "eth0"); strings.Contains(out, want) {
+					t.Fatalf("propagate_mtu is off but eth0 came up at %q:\n%s", want, out)
+				}
+			}
+		})
+	}
+}
