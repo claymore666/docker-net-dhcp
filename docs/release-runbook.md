@@ -149,9 +149,11 @@ When you **do** want Hub published:
    - `DOCKERHUB_USERNAME` = `claymore666`
    - `DOCKERHUB_TOKEN` = the token from step 2.
 
-Symptom if scope is wrong: image push works, but the **Sync Docker Hub
-description from README** step ends with `401 Unauthorized` calling
-`PATCH /v2/repositories/...`. Regenerate the token with the broader
+Symptom if scope is wrong: image push works, the **Sync Docker Hub
+description from README** steps log `Forbidden` after `Sending PATCH
+request` yet show green, and **verify-hub-description** goes red because
+the Hub text differs from `README.md`. Every release from v1.7.0-rc2 to
+v2.6.0-rc1 ran in that state (#1324). Regenerate the token with the broader
 scope, then re-run the sync **from an rc tag** and never from the
 release tag:
 
@@ -322,6 +324,7 @@ Watch the run; every job must be green: **resolve**, since #1014
 **release-arm64** / **verify-install-arm64**, since #776
 **verify-install-hub** / **verify-install-hub-arm64**, since #972
 **verify-install-hub-alias** / **verify-install-hub-alias-arm64**,
+since #1324 **verify-hub-description**,
 since #736 **promote-latest**, which an rc now reaches, and
 **github-release**, which publishes an rc as a draft (#469). The last
 step of promote-latest, *Assert a pre-release did not move :latest*, is
@@ -1103,6 +1106,13 @@ be true.
     - **github-release**: does **not** wait for `promote-latest`; it
         needs the same eight jobs. Promotion and the Releases page are
         siblings, so a refused promotion does not suppress the release.
+    - **verify-hub-description**: since #1324 reads both Docker Hub
+        descriptions back from the Hub API and compares them byte for
+        byte with the tag's `README.md` and the workflow's short
+        description. The two sync steps keep `continue-on-error`, so this
+        job is where a failed sync goes red; nothing waits on it, so it
+        blocks no publish. Without Hub credentials it records
+        `⚠️ Docker Hub descriptions not verified` in the summary.
 
    Every green checklist below includes the arm64 jobs.
 10. **Confirm the GitHub Release**. The `github-release` job now cuts it
@@ -1334,8 +1344,8 @@ After the workflow succeeds:
 | Workflow shows zero-job "failed" runs on every push, tag push doesn't trigger anything | release.yml parse error (often `secrets` context in step-level `if`) | Fix the YAML, then verify with an **rc** tag (`gh workflow run release.yml -f tag=vX.Y.Z-rcN --ref main`), which exercises the whole chain without touching a bare release tag or `:latest`. Then retry the real tag. Do not verify by dispatching the release tag: [Dispatching an existing tag](#dispatching-an-existing-tag) |
 | `Push to GHCR` step ends `403 Forbidden` | GHCR package not linked to repo with Write | One-time fix in package settings (see prerequisites) |
 | `Push to Docker Hub` step ends `unauthorized: incorrect username or password` | Token revoked / expired / wrong scope | Regenerate at hub.docker.com, update `DOCKERHUB_TOKEN` repo secret |
-| `Sync Docker Hub description from README` step ends `401` | Token scope is image-push only and lacks admin | Regenerate token with broader scope (see prerequisites) |
-| Hub page README is stale after a release | Description-sync step skipped (no Hub creds) or 401'd | Check the workflow run; either set creds or fix the token |
+| `verify-hub-description` red; the sync steps log `Forbidden` but show green | Token scope is image-push only and lacks admin | Regenerate token with broader scope (see prerequisites), then dispatch an rc tag |
+| `verify-hub-description` red; the sync steps log no error | The Hub stored a different text, or the README passed 25000 bytes | Read the job's `::error` line: it names the first differing byte or the size |
 | Tag push succeeded but no Hub publish | `HAS_HUB_CREDS` evaluated false (secrets blank) | Set the secrets, then exercise the publish from an **rc** tag: `gh workflow run release.yml -f tag=vX.Y.Z-rcN --ref main`. Do **not** dispatch the bare release tag: it rebuilds and re-points that tag plus `:latest`, and [`scripts/assert-newest-release-tag.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/assert-newest-release-tag.sh) refuses an older one outright; [Dispatching an existing tag](#dispatching-an-existing-tag) |
 
 ## Backports between `dev` and `main`
