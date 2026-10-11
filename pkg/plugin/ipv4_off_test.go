@@ -69,6 +69,7 @@ func TestCreateNetwork_IPv4OffIsStoredAndTheOptionFormIsRefused(t *testing.T) {
 		{"the engine key under -o is refused", map[string]interface{}{engineEnableIPv4Key: "false", "ipv6_mode": "dhcp"}, nil, []string{"--ipv4=false", "Docker 28"}},
 		{"ipv4_off under -o is refused", map[string]interface{}{"ipv4_off": "true", "ipv6_mode": "dhcp"}, nil, []string{"--ipv4=false"}},
 		{"ipv4 under -o is refused", map[string]interface{}{"IPv4": "false", "ipv6_mode": "dhcp"}, nil, []string{"--ipv4=false"}},
+		{"a non-boolean engine value is refused", map[string]interface{}{"ipv6_mode": "dhcp"}, "maybe", []string{"not a boolean", engineEnableIPv4Key}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			withStateDir(t, t.TempDir())
@@ -88,6 +89,9 @@ func TestCreateNetwork_IPv4OffIsStoredAndTheOptionFormIsRefused(t *testing.T) {
 					if !strings.Contains(err.Error(), n) {
 						t.Errorf("the refusal %q does not name %q", err, n)
 					}
+				}
+				if _, lerr := loadOptions(mtuTestNetwork); lerr == nil {
+					t.Errorf("a refused create left an options file for the network (#1135)")
 				}
 				return
 			}
