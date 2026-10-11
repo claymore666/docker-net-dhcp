@@ -519,6 +519,9 @@
 #              (120.00) and TestSLAAC_StablePrivacy..._Macvlan (50.00) arrive with #1319 and are INFERRED:
 #              each is the shipped bridge row of the same shape (80.00; two arms of 60.00; 50.00), as the
 #              macvlan twin runs the same fixture, container start and reads.
+#   one row    TestDHCPv6_AnEndpointWithNoV6LeaseStartsOnAHostWithRARoutes (45.00) arrives with #1317 and is
+#              INFERRED: one V6 fixture and one bridge container (the 12.00 of a plain container test) plus
+#              the 11 to 15 s the DHCPv6 exchange takes to give up on a segment with no advertisement.
 #   samples    3 for every corpus row. SIXTY-EIGHT rows are not corpus
 #              samples, and the seventeen groups below are disjoint and
 #              exhaust them: the five `one row` notes above -- 73.85,
@@ -665,6 +668,7 @@ TestDHCPv6_ADuplicateOnTheSegmentIsRefused	30.08
 TestDHCPv6_ARefusalLogsItsStatusCodeByNameOnce	35.00
 TestDHCPv6_ASquatOnARunningContainerIsCountedAndTheAddressChanges	38.00
 TestDHCPv6_AdvertisedMTUReachesTheContainer	30.00
+TestDHCPv6_AnEndpointWithNoV6LeaseStartsOnAHostWithRARoutes	45.00
 TestDHCPv6_Managed_ServerSilent_IsStillFatal	27.95
 TestDHCPv6_Managed_ServerSilent_IsStillFatal_IPAM	27.95
 TestDHCPv6_Managed_ServerSilent_IsStillFatal_Macvlan	27.95
