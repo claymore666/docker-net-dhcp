@@ -515,6 +515,10 @@
 #              per network create, plugin log read and rule restore:
 #              67.19, rounded up so a first run costs less than the
 #              table says.
+#   three rows TestAutoStrict_..._Macvlan (80.00), TestMainPrefix_WhatDockerReportsFollowsTheNamedPrefix_Macvlan
+#              (120.00) and TestSLAAC_StablePrivacy..._Macvlan (50.00) arrive with #1319 and are INFERRED:
+#              each is the shipped bridge row of the same shape (80.00; two arms of 60.00; 50.00), as the
+#              macvlan twin runs the same fixture, container start and reads.
 #   samples    3 for every corpus row. SIXTY-EIGHT rows are not corpus
 #              samples, and the seventeen groups below are disjoint and
 #              exhaust them: the five `one row` notes above -- 73.85,
@@ -638,6 +642,7 @@ TestAdvertRoutes_BecomeContainerRoutesUnlessSkipRoutes	150.00
 TestAuditLog_DefaultOff	12.63
 TestAuditLog_RecordsLifecycle	12.31
 TestAutoStrict_ASilentManagedServerFailsTheEndpointAndTheDefaultFallsBack	80.00
+TestAutoStrict_ASilentManagedServerFailsTheEndpointAndTheDefaultFallsBack_Macvlan	80.00
 TestBridgeFirewallVerdict_NamedAtCreateAndAtTheDeadline	75.00
 TestClasslessStaticRoutes_AbsentWithoutOptIn	12.09
 TestClasslessStaticRoutes_AppliedFromDHCP	11.96
@@ -799,6 +804,7 @@ TestMTUPropagate_DefaultIsUnchanged	12.15
 TestMTUPropagate_OptInSetsLinkMTU	11.79
 TestMainPrefix_AnUnadvertisedPrefixReportsTheFirstAdvertisedOne	60.00
 TestMainPrefix_TheSecondOfTwoAdvertisedPrefixesIsWhatDockerReports	60.00
+TestMainPrefix_WhatDockerReportsFollowsTheNamedPrefix_Macvlan	120.00
 TestMetrics_SocketServesTheFullSurface	0.01
 TestMultiNetwork_SameSubnetRefused	27.75
 TestNonRootContainer_PersistentClientStarts	27.48
@@ -855,6 +861,7 @@ TestSLAAC_AutoRemembersASilentServer_IPAM	70.00
 TestSLAAC_AutoRemembersASilentServer_Macvlan	70.00
 TestSLAAC_RenumberingInOneAdvertisementEndsWithExactlyTheNewSet	95.00
 TestSLAAC_StablePrivacyFormsAnAddressThatIsNotTheMACsAndSurvivesARestart	50.00
+TestSLAAC_StablePrivacyFormsAnAddressThatIsNotTheMACsAndSurvivesARestart_Macvlan	50.00
 TestSLAAC_TheAddressComesBackAfterAPluginRestart	60.00
 TestSLAAC_TheAddressComesBackAfterAPluginRestart_IPAM	60.00
 TestSLAAC_TheAddressComesBackAfterAPluginRestart_Macvlan	60.00
