@@ -10,9 +10,9 @@
 #
 # POPULATION: TOP-LEVEL TEST FUNCTIONS, PARENTS ONLY.
 # One row per `func TestX(t *testing.T)` in test/integration/*_test.go —
-# 276 of them, the main suite's 269 and the failure suite's 7. MEASURED
-# on this table: 276 data rows, and 276 `func TestX(t *testing.T)` in
-# test/integration/*_test.go counted independently of them.
+# split into the main suite and the failure suite. No total is written
+# here: scripts/check-durations-table.sh counts both sides on every run
+# and prints the figure, so a literal in this comment only goes stale.
 #
 # THIS NUMBER HAS NOW BEEN WRONG TWICE, and the second time is the
 # instructive one. It said 137 / 130 / 7 and was stale by five before
@@ -658,6 +658,7 @@ TestClasslessStaticRoutes_AppliedFromDHCP	11.96
 TestClasslessStaticRoutes_Option249AloneIsApplied	12.00
 TestClientID_DefaultIsMACDerived	11.50
 TestClientID_OverrideAppearsInLeaseFile	11.98
+TestClientID_OverrideReachesTheServerOnBridgeAndIpvlan	22.47
 TestConcurrency_DistinctLeases	45.25
 TestConcurrentRenew_SameInterfaceNameBothRenew	41.65
 TestConflictCheck_BridgeModeDoesNotSelfReport	11.81
@@ -767,6 +768,7 @@ TestIPAMv6_TwoRestartedTogetherIsTheDocumentedLimit	45.00
 TestIPv6Mode_SurvivesAPluginRestart	28.00
 TestIPv6Temporary_BridgeHoldsAStableAndATemporaryAddress	20.00
 TestIPv6Temporary_IPAMMacvlanHoldsAStableAndATemporaryAddress	30.00
+TestIPv6Temporary_IpvlanHoldsAStableAndATemporaryAddress	34.92
 TestIPv6Temporary_MacvlanHoldsAStableAndATemporaryAddress	25.00
 TestIPv6Temporary_MacvlanWithoutTheOptionAsksForNoIATA	25.00
 TestIPv4OffBridgeDHCP	75.00
@@ -833,6 +835,7 @@ TestRapidCommitV6_MacvlanWithoutTheOptionKeepsTheFourMessageExchange	17.00
 TestRapidCommit_BridgeTakesTheTwoMessageLease	11.90
 TestRapidCommit_BridgeWithoutTheOptionKeepsTheFourMessageExchange	11.56
 TestRapidCommit_IPAMMacvlanTakesTheTwoMessageLease	11.71
+TestRapidCommit_IpvlanTakesTheTwoMessageLease	24.15
 TestRapidCommit_MacvlanTakesTheTwoMessageLease	12.08
 TestRapidCommit_MacvlanWithoutTheOptionKeepsTheFourMessageExchange	11.72
 TestRecovery_DaemonKilled_LeaseIsHeldUntilItExpires	31.98
@@ -903,6 +906,7 @@ TestTombstoneRestart_PreservesMACAndIP	20.39
 TestUserClass_BridgeRoutesViaTaggedGateway	11.90
 TestUserClass_BridgeWithoutTheOptionUsesDefaultGateway	11.56
 TestUserClass_IPAMMacvlanRoutesViaTaggedGateway	11.71
+TestUserClass_IpvlanRoutesViaTaggedGateway	22.40
 TestUserClass_MacvlanRoutesViaTaggedGateway	12.08
 TestUserClass_MacvlanWithoutTheOptionUsesDefaultGateway	11.72
 TestV6Fixture_AssertExchangeRefusesASegmentNoClientEverUsed	2.34
@@ -911,6 +915,7 @@ TestV6Fixture_ModesComeUpAsRequested	17.89
 TestV6Fixture_RefusesASegmentInAnotherModesShape	65.36
 TestV6Fixture_RefusesASegmentThatCannotTransmit	10.15
 TestV6RACapture_SeesTheAdvertisementOnTheBridgeAndNotOnAQuietLink	1.46
+TestVendorClass_BridgeAndIpvlan	46.14
 TestVendorClass_DefaultUsesUntaggedGateway	12.02
 TestVendorClass_NonMatchingValueUsesDefaultGateway	12.23
 TestVendorClass_OverrideRoutesViaTaggedGateway	12.30

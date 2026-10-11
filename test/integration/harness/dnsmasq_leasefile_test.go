@@ -76,3 +76,23 @@ func TestDnsmasqLease6Addrs_SplitsTheStableAndTheTemporaryAddressOfOneDUID(t *te
 		t.Errorf("another DUID read stable %v temporary %v, want none", s, tmp)
 	}
 }
+
+func TestDnsmasqLease6DUID_NamesTheOwnerOfAnAddressAndNoOneElse(t *testing.T) {
+	const leases = "1790000000 aa:bb:cc:dd:ee:ff 192.168.97.20 x *\n" +
+		"duid 00:01:00:01:aa:bb:cc:dd:ee:ff:00:11\n" +
+		"1790000100 3232261899 fd00:6470:6866::61 web1 00:03:00:01:02:42:c0:a8:67:0b\n" +
+		"1790000100 T3232261899 fd00:6470:6866::62 web1 00:03:00:01:02:42:c0:a8:67:0b\n" +
+		"1790000100 3232261900 fd00:6470:6866::63 * 00:03:00:01:02:42:c0:a8:67:0c\n"
+	for addr, want := range map[string]string{
+		"fd00:6470:6866::61":        "00:03:00:01:02:42:c0:a8:67:0b",
+		"fd00:6470:6866:0:0:0:0:62": "00:03:00:01:02:42:c0:a8:67:0b",
+		"fd00:6470:6866::63":        "00:03:00:01:02:42:c0:a8:67:0c",
+		"fd00:6470:6866::64":        "",
+		"192.168.97.20":             "",
+		"not an address":            "",
+	} {
+		if got := DnsmasqLease6DUID(leases, addr); got != want {
+			t.Errorf("DnsmasqLease6DUID(%q) = %q, want %q", addr, got, want)
+		}
+	}
+}
