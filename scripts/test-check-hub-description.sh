@@ -120,30 +120,52 @@ wiring() {
     fi
 }
 wiring "release.yml has a verify-hub-description job" '^  verify-hub-description:'
-# Run the step's own shell against a stub checker: an exit 1 for either
-# name must turn the step red, and both names must be checked.
+# Run the step's own shell against a stub checker and a stub git: an exit
+# 1 for either name, or a failed fetch, must turn the step red; both names
+# are checked against the release ref's README, read as a blob.
 step="$(printf '%s\n' "$job" | awk '/^      - name: Read both Docker Hub descriptions back$/{f=1; next}
     f && /^      - /{exit} f && /^        run: \|$/{r=1; next} f && r' | sed 's/^          //')"
-mkdir -p "$dir/stub/scripts"
-printf '%s\n' 'echo "$1 $2 $3" >> "$CALLS"' '[ "$1" != "$FAIL_FOR" ]' > "$dir/stub/scripts/check-hub-description.sh"
+mkdir -p "$dir/stub/.checker/scripts" "$dir/bin"
+printf '%s\n' 'echo "$1 $2 $3 $(cat "$2")" >> "$CALLS"' '[ "$1" != "$FAIL_FOR" ]' > "$dir/stub/.checker/scripts/check-hub-description.sh"
+cat > "$dir/bin/git" <<'STUB'
+#!/usr/bin/env bash
+[ "$1 $2" = "-C .checker" ] || exit 9
+case "$3" in
+    fetch) echo "fetch ${*: -1}" >> "$CALLS"; [ "$FAIL_FOR" != fetch ] ;;
+    show) [ "$4" = refs/readme-under-check:README.md ] && echo "readme of the ref" ;;
+    *) exit 9 ;;
+esac
+STUB
+chmod +x "$dir/bin/git"
 run_step() {
     : > "$dir/calls"
-    (cd "$dir/stub" && CALLS="$dir/calls" FAIL_FOR="$1" HUB_NAME=ns/primary HUB_ALIAS=ns/alias \
-        HUB_SHORT_DESCRIPTION="$SHORT" GITHUB_STEP_SUMMARY="$dir/summary" bash -eo pipefail -c "$step" >/dev/null 2>&1)
+    (cd "$dir/stub" && PATH="$dir/bin:$PATH" CALLS="$dir/calls" FAIL_FOR="$1" REF=refs/tags/v9.9.9 \
+        HUB_NAME=ns/primary HUB_ALIAS=ns/alias HUB_SHORT_DESCRIPTION="$SHORT" \
+        GITHUB_STEP_SUMMARY="$dir/summary" bash -eo pipefail -c "$step" >/dev/null 2>&1)
 }
-for fail_for in ns/primary ns/alias; do
+for fail_for in ns/primary ns/alias fetch; do
     if run_step "$fail_for"; then
-        echo "FAIL: the read-back step ends green when the check fails for $fail_for"
+        echo "FAIL: the read-back step ends green when $fail_for fails"
         failures=$((failures + 1))
     else
-        echo "PASS: the read-back step goes red when the check fails for $fail_for"
+        echo "PASS: the read-back step goes red when $fail_for fails"
     fi
 done
-if run_step none && [ "$(cat "$dir/calls")" = "ns/primary README.md $SHORT
-ns/alias README.md $SHORT" ]; then
-    echo "PASS: the read-back step checks both names on README.md and passes when both match"
+if run_step none && [ "$(cat "$dir/calls")" = "fetch +refs/tags/v9.9.9:refs/readme-under-check
+ns/primary released-README.md $SHORT readme of the ref
+ns/alias released-README.md $SHORT readme of the ref" ]; then
+    echo "PASS: the read-back step checks both names against the ref's README blob"
 else
-    echo "FAIL: the read-back step did not check both names and pass; calls: $(cat "$dir/calls")"
+    echo "FAIL: the read-back step did not check both names against the ref's README; calls: $(cat "$dir/calls")"
+    failures=$((failures + 1))
+fi
+# The release ref reaches this job only as data (CodeQL alert 192): one
+# use, on the step's REF variable, and no checkout of it.
+uses="$(printf '%s\n' "$job" | grep -F 'needs.release.outputs.ref' | sed 's/^ *//')"
+if [ "$uses" = 'REF: ${{ needs.release.outputs.ref }}' ]; then
+    echo "PASS: the release ref reaches the job only as the step's REF"
+else
+    echo "FAIL: the release ref is used other than as the step's REF: $uses"
     failures=$((failures + 1))
 fi
 # Only the credential guard may decide whether the job runs: no job-level
