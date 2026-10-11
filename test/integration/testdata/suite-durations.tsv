@@ -646,6 +646,10 @@
 #   three rows the #1320 rows are measured on run 38175035202 (one sample) except
 #              TestMTUPropagate_BridgeAndIpvlan, INFERRED at 75.00: that run failed one of
 #              its four subtests, so its 89.11 does not cost a passing tree.
+#   one row    TestConflictCheck_IpvlanNeverHearsTheSquatter is INFERRED at 40.00
+#              (#1322): the fixture and one ipvlan container as in its
+#              TestConflictCheck_* siblings (9 to 37 s), plus the 15 s
+#              window that proves no DECLINE follows. Its lane replaces it.
 TestAdvertDNS_ReachesTheResolverAndDHCPv6ComesFirst	75.00
 TestAdvertRoutes_BecomeContainerRoutesUnlessSkipRoutes	150.00
 TestAuditLog_DefaultOff	12.63
@@ -662,6 +666,7 @@ TestClientID_OverrideReachesTheServerOnBridgeAndIpvlan	22.47
 TestConcurrency_DistinctLeases	45.25
 TestConcurrentRenew_SameInterfaceNameBothRenew	41.65
 TestConflictCheck_BridgeModeDoesNotSelfReport	11.81
+TestConflictCheck_IpvlanNeverHearsTheSquatter	40.00
 TestConflictCheck_OffSendsNoProbe	33.76
 TestConflictCheck_RestartInsideTheAsyncWindow	4.60
 TestConflictCheck_SquattedOfferIsDeclined	37.00
