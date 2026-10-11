@@ -226,6 +226,23 @@ func TestCreateNetwork_V6PoolBindsBothAndLeavesNoLeak(t *testing.T) {
 	}
 }
 
+func TestCreateNetwork_V6PoolNeverIssuedIsRefused(t *testing.T) {
+	p := v6PoolPlugin(t)
+	if _, err := p.RequestPool(RequestPoolRequest{AddressSpace: ipamLocalAddressSpace, Pool: ipamTestPool}); err != nil {
+		t.Fatalf("v4 RequestPool: %v", err)
+	}
+	err := createV6PoolNetwork(t, p, map[string]interface{}{"ipv6_mode": "dhcp"}, v4Ours, v6Ours)
+	if err == nil || !strings.Contains(err.Error(), "no issued IPv6 pool") {
+		t.Fatalf("CreateNetwork = %v, want a refusal naming %q", err, "no issued IPv6 pool")
+	}
+	if n := p.ipamIndex.len(); n != 0 {
+		t.Errorf("%d index entries left after the refused create (#1132)", n)
+	}
+	if _, lerr := loadOptions(ipamTestNetwork6); lerr == nil {
+		t.Errorf("a refused create left an options file for the network (#1132)")
+	}
+}
+
 func TestRebuildIPAMIndex_BindsTheV6PoolID(t *testing.T) {
 	p := v6PoolPlugin(t)
 	requestBothPools(t, p)
