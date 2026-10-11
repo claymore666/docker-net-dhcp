@@ -978,8 +978,9 @@ rollback around removing the IPAM-mode networks first.
 ## Driver options (network-level)
 
 Passed as `-o key=value` on `docker network create`, or under
-`driver_opts:` in Compose. Booleans take `'true'` / `'false'`
-(quote them in YAML).
+`driver_opts:` in Compose. A boolean is `true`, `false`, `1` or `0`
+(quote them in YAML); `t`, `f`, `T`, `F`, `TRUE`, `FALSE`, `True` and `False` read the same. Any other
+value is refused.
 
 **An option written with no value at all is an option you did not set.**
 `-o lease_timeout=`, and `driver_opts: {lease_timeout: "${VAR}"}` in
