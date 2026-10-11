@@ -1686,18 +1686,31 @@ jobs:
     env:
       HAS_HUB_CREDS: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
     steps:
+      # OUR checker, at this workflow's own ref; the release ref's README
+      # arrives as a blob (fetch, then git show), never as a tree, as in
+      # `resolve`. A checkout of that ref here was CodeQL alert 192
+      # (actions/cache-poisoning/poisonable-step), and a tag cut before
+      # #1324 carries no checker to run.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: env.HAS_HUB_CREDS == 'true'
         with:
-          ref: ${{ needs.release.outputs.ref }}
-          persist-credentials: false
+          path: .checker
+          sparse-checkout: |
+            scripts/check-hub-description.sh
+            scripts/gatelib.sh
+            scripts/tmpdir-guard.sh
+          sparse-checkout-cone-mode: false
 
       - name: Read both Docker Hub descriptions back
         if: env.HAS_HUB_CREDS == 'true'
+        env:
+          REF: ${{ needs.release.outputs.ref }}
         run: |
+          git -C .checker fetch --depth=1 --no-tags origin "+${REF}:refs/readme-under-check"
+          git -C .checker show refs/readme-under-check:README.md > released-README.md
           rc=0
           for repo in "$HUB_NAME" "$HUB_ALIAS"; do
-            bash scripts/check-hub-description.sh "$repo" README.md "$HUB_SHORT_DESCRIPTION" || rc=1
+            bash .checker/scripts/check-hub-description.sh "$repo" released-README.md "$HUB_SHORT_DESCRIPTION" || rc=1
           done
           if [ "$rc" -ne 0 ]; then
             echo "Docker Hub descriptions **differ** from README.md; see docs/release-runbook.md, Docker Hub token." >> "$GITHUB_STEP_SUMMARY"
