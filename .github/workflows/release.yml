@@ -91,6 +91,8 @@ env:
   GHCR_NAME: ghcr.io/claymore666/docker-net-dhcp
   HUB_NAME: claymore666/net-dhcp
   HUB_ALIAS: claymore666/docker-net-dhcp
+  # One text for both sync steps and the read-back that compares it (#1324).
+  HUB_SHORT_DESCRIPTION: "DHCP-leased IPs for Docker containers (bridge/macvlan/ipvlan), as Docker network or IPAM driver."
 
 jobs:
   # Tag resolution is arch-independent and derives from the tag that
@@ -660,25 +662,11 @@ jobs:
       # job or block verify-install. v1.0.0-rc1 caught exactly this:
       # Hub 403 on PATCH.
       #
-      # WHAT THAT COSTS — stated here because this comment claimed the
-      # opposite until 2026-08-22, when it said the failure "surfaces
-      # as a red step to fix out-of-band":
-      #
-      # NOTHING REPORTS IT. The step goes red inside a job that stays
-      # GREEN, and that is the entire signal. It carries no `id:`, so
-      # no later step can read `steps.<id>.outcome` to mention it even
-      # if one wanted to; the job's `$GITHUB_STEP_SUMMARY` — the
-      # channel people actually read — never hears about it; and this
-      # is the only `continue-on-error` in the whole workflow tree, so
-      # there is no convention elsewhere to lean on either.
-      #
-      # The description therefore stays stale until somebody opens this
-      # job's log and scrolls to a green run. It does re-sync on the
-      # next release, but only because the step runs again — not
-      # because anyone was told to restore the token.
-      # docs/release-runbook.md carries the out-of-band fix: dispatch
-      # an rc tag, which re-runs this step against the same Hub
-      # repository without touching a bare release tag or `:latest`.
+      # The step's API conclusion stays `success` even on a 403 (run
+      # 38121315399, 2026-10-11), so verify-hub-description reads both
+      # texts back and is where a failed sync goes red (#1324). The fix
+      # is in docs/release-runbook.md: correct the token, then dispatch
+      # an rc tag, which re-runs this step without touching `:latest`.
       - name: Sync Docker Hub description from README
         if: env.HAS_HUB_CREDS == 'true'
         continue-on-error: true
@@ -687,7 +675,7 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: ${{ env.HUB_NAME }}
-          short-description: "DHCP-leased IPs for Docker containers (bridge/macvlan/ipvlan), as Docker network or IPAM driver."
+          short-description: ${{ env.HUB_SHORT_DESCRIPTION }}
           readme-filepath: ./README.md
 
       # PER REPOSITORY, WHICH IS WHY THIS IS A SECOND STEP AND NOT A
@@ -709,7 +697,7 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: ${{ env.HUB_ALIAS }}
-          short-description: "DHCP-leased IPs for Docker containers (bridge/macvlan/ipvlan), as Docker network or IPAM driver."
+          short-description: ${{ env.HUB_SHORT_DESCRIPTION }}
           readme-filepath: ./README.md
 
       # Sign a release artifact and hand it to the github-release job.
@@ -1683,6 +1671,45 @@ jobs:
         run: |
           echo "::warning::Hub alias arm64 install NOT verified: no Hub image was published by this run."
           echo "⚠️ Hub alias arm64 install **not verified** — nothing was pushed there by this run." >> "$GITHUB_STEP_SUMMARY"
+
+  # The sync steps above keep continue-on-error, so a token that may not
+  # write descriptions cannot stop a release; their 403 stayed green from
+  # v1.7.0-rc2 to v2.6.0-rc1 (#1324). This job reads both Hub texts back
+  # and goes red on a difference. Gated on the sync steps' own condition,
+  # never on their outcome; nothing needs this job, so it blocks no publish.
+  verify-hub-description:
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    env:
+      HAS_HUB_CREDS: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.HAS_HUB_CREDS == 'true'
+        with:
+          ref: ${{ needs.release.outputs.ref }}
+          persist-credentials: false
+
+      - name: Read both Docker Hub descriptions back
+        if: env.HAS_HUB_CREDS == 'true'
+        run: |
+          rc=0
+          for repo in "$HUB_NAME" "$HUB_ALIAS"; do
+            bash scripts/check-hub-description.sh "$repo" README.md "$HUB_SHORT_DESCRIPTION" || rc=1
+          done
+          if [ "$rc" -ne 0 ]; then
+            echo "Docker Hub descriptions **differ** from README.md; see docs/release-runbook.md, Docker Hub token." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "Both Docker Hub descriptions match README.md." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record that the Docker Hub descriptions were not verified
+        if: env.HAS_HUB_CREDS != 'true'
+        run: |
+          echo "::warning::Docker Hub descriptions NOT verified: no Hub credentials, so no sync ran."
+          echo "⚠️ Docker Hub descriptions **not verified**: no Hub credentials, so no sync ran." >> "$GITHUB_STEP_SUMMARY"
 
   # Move the floating tag — LAST, and only onto bytes that are signed,
   # attested, and proven to install (#736).
