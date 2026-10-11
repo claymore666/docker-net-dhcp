@@ -10,8 +10,8 @@
 #
 # POPULATION: TOP-LEVEL TEST FUNCTIONS, PARENTS ONLY.
 # One row per `func TestX(t *testing.T)` in test/integration/*_test.go —
-# 273 of them, the main suite's 266 and the failure suite's 7. MEASURED
-# on this table: 273 data rows, and 273 `func TestX(t *testing.T)` in
+# 276 of them, the main suite's 269 and the failure suite's 7. MEASURED
+# on this table: 276 data rows, and 276 `func TestX(t *testing.T)` in
 # test/integration/*_test.go counted independently of them.
 #
 # THIS NUMBER HAS NOW BEEN WRONG TWICE, and the second time is the
@@ -633,6 +633,9 @@
 #              TestIPAMv6_DockerShowsTheAddressTheServersReplyCarried (20.00); a refused start adds its release
 #              wait; the exhausted row is two DHCPv6 timeouts of about 26 s; restart and on-stop are their
 #              TestIPAMv6_* twins plus the fixture; the slaac row is one refused create. The first run costs them.
+#   three rows the #1320 rows are measured on run 38175035202 (one sample) except
+#              TestMTUPropagate_BridgeAndIpvlan, INFERRED at 75.00: that run failed one of
+#              its four subtests, so its 89.11 does not cost a passing tree.
 TestAdvertDNS_ReachesTheResolverAndDHCPv6ComesFirst	75.00
 TestAdvertRoutes_BecomeContainerRoutesUnlessSkipRoutes	150.00
 TestAuditLog_DefaultOff	12.63
@@ -795,6 +798,7 @@ TestMTUOption_AnIPAMMacvlanParentBelowTheOptionFailsTheEndpointAndLeavesNoLink	1
 TestMTUOption_AnIPvlanChildReturnsToTheOptionOnTheNextRenew	80.00
 TestMTUOption_BridgeFollowsASmallerPortOnlyWhileItIsAttached	15.00
 TestMTUOption_TheContainerLinkCarriesTheOptionInEveryMode	50.00
+TestMTUPropagate_BridgeAndIpvlan	75.00
 TestMTUPropagate_DefaultIsUnchanged	12.15
 TestMTUPropagate_OptInSetsLinkMTU	11.79
 TestMainPrefix_AnUnadvertisedPrefixReportsTheFirstAdvertisedOne	60.00
@@ -871,8 +875,10 @@ TestServerPolicy_PrefersTheNamedServer	69.34
 TestStateDirBindSource_MissingSourceContract	5.96
 TestStaticIP_DriverOpt	9.01
 TestStaticRoutes_BridgeCopiesToContainer	11.80
+TestStaticRoutes_IpvlanCopiesToContainer	8.26
 TestStaticRoutes_MacvlanCopiesToContainer	12.23
 TestStaticRoutes_MacvlanSkipRoutesOpt	11.82
+TestStaticRoutes_SkipRoutesKeepsParentRoutesOutOnBridgeAndIpvlan	22.56
 TestSubModes_APluginRecycleKeepsTheSubMode	25.00
 TestSubModes_DockersOwnIPvlanL3NetworkRefusesAnIPvlanNetworkOnItsParent	2.00
 TestSubModes_EachLeasesInTheModeItWasCreatedWith	72.00

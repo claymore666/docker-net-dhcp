@@ -74,24 +74,37 @@ func TestMTUPropagate_DefaultIsUnchanged(t *testing.T) {
 	}
 }
 
-// eth0MTUOutput returns the container's `ip link show eth0` once it shows want, or the last read when budget runs out (#1320).
-func eth0MTUOutput(t *testing.T, ctx context.Context, id, want string) (string, bool) {
+// ctrLinkLine returns the container's `ip -o link show` line for the link that carries its leased address ip, or "" when no
+// link does. Bridge mode names that link after the bridge (DstPrefix in pkg/plugin/network.go), so eth0 does not exist
+// there, and a tunnel device a namespace may come with is not the link under test (#1320).
+func ctrLinkLine(t *testing.T, ctx context.Context, id, ip string) string {
+	t.Helper()
+	for _, line := range strings.Split(harness.ExecOutput(t, ctx, id, "ip", "-o", "-4", "addr", "show"), "\n") {
+		if f := strings.Fields(line); len(f) > 1 && strings.Contains(line, " "+ip+"/") {
+			return harness.ExecOutput(t, ctx, id, "ip", "-o", "link", "show", "dev", f[1])
+		}
+	}
+	return ""
+}
+
+// ctrLinkMTUOutput returns the container link's line once it shows want, or the last read when the budget runs out (#1320).
+func ctrLinkMTUOutput(t *testing.T, ctx context.Context, id, ip, want string) (string, bool) {
 	t.Helper()
 	// The MTU is applied from the post-Join bound event, which can trail the IP by a lost reply (harness.RetransmitBudget).
 	deadline := time.Now().Add(harness.RetransmitBudget(2))
-	var out string
+	var line string
 	for time.Now().Before(deadline) {
-		out = harness.ExecOutput(t, ctx, id, "ip", "link", "show", "eth0")
-		if strings.Contains(out, want) {
-			return out, true
+		line = ctrLinkLine(t, ctx, id, ip)
+		if strings.Contains(line, want) {
+			return line, true
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	return out, false
+	return line, false
 }
 
-// TestMTUPropagate_BridgeAndIpvlan checks that propagate_mtu=true gives eth0 option 26's MTU on bridge and ipvlan, and that
-// eth0 keeps its inherited MTU without the opt-in (#1320).
+// TestMTUPropagate_BridgeAndIpvlan checks that propagate_mtu=true gives the container link option 26's MTU on bridge and ipvlan, and that
+// the link keeps its inherited MTU without the opt-in (#1320).
 func TestMTUPropagate_BridgeAndIpvlan(t *testing.T) {
 	for _, tc := range []struct {
 		mode      string
@@ -122,20 +135,26 @@ func TestMTUPropagate_BridgeAndIpvlan(t *testing.T) {
 			})
 
 			harness.CreateNetwork(t, ctx, netName, tc.mode, opts)
-			id, _, _ := harness.RunContainer(t, ctx, netName, netName+"-ctr")
+			id, ip, _ := harness.RunContainer(t, ctx, netName, netName+"-ctr")
 
 			want := "mtu " + harness.TestMTU
 			if tc.propagate {
-				if out, ok := eth0MTUOutput(t, ctx, id, want); !ok {
-					t.Errorf("propagate_mtu=true but eth0 never showed %q:\n%s", want, out)
+				if out, ok := ctrLinkMTUOutput(t, ctx, id, ip, want); !ok {
+					t.Errorf("propagate_mtu=true but the container link never showed %q: %q", want, out)
 				}
 				return
 			}
 			// Watch for as long as the opt-in case allows the 1400 to arrive: a single read could land before it (#1320).
+			seen := false
 			for end := time.Now().Add(harness.RetransmitBudget(2)); time.Now().Before(end); time.Sleep(200 * time.Millisecond) {
-				if out := harness.ExecOutput(t, ctx, id, "ip", "link", "show", "eth0"); strings.Contains(out, want) {
-					t.Fatalf("propagate_mtu is off but eth0 came up at %q:\n%s", want, out)
+				line := ctrLinkLine(t, ctx, id, ip)
+				seen = seen || strings.Contains(line, " mtu ")
+				if strings.Contains(line, want) {
+					t.Fatalf("propagate_mtu is off but the container link came up at %q: %q", want, line)
 				}
+			}
+			if !seen {
+				t.Fatalf("the container had no link carrying %s, so the absence of the MTU above says nothing", ip)
 			}
 		})
 	}
