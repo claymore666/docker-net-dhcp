@@ -51,6 +51,21 @@ func waitLeaseFile(t *testing.T, leaseFile, addr string, want bool) bool {
 	}
 }
 
+func waitLeaseFileLine(t *testing.T, leaseFile, addr string) []string {
+	t.Helper()
+	deadline := time.Now().Add(releaseVisibleBudget)
+	for {
+		fields, err := harness.LeaseFileLine(leaseFile, addr)
+		if err != nil {
+			t.Fatalf("read lease file %s: %v", leaseFile, err)
+		}
+		if fields != nil || !time.Now().Before(deadline) {
+			return fields
+		}
+		time.Sleep(releaseVisiblePoll)
+	}
+}
+
 // on_remove is a timed release since #984: libnetwork deletes an endpoint when its container stops, not when it is
 // removed, so there is no remove-time call to hang a release on.
 
