@@ -21,7 +21,7 @@ TREE_BEFORE=$(git -C "$REPO_UNDER_TEST" status --porcelain 2>/dev/null)
 # The package half of the ratchet needs a percent file and a baseline; the
 # cases below are about the function half, so the package half always holds.
 PKG_BASE="$TMP/pkg-baseline.txt"
-printf 'example.com/mod/pkg/a 80.0\n' > "$PKG_BASE"
+printf 'toolchain go1.99.0\nexample.com/mod/pkg/a 80.0\n' > "$PKG_BASE"
 PKG_PCT="$TMP/pkg-percent.txt"
 printf '\texample.com/mod/pkg/a\t\tcoverage: 85.0%% of statements\n' > "$PKG_PCT"
 
@@ -85,10 +85,13 @@ table() { # table <file> <row>...   row = "<file>.go <line> <name> <pct>"
     printf 'total:\t\t\t(statements)\t\t90.0%%\n' >> "$f"
 }
 
+# Floor files carry the toolchain every run is told it is on (#1301);
+# FLOORS_TC names another line, or none when empty.
+export RATCHET_GO_VERSION=go1.99.0
 floors() { # floors <file> <key floor>...
-    local f="$1" r
+    local f="$1" r tc="${FLOORS_TC-toolchain go1.99.0}"
     shift
-    { echo '# function floors'; echo; for r in "$@"; do echo "$r"; done; } > "$f"
+    { echo '# function floors'; echo; [ -n "$tc" ] && echo "$tc"; for r in "$@"; do echo "$r"; done; } > "$f"
 }
 
 FLOORS="$TMP/floors.txt"
@@ -296,13 +299,76 @@ run_ratchet "$REPO/scripts/coverage-ratchet.sh" RATCHET_FUNC_PROFILE="$TMP/half.
     RATCHET_FUNC_HEAD_BASELINE="$TMP/no-such-floors.txt"
 expect "a base with no floor file and no readable head copy refuses" 2 $? "No function floors" "is absent at the merge base"
 
+# ---- the unit is compared before the numbers (#1301) ---------------------
+# The v2.6.0 release PR: the merge base holds main's floors, measured on Go
+# 1.27.1 with no toolchain line, and the head copy carries the run's
+# toolchain. Only pull_request context reads the merge base, and the
+# Coverage dispatch has none, so this is where that path is proved.
+g checkout -q -b tc-old "$BASE_SHA"
+FLOORS_TC='' floors "$REPO/.github/coverage-func-baseline.txt" "$P.Foo 90.0" "$P.Bar 50.0"
+g add -A && g commit -q -m "floors with no toolchain line"
+TC_OLD_SHA=$(g rev-parse HEAD)
+g checkout -q -b tc-release
+floors "$REPO/.github/coverage-func-baseline.txt" "$P.Foo 35.0" "$P.Bar 50.0"
+g add -A && g commit -q -m "re-baselined floors"
+run_ratchet "$REPO/scripts/coverage-ratchet.sh" RATCHET_FUNC_PROFILE="$TMP/half.txt" RATCHET_FUNC_REPO="$REPO" RATCHET_FUNC_BASE_REF="$TC_OLD_SHA"
+expect "merge-base floors from an unrecorded toolchain give way to the matching head copy" 0 $? \
+    "function floors in the merge base $TC_OLD_SHA were measured on an unrecorded toolchain, this run on go1.99.0" \
+    "FUNC-OK $P.Foo measured 40.0%"
+table "$TMP/tc-low.txt" "a.go 10 Foo 30.0" "b.go 20 Bar 50.0"
+run_ratchet "$REPO/scripts/coverage-ratchet.sh" RATCHET_FUNC_PROFILE="$TMP/tc-low.txt" RATCHET_FUNC_REPO="$REPO" RATCHET_FUNC_BASE_REF="$TC_OLD_SHA"
+expect "...and the head copy is compared, not waved through" 1 $? "FUNC-FAIL $P.Foo measured 30.0% is below its floor 35.0%"
+FLOORS_TC='toolchain go1.27.1' floors "$REPO/.github/coverage-func-baseline.txt" "$P.Foo 35.0" "$P.Bar 50.0"
+g add -A && g commit -q -m "head floors from another toolchain"
+run_ratchet "$REPO/scripts/coverage-ratchet.sh" RATCHET_FUNC_PROFILE="$TMP/half.txt" RATCHET_FUNC_REPO="$REPO" RATCHET_FUNC_BASE_REF="$TC_OLD_SHA"
+expect "a head copy from another toolchain too is a re-baseline red" 1 $? \
+    "FAIL  re-baseline needed: function floors measured on go1.27.1"
+if grep -F 'FUNC-OK' "$TMP/out" > /dev/null; then
+    echo "FAIL: ...yet a function floor was compared"; failures=$((failures + 1))
+else
+    echo "PASS: ...and no function floor is compared in the wrong unit"
+fi
+g checkout -q introduces
+
+FLOORS_TC='toolchain go1.27.1' floors "$TMP/tc-old-floors.txt" "$P.Foo 90.0" "$P.Bar 50.0"
+run_ratchet "$RATCHET" RATCHET_FUNC_PROFILE="$TMP/hold.txt" RATCHET_FUNC_HEAD_BASELINE="$TMP/tc-old-floors.txt"
+expect "with no PR context, a working copy from another toolchain is a re-baseline red" 1 $? \
+    "FAIL  re-baseline needed: function floors measured on go1.27.1 in $TMP/tc-old-floors.txt, run on go1.99.0"
+run_ratchet "$RATCHET" RATCHET_FUNC_PROFILE="$TMP/hold.txt" RATCHET_FUNC_HEAD_BASELINE="$FLOORS"
+expect "matching floors compare as before, the toolchain line read as no function" 0 $? "FUNC-OK $P.Foo" "FUNC-OK $P.Bar"
+if grep -E 'FUNC-[A-Z]+ +toolchain' "$TMP/out" > /dev/null; then
+    echo "FAIL: ...yet the toolchain line was judged as a function"; failures=$((failures + 1))
+else
+    echo "PASS: ...and no verdict names the toolchain line"
+fi
+FLOORS_TC='toolchain go1.27.1' floors "$TMP/tc-only-floors.txt"
+run_ratchet "$RATCHET" RATCHET_FUNC_PROFILE="$TMP/hold.txt" RATCHET_FUNC_HEAD_BASELINE="$TMP/tc-only-floors.txt"
+expect "function floors holding only a toolchain line keep their own refusal" 2 $? "No function floors"
+printf 'toolchain go1.99.0\ntoolchain go1.27.1\n%s.Foo 90.0\n' "$P" > "$TMP/tc-dup-floors.txt"
+run_ratchet "$RATCHET" RATCHET_FUNC_PROFILE="$TMP/hold.txt" RATCHET_FUNC_HEAD_BASELINE="$TMP/tc-dup-floors.txt"
+expect "two toolchain lines in the function floors are refused" 2 $? "Unreadable toolchain line"
+printf 'toolchain go1.27.1\nexample.com/mod/pkg/a 95.0\n' > "$TMP/tc-old-pkg.txt"
+env RATCHET_FUNC_PROFILE="$TMP/hold.txt" RATCHET_FUNC_HEAD_BASELINE="$FLOORS" RATCHET_REPORT= \
+    RATCHET_HEAD_BASELINE="$TMP/tc-old-pkg.txt" bash "$RATCHET" "$PKG_PCT" "$TMP/tc-old-pkg.txt" > "$TMP/out" 2>&1
+expect "package floors needing a re-baseline stop the run before the function floors" 1 $? \
+    "FAIL  re-baseline needed: package floors" "per-function floors are not compared"
+if grep -E 'FUNC-(OK|FAIL)' "$TMP/out" > /dev/null; then
+    echo "FAIL: ...yet the function floors were compared"; failures=$((failures + 1))
+else
+    echo "PASS: ...and none of them is"
+fi
+mkdir -p "$TMP/tcgo"; printf '#!/bin/sh\nexit 1\n' > "$TMP/tcgo/go"; chmod +x "$TMP/tcgo/go"
+env -u RATCHET_GO_VERSION PATH="$TMP/tcgo:$PATH" RATCHET_FUNC_PROFILE="$TMP/hold.txt" RATCHET_FUNC_HEAD_BASELINE="$FLOORS" \
+    RATCHET_REPORT= RATCHET_HEAD_BASELINE="$PKG_BASE" bash "$RATCHET" "$PKG_PCT" "$PKG_BASE" > "$TMP/out" 2>&1
+expect "a go that cannot name its version is exit 2, not a verdict" 2 $? "Unknown toolchain"
+
 # A major-version rename: the floor is written under the old module path, the
 # head module carries /v2 and the table is spelled with it.
 REPO2="$TMP/repo2"
 mkdir -p "$REPO2/scripts" "$REPO2/.github"
 cp "$RATCHET" "$REPO2/scripts/coverage-ratchet.sh"
 printf 'module example.com/mod/v2\n\ngo 1.22\n' > "$REPO2/go.mod"
-printf 'example.com/mod/v2/pkg/a 80.0\n' > "$TMP/pkg-baseline-v2.txt"
+printf 'toolchain go1.99.0\nexample.com/mod/v2/pkg/a 80.0\n' > "$TMP/pkg-baseline-v2.txt"
 printf '\texample.com/mod/v2/pkg/a\t\tcoverage: 85.0%% of statements\n' > "$TMP/pkg-percent-v2.txt"
 floors "$REPO2/.github/coverage-func-baseline.txt" "example.com/mod/pkg/a.Foo 90.0"
 printf 'example.com/mod/v2/pkg/a/a.go:1:\t\tFoo\t\t95.0%%\n' > "$TMP/v2-hold.txt"

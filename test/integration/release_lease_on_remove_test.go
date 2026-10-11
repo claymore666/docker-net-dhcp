@@ -19,7 +19,9 @@ import (
 
 	"github.com/moby/moby/api/types/network"
 	docker "github.com/moby/moby/client"
+	"github.com/vishvananda/netlink"
 
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
@@ -397,5 +399,102 @@ func TestReleaseLease_OnRemoveHandsAnIPAMAddressBackToo(t *testing.T) {
 	}
 	if got := after.ReleaseFailuresV4 - before.ReleaseFailuresV4; got != 0 {
 		t.Errorf("release_failures_v4 moved by %d on a release that reached the server", got)
+	}
+}
+
+// TestReleaseLease_OnRemoveHandsBackFromAParentWithNoIPv4 runs on_remove on a dedicated parent, one with no IPv4
+// address of the host's, which used to refuse the release as release_no_source; the release now goes out from the
+// leased address itself over the link (#1288). The parent is the test's own, so no shared parent is stripped.
+func TestReleaseLease_OnRemoveHandsBackFromAParentWithNoIPv4(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	const (
+		netName = "dh-itest-onremove-nov4"
+		ctrName = "dh-itest-onremove-nov4-ctr"
+	)
+
+	t.Cleanup(func() {
+		if t.Failed() {
+			fixture.DumpLogs(func(s string) { t.Log(s) })
+			harness.DumpPluginLog(t)
+		}
+	})
+
+	parent := harness.AddSegmentParent(t, "dh-itest-nov4", "dh-itest-nov4p")
+	assertNoHostIPv4(t, parent, "before the network is created")
+	harness.CreateNetwork(t, ctx, netName, "macvlan",
+		map[string]string{"parent": parent, "release_lease": "on_remove"})
+
+	cli, err := harness.NewDockerClient()
+	if err != nil {
+		t.Fatalf("docker client: %v", err)
+	}
+	t.Cleanup(func() { _ = cli.Close() })
+
+	id, ip, mac := harness.RunContainer(t, ctx, netName, ctrName)
+	t.Logf("container %s holds ip=%s mac=%s on parent %s", ctrName, ip, mac, parent)
+
+	if !waitLeaseFile(t, fixture.LeaseFile(), ip, true) {
+		t.Fatalf("dnsmasq's lease DB has no entry for %s, so nothing below can be read", ip)
+	}
+
+	w := harness.BeginCounterWindow(t, ctx, cli, "releases_sent_v4", "release_failures_v4")
+	releasesBefore := fixture.CountLogLines("DHCPRELEASE", ip)
+
+	stopped := time.Now()
+	if _, err := cli.ContainerStop(ctx, id, docker.ContainerStopOptions{}); err != nil {
+		t.Fatalf("ContainerStop: %v", err)
+	}
+
+	time.Sleep(onRemoveHeldProbe)
+	if !leaseFileHolds(t, fixture.LeaseFile(), ip) {
+		t.Errorf("dnsmasq gave %s up %s after the stop, inside the %s restart window",
+			ip, onRemoveHeldProbe, onRemoveWindow)
+	}
+
+	_, gone := waitLeaseFileWithin(t, fixture.LeaseFile(), ip, false,
+		onRemoveVisibleBudget-time.Since(stopped))
+	assertNoHostIPv4(t, parent, "when the window ran out")
+	if !gone {
+		t.Errorf("dnsmasq still holds %s %s after the stop. The parent has no IPv4 address, and "+
+			"a v4 release needs none: it goes out from the leased address over the link", ip, time.Since(stopped))
+	} else {
+		t.Logf("the address went back %s after the stop", time.Since(stopped))
+	}
+	releaseLines := fixture.CountLogLines("DHCPRELEASE", ip) - releasesBefore
+	if releaseLines < 1 {
+		t.Errorf("dnsmasq logged %d DHCPRELEASE line(s) naming %s, want at least 1: the lease "+
+			"can leave the DB for reasons other than a release", releaseLines, ip)
+	}
+
+	before, after := w.End()
+	t.Logf("across the window releases_sent_v4 moved by %d and release_failures_v4 by %d",
+		after.ReleasesSentV4-before.ReleasesSentV4,
+		after.ReleaseFailuresV4-before.ReleaseFailuresV4)
+	if releaseLines >= 1 {
+		if got := after.ReleasesSentV4 - before.ReleasesSentV4; got < 1 {
+			t.Errorf("releases_sent_v4 moved by %d on a release dnsmasq logged, want at least 1", got)
+		}
+		if got := after.ReleaseFailuresV4 - before.ReleaseFailuresV4; got != 0 {
+			t.Errorf("release_failures_v4 moved by %d on a release that reached the server", got)
+		}
+	}
+}
+
+// assertNoHostIPv4 fails the test when the host holds an IPv4 address on link: the release would then take the
+// host-address path and the test would prove nothing about the link path (#1288).
+func assertNoHostIPv4(t *testing.T, link, when string) {
+	t.Helper()
+	l, err := netlink.LinkByName(link)
+	if err != nil {
+		t.Fatalf("LinkByName %s %s: %v", link, when, err)
+	}
+	addrs, err := util.DumpResult(netlink.AddrList(l, netlink.FAMILY_V4))
+	if err != nil {
+		t.Fatalf("AddrList %s %s: %v", link, when, err)
+	}
+	if len(addrs) != 0 {
+		t.Fatalf("parent %s holds %v %s; this test needs a parent with no IPv4 address", link, addrs, when)
 	}
 }

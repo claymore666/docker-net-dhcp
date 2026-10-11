@@ -110,18 +110,14 @@ func countLogToken(t *testing.T, logPath string, needles ...string) int {
 // leaseDUIDForV6 extracts the client DUID from the dnsmasq lease DB line holding addr.
 func leaseDUIDForV6(t *testing.T, leaseFile, addr string) string {
 	t.Helper()
-	data, err := os.ReadFile(leaseFile)
+	fields, err := harness.LeaseFileLine(leaseFile, addr)
 	if err != nil {
 		t.Fatalf("read lease file: %v", err)
 	}
-	needle := strings.ToLower(addr)
-	for _, line := range strings.Split(string(data), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) >= 5 && strings.EqualFold(fields[2], needle) {
-			return fields[len(fields)-1]
-		}
+	if fields == nil {
+		return ""
 	}
-	return ""
+	return fields[len(fields)-1]
 }
 
 // TestIPv6_AcceptedAtCreate checks that `ipv6=true` is accepted at create and the network exists afterwards (#911).

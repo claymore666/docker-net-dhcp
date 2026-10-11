@@ -24,11 +24,15 @@ const stateFileMode = 0o600
 
 // stateSchemaVersion is stamped as an extra flat key on the options file, which crosses builds on a host mount
 // (#440); a file without it reads as v1, and an unknown version is refused in favour of the docker API.
-const stateSchemaVersion = 2
+const stateSchemaVersion = 3
 
 // stateSchemaVersionBase keeps a network with no pool binding at v1, byte-identical to older builds; v2 marks an IPAM
-// binding (#110).
-const stateSchemaVersionBase = 1
+// binding (#110), and v3 only one that carries a v6 pool, so a build that does not know the v6 fields refuses the file
+// instead of serving the v6 pool as unbound (#1132).
+const (
+	stateSchemaVersionBase = 1
+	stateSchemaVersionIPAM = 2
+)
 
 type syncPolicy int
 
@@ -295,7 +299,10 @@ func saveNetwork(networkID string, opts DHCPNetworkOptions, binding *ipamBinding
 	}
 	v := stateSchemaVersionBase
 	if binding != nil {
-		v = stateSchemaVersion
+		v = stateSchemaVersionIPAM
+		if binding.PoolID6 != "" {
+			v = stateSchemaVersion
+		}
 	}
 	data, err := json.Marshal(versionedOptions{DHCPNetworkOptions: opts, V: v, IPAM: binding})
 	if err != nil {

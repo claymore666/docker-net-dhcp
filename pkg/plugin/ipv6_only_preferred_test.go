@@ -55,7 +55,7 @@ func TestNoClientPathSetsIPv6OnlyPreferred(t *testing.T) {
 			return true
 		})
 	}
-	want := map[string]int{"parent_attached.go": 1, "network.go": 1, "dhcp_manager.go": 1, "ipam_reserve.go": 1, "ipam_endpoint.go": 1}
+	want := map[string]int{"parent_attached.go": 1, "network.go": 1, "dhcp_manager.go": 1, "ipam_reserve.go": 1, "ipam_endpoint.go": 1, "ipam_reserve6.go": 1}
 	for f, n := range want {
 		if literals[f] != n {
 			t.Errorf("%s holds %d DHCPClientOptions literals with VendorClass, want %d: a site moved or a new one needs a look", f, literals[f], n)

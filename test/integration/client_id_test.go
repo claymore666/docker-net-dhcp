@@ -105,12 +105,10 @@ func TestClientID_DefaultIsMACDerived(t *testing.T) {
 	}
 	t.Logf("lease line: %s", lineForIP)
 
-	// dnsmasq lease line: <expiry> <mac> <ip> <hostname> <client-id>.
-	fields := strings.Fields(lineForIP)
-	if len(fields) < 5 {
+	gotClientID, ok := leaseClientIDField(lineForIP)
+	if !ok {
 		t.Fatalf("unexpected lease line shape (want >=5 fields): %q", lineForIP)
 	}
-	gotClientID := fields[len(fields)-1]
 
 	macBytes, err := net.ParseMAC(mac)
 	if err != nil {
@@ -124,9 +122,18 @@ func TestClientID_DefaultIsMACDerived(t *testing.T) {
 			gotClientID, wantClientID, lineForIP)
 	}
 
-	if strings.Contains(lineForIP, "dh-itest-cid") {
+	if strings.Contains(strings.ToLower(gotClientID), colonHex([]byte("dh-itest-cid"))) {
 		t.Errorf("default network should NOT carry the override string in client-id; got line: %s", lineForIP)
 	}
+}
+
+// leaseClientIDField returns the client-id field: the hostname holds the container name (#961), option 61 is colon-hex (#1272).
+func leaseClientIDField(line string) (string, bool) {
+	fields := strings.Fields(line)
+	if len(fields) < 5 {
+		return "", false
+	}
+	return fields[len(fields)-1], true
 }
 
 // colonHex renders bytes as aa:bb:cc, dnsmasq's lease-file form of a binary field.

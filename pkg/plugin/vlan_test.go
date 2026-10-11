@@ -826,6 +826,22 @@ func TestDisableHostIPv6Under(t *testing.T) {
 	if err := disableHostIPv6Under(dir, "eth0.101"); err == nil {
 		t.Error("a missing link's sysctl passed; the host would stay on the vlan unnoticed")
 	}
+	if err := os.WriteFile(path, []byte("0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := disableHostIPv6Under(dir, "../"+filepath.Base(dir)+"/eth0.100"); err == nil {
+		t.Error("a name leaving the sysctl directory was written; the rooted handle must refuse it (#1289)")
+	}
+	if b, _ := os.ReadFile(path); strings.TrimSpace(string(b)) != "0" {
+		t.Errorf("disable_ipv6 = %q after the refused write, want 0 untouched", b)
+	}
+	notADir := filepath.Join(dir, "not-a-dir")
+	if err := os.WriteFile(notADir, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := disableHostIPv6Under(notADir, "eth0.100"); err == nil {
+		t.Error("a conf path that is no directory passed; the failed open must reach the caller")
+	}
 	if err := disableHostIPv6Under(filepath.Join(dir, "absent"), "eth0.100"); err != nil {
 		t.Errorf("err = %v, want nil on a kernel with IPv6 off at boot, which has no conf tree", err)
 	}

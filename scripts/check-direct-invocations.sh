@@ -32,8 +32,9 @@
 # WHAT IT CHECKS
 #
 #   1. EXECUTABLE. Every `scripts/*.sh` invoked in COMMAND POSITION without
-#      an interpreter prefix -- in a markdown code block, a workflow `run:`
-#      line, the Makefile, or another tracked shell script -- is mode
+#      an interpreter prefix -- in a markdown code block, a workflow or
+#      composite action `run:` line, the Makefile, or another tracked shell
+#      script -- is mode
 #      100755 in the git INDEX. The index, not the filesystem: a bit that
 #      is set on this box and not committed is not a bit that ships, and
 #      that distinction is the whole finding.
@@ -229,10 +230,12 @@ for f in sorted(x for x in files if x):
                       % (f, ln, stripped, nxt[:60]), file=sys.stderr)
                 print("      failure across the newline. A refusal here prints and the next line runs anyway.", file=sys.stderr)
                 print("      Fix: end the line with `&&`, or open the block with `set -e`.", file=sys.stderr)
-    elif f.startswith('.github/workflows/') and f.endswith(('.yml', '.yaml')):
+    elif ((f.startswith('.github/workflows/') and f.endswith(('.yml', '.yaml')))
+          or (f.startswith('.github/actions/') and f.endswith(('/action.yml', '/action.yaml')))):
         # The PARSED document, and only `run:` scalars. A line scan reads
         # the sparse-checkout list in release.yml as four invocations and
         # a `path:` as one; a workflow's shell is exactly its `run:` keys.
+        # A composite action's steps are lane shell too (#733).
         try:
             doc = yaml.safe_load(text)
         except yaml.YAMLError as e:

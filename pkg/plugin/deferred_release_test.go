@@ -979,3 +979,31 @@ func TestDeleteNetwork_HandsHeldAddressesBackBeforeTheOptionsGo(t *testing.T) {
 		})
 	}
 }
+
+// A silent next hop costs its probe bound once per pass, not once per lease, inside Docker's removal call (#1288).
+func TestDeferredRelease_OnePassSharesOneProbeAcrossItsLinkReleases(t *testing.T) {
+	p, sender := deferredPlugin(t, ReleaseOnRemove)
+	hostParent(t, "fe80::2/64")
+	deadline := time.Now()
+	heldRecord(t, p, deferredMAC(0x02), "192.168.99.10/24", deadline)
+	heldRecord(t, p, deferredMAC(0x03), "192.168.99.11/24", deadline)
+
+	p.sweepDeferredReleases(deadline.Add(releaseSettle))
+	heldRecord(t, p, deferredMAC(0x04), "192.168.99.12/24", time.Now().Add(time.Hour))
+	if err := p.DeleteNetwork(DeleteNetworkRequest{NetworkID: deferredTestNetwork}); err != nil {
+		t.Fatalf("DeleteNetwork: %v", err)
+	}
+
+	if got := sender.linkCount(); got != 3 {
+		t.Fatalf("%d release(s) went over the link, want 3: two from the sweep, one from the removal", got)
+	}
+	sweep, removal := sender.linkCfgs[0].Resolved, sender.linkCfgs[2].Resolved
+	if sweep == nil || sender.linkCfgs[1].Resolved != sweep {
+		t.Errorf("the sweep's two releases carried caches %p and %p, want one shared, non-nil cache",
+			sweep, sender.linkCfgs[1].Resolved)
+	}
+	if removal == nil || removal == sweep {
+		t.Errorf("the removal carried cache %p beside the sweep's %p, want a cache of its own: an answer "+
+			"remembered past its pass can name a MAC that has since moved", removal, sweep)
+	}
+}

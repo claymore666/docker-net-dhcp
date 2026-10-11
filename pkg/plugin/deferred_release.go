@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/claymore666/dhcp-golib/lease"
+	"github.com/claymore666/dhcp-golib/runtime"
 	cerrdefs "github.com/containerd/errdefs"
 	log "github.com/sirupsen/logrus"
 
@@ -60,6 +61,8 @@ func (p *Plugin) handRetainedRecordsBack(networkID string, due func(lease.Record
 	opts := map[string]*DHCPNetworkOptions{}
 	removed := map[string]bool{}
 	closed := map[string]int{}
+	// One probe per next hop per pass: a silent one costs its bound once, not once per lease, inside Docker's call (#1288).
+	resolved := runtime.NewLinkResolveCache()
 	for _, rec := range rb.Records {
 		if rec.Phase != lease.PhaseRetained {
 			continue
@@ -88,7 +91,7 @@ func (p *Plugin) handRetainedRecordsBack(networkID string, due func(lease.Record
 		if !o.releasesOnRemove() {
 			continue
 		}
-		if p.handOneRecordBack(rec.ID, due, *o, id, v6) {
+		if p.handOneRecordBack(rec.ID, due, *o, id, v6, resolved) {
 			sent++
 		}
 	}
@@ -131,7 +134,8 @@ func (p *Plugin) networkGone(networkID string) bool {
 // handOneRecordBack makes one attempt and then closes the record whatever happened, as on_stop does (#962, #984). It
 // judges the record on a read taken once the record is its own, not on the pass's: a claim written while an earlier
 // record was on the wire is seen, and the sweep and DeleteNetwork send it once between them (#1237).
-func (p *Plugin) handOneRecordBack(id string, due func(lease.Record) bool, opts DHCPNetworkOptions, networkID string, v6 bool) bool {
+func (p *Plugin) handOneRecordBack(id string, due func(lease.Record) bool, opts DHCPNetworkOptions, networkID string, v6 bool,
+	resolved *runtime.LinkResolveCache) bool {
 	if !p.takeForHandBack(id) {
 		return false
 	}
@@ -175,7 +179,7 @@ func (p *Plugin) handOneRecordBack(id string, due func(lease.Record) bool, opts 
 	held, _ := rec.Addr()
 	log.WithFields(fields).
 		Info("No container claimed this address back inside the restart window, so release_lease=on_remove is handing it back")
-	out := releaseFromRecord(rec, opts, v6, held, fields)
+	out := releaseFromRecord(rec, opts, v6, held, resolved, fields)
 	p.countRelease(v6, out == releaseSent)
 	announceReleaseOutcome(log.WithFields(fields).WithField("outcome", string(out)), out)
 	p.closeRecord(rec.ID)

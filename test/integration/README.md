@@ -30,11 +30,14 @@ installed the plugin yourself. CI can call them directly because each
 workflow job does its own build-and-install step first, and the suites
 run between that and teardown. The targets deliberately carry no
 rebuild dependency: one would reinstall the plugin mid-run and reset
-the health floor's observation window with it. Note the primary lane
-(`integration.yml`) does not run both suites in one job at all — its
-matrix is `main-1`..`main-5` plus `failure`, each with its own build step;
-the single-job shape is `integration-arm64.yml`, `integration-hosted.yml`
-and `coverage.yml`.
+the health floor's observation window with it. Every lane calls the
+suites through one composite action, `.github/actions/run-suites`, which
+runs the failure suite whatever the main suite returned and then prints
+the timing summary (#733). The primary lane (`integration.yml`) does not
+run both suites in one job at all: its matrix is `main-1`..`main-9` plus
+`failure-1` and `failure-2`, each with its own build step; the single-job
+shape is `integration-arm64.yml`, `integration-hosted.yml` and
+`coverage.yml`.
 
 The suite targets wrap `go test`, split by name. `integration-test`
 runs `go test -v -tags integration -count=1 -timeout 20m -skip

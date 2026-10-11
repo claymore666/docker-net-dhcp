@@ -30,7 +30,7 @@ RUN mkdir /seed \
 # ---- runner image
 FROM debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a
 
-ARG GO_VERSION=1.27.1
+ARG GO_VERSION=1.27.2
 # Resolved by the build workflow from actions/runner's latest release;
 # no default on purpose so a stale pin can't hide in this file.
 ARG RUNNER_VERSION

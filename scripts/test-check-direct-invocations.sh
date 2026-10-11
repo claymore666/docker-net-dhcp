@@ -180,13 +180,32 @@ if planted "$NAME" $?; then
     gate_case "$NAME" 0 "$t" "PASS  "
 fi
 
-# A5. The workflow arm. integration-arm64.yml runs scripts/integration-timing.sh
-#     from a `run:` block with no interpreter; clearing its bit must be seen.
+# A5. The workflow arm. release.yml runs scripts/publish-hub-alias.sh from a
+#     `run:` block with no interpreter; clearing its bit must be seen.
 NAME="a workflow run: invocation of a non-executable script is caught"
 t=$(mktree)
-git -C "$t" update-index --chmod=-x scripts/integration-timing.sh
+git -C "$t" update-index --chmod=-x scripts/publish-hub-alias.sh
 if planted "$NAME" $?; then
-    gate_case "$NAME" 1 "$t" "integration-arm64.yml"
+    gate_case "$NAME" 1 "$t" "release.yml"
+fi
+
+# A5b. The composite arm. Lane shell lives in .github/actions since #733; a
+#      composite step invoking a script with no interpreter must be judged.
+NAME="a composite action run: invocation of a non-executable script is caught"
+t=$(mktree)
+mkdir -p "$t/.github/actions/planted"
+cat > "$t/.github/actions/planted/action.yml" <<'YML'
+name: planted
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: scripts/integration-timing.sh /tmp/itest-planted-main.log
+YML
+git -C "$t" add .github/actions/planted/action.yml >/dev/null 2>&1 \
+    && git -C "$t" update-index --chmod=-x scripts/integration-timing.sh
+if planted "$NAME" $?; then
+    gate_case "$NAME" 1 "$t" ".github/actions/planted/action.yml"
 fi
 
 # A6. AN EMPTIED DOMAIN IS NOT A PASS. Remove the file that carries every

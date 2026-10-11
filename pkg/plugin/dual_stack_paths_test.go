@@ -173,6 +173,32 @@ func TestDualStack_OnlyAV6LeaseLossTakesTheDelegatedPrefixRoute(t *testing.T) {
 	}
 }
 
+// A v4 NAK is a v4 event: it must not take the DHCPv6 delegated-prefix aggregate; the v6 NAK still does (#214, #1283).
+func TestDualStack_OnlyAV6NakTakesTheDelegatedPrefixRoute(t *testing.T) {
+	r := newDualStackRig(t)
+	r.m.opts.IPv6Mode, r.m.opts.IPv6PD = "dhcp", 64
+	pd := v6Lease("2001:db8::53", 0)
+	pd.DelegatedPrefixes = []dhcp.V6Addr{{IP: "fd00:98:0:1::/64", ValidSeconds: 3600, PreferredSeconds: 1800}}
+	r.m.handleEvent(dhcp.Event{Type: "bound", Data: v4Lease("192.0.2.53", 0)}, false)
+	r.m.handleEvent(dhcp.Event{Type: "bound", Data: pd}, true)
+	if len(r.routes.replace) != 1 {
+		t.Fatalf("fixture: the delegated prefix was not installed, routes replaced = %v", r.routes.replace)
+	}
+	r.routes.routes = append(r.routes.routes, r.routes.replace...)
+
+	r.m.handleEvent(dhcp.Event{Type: "nak", Data: dhcp.Info{}}, false)
+	if len(r.routes.deleted) != 0 {
+		t.Fatalf("a v4 nak deleted the v6 delegated prefix route: %v", destinations(r.routes.deleted))
+	}
+	if got := r.p.naksReceivedV4.Load(); got != 1 {
+		t.Errorf("naks_received_v4 = %d after the v4 nak, want 1", got)
+	}
+	r.m.handleEvent(dhcp.Event{Type: "nak", Data: dhcp.Info{}}, true)
+	if got := destinations(r.routes.deleted); len(got) != 1 || got[0] != "fd00:98:0:1::/64" {
+		t.Errorf("after a v6 nak deleted routes = %v, want the one aggregate", got)
+	}
+}
+
 func TestDualStack_V6AddressWithdrawalLeavesV4Alone(t *testing.T) {
 	r := newDualStackRig(t)
 	r.bothBound(t)

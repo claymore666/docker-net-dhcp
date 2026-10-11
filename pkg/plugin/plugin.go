@@ -217,6 +217,8 @@ type DHCPNetworkOptions struct {
 	Gateway string
 	// IPv6 switches DHCPv6 on and equals `ipv6_mode=dhcp`; read it only through ipv6Enabled (#817).
 	IPv6 bool
+	// IPv4Off is stored from the engine's enable_ipv4=false at CreateNetwork and refused as an option (#1135).
+	IPv4Off bool `mapstructure:"ipv4_off"`
 	// IPv6Mode is off, dhcp, slaac or auto, proto.Mode6's spellings; a value disagreeing with IPv6 is refused (#817).
 	IPv6Mode string `mapstructure:"ipv6_mode"`
 	// IPv6AutoStrict makes `ipv6_mode=auto` fail an endpoint whose DHCPv6 server stays silent instead of falling back

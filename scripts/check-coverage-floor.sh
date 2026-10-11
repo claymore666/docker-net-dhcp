@@ -102,9 +102,11 @@ fi
 # Same refusal the ratchet itself now makes (#734), applied here: a base
 # baseline that parses to nothing means every floor reads as "not
 # lowered" and the gate reports a clean pass having compared nothing.
+# The `toolchain` line names the unit the floors are in; it is not a floor (#1301).
 floors() { # floors <file> <out>
     awk '
         /^[[:space:]]*#/ { next }
+        $1 == "toolchain" { next }
         NF == 2          { print $1, $2 }
     ' "$1" | sort > "$2"
 }

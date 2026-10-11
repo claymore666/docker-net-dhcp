@@ -4,6 +4,7 @@
 package harness
 
 import (
+	"bytes"
 	"os"
 	"strings"
 	"time"
@@ -22,11 +23,19 @@ const (
 // leaseFileSleep is the pause between confirming reads; a test swaps it to land a rewrite inside the gap (#1167).
 var leaseFileSleep = time.Sleep
 
-// LeaseFileHolds reports whether dnsmasq's lease DB has a line for addr. The address is the third field of a v4
-// line (`<expiry> <mac> <addr> <hostname> <client-id>`) and of a v6 line (`<expiry> <iaid> <addr> <hostname> <duid>`).
-// Presence is final, a partial rewrite cannot invent a line. Absence is confirmed by LeaseFileRereadTries reads of
-// a non-empty file without the line, or by an empty file for the whole LeaseFileRewriteWindow (#1167, #1173).
+// LeaseFileHolds reports whether dnsmasq's lease DB has a line for addr; see LeaseFileLine for the confirmation rule.
 func LeaseFileHolds(path, addr string) (bool, error) {
+	fields, err := LeaseFileLine(path, addr)
+	return fields != nil, err
+}
+
+// LeaseFileLine returns the fields of the lease DB line for addr, taken from the read that saw it, or nil once absence
+// is confirmed. The address is the third field of a v4 line (`<expiry> <mac> <addr> <hostname> <client-id>`) and of a
+// v6 line (`<expiry> <iaid> <addr> <hostname> <duid>`). Presence is final, but only for a line
+// with its newline: dnsmasq flushes in several write() calls, so a cut can leave five fields with a short last one.
+// Absence is LeaseFileRereadTries reads of a file with complete lines but not this one, or a file with no complete
+// line for the whole LeaseFileRewriteWindow; a caller that parses the line from a second read reopens #1167 (#1167, #1173).
+func LeaseFileLine(path, addr string) ([]string, error) {
 	deadline := time.Now().Add(LeaseFileRewriteWindow)
 	absent := 0
 	for read := 0; ; read++ {
@@ -35,21 +44,22 @@ func LeaseFileHolds(path, addr string) (bool, error) {
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return false, err
+			return nil, err
 		}
-		for _, line := range strings.Split(string(data), "\n") {
+		complete := string(data[:bytes.LastIndexByte(data, '\n')+1])
+		for _, line := range strings.Split(complete, "\n") {
 			fields := strings.Fields(line)
 			if len(fields) >= 5 && strings.EqualFold(fields[2], addr) {
-				return true, nil
+				return fields, nil
 			}
 		}
-		if len(strings.TrimSpace(string(data))) == 0 {
+		if len(strings.TrimSpace(complete)) == 0 {
 			absent = 0
 		} else if absent++; absent >= LeaseFileRereadTries {
-			return false, nil
+			return nil, nil
 		}
 		if !time.Now().Before(deadline) {
-			return false, nil
+			return nil, nil
 		}
 	}
 }

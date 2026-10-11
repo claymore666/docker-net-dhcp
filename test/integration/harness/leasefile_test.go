@@ -208,3 +208,101 @@ func TestLeaseFileHolds_AnAddressThatWasNeverThereIsNotHeld(t *testing.T) {
 		t.Fatalf("a missing lease file returned no error")
 	}
 }
+
+// A writer doing dnsmasq's truncate-and-rewrite must never make LeaseFileLine return nil or a partial line (#1167).
+func TestLeaseFileLine_AReadInsideTheRewriteIsNotAnAbsence(t *testing.T) {
+	path := writeLeaseFile(t, leaseFileThreeLines)
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if err := os.Truncate(path, 0); err != nil {
+				t.Errorf("truncate: %v", err)
+				return
+			}
+			if err := os.WriteFile(path, []byte(leaseFileThreeLines), 0o644); err != nil {
+				t.Errorf("rewrite: %v", err)
+				return
+			}
+			for end := time.Now().Add(leaseRewriteEvery); time.Now().Before(end); {
+				runtime.Gosched()
+			}
+		}
+	}()
+	defer func() { close(stop); wg.Wait() }()
+
+	for deadline, reads := time.Now().Add(300*time.Millisecond), 0; time.Now().Before(deadline); reads++ {
+		fields, err := LeaseFileLine(path, "192.168.99.45")
+		if err != nil {
+			t.Fatalf("LeaseFileLine: %v", err)
+		}
+		if len(fields) != 5 || fields[1] != "aa:bb:cc:00:00:02" || fields[4] != "01:aa:bb:cc:00:00:02" {
+			t.Fatalf("read %d returned %q while the file was only being rewritten, want the five fields of the line", reads, fields)
+		}
+	}
+}
+
+// A line cut inside its last field (five fields, no newline) never matches; the fields come from the completed line (#1167).
+func TestLeaseFileLine_FieldsComeFromTheReadThatSawTheLine(t *testing.T) {
+	partial := "1790000200 aa:bb:cc:00:00:02 192.168.99.45 host-b 01:aa:bb"
+	path := writeLeaseFile(t, partial)
+	reads := 0
+	defer func(old func(time.Duration)) { leaseFileSleep = old }(leaseFileSleep)
+	leaseFileSleep = func(time.Duration) {
+		reads++
+		if err := os.WriteFile(path, []byte(leaseFileThreeLines), 0o644); err != nil {
+			t.Errorf("rewrite: %v", err)
+		}
+	}
+	fields, err := LeaseFileLine(path, "192.168.99.45")
+	if err != nil {
+		t.Fatalf("LeaseFileLine: %v", err)
+	}
+	want := []string{"1790000200", "aa:bb:cc:00:00:02", "192.168.99.45", "host-b", "01:aa:bb:cc:00:00:02"}
+	if len(fields) != len(want) {
+		t.Fatalf("fields = %q, want %q", fields, want)
+	}
+	for i := range want {
+		if fields[i] != want[i] {
+			t.Fatalf("fields = %q, want %q", fields, want)
+		}
+	}
+	if reads != 1 {
+		t.Fatalf("paused %d times, want 1: a match on the second read is final", reads)
+	}
+}
+
+func TestLeaseFileLine_AbsenceIsNil(t *testing.T) {
+	path := writeLeaseFile(t, leaseFileThreeLines)
+	defer func(old func(time.Duration)) { leaseFileSleep = old }(leaseFileSleep)
+	leaseFileSleep = func(time.Duration) {}
+	fields, err := LeaseFileLine(path, "192.168.99.99")
+	if err != nil || fields != nil {
+		t.Fatalf("fields=%q err=%v, want nil nil", fields, err)
+	}
+}
+
+func TestLeaseFileLine_AFileWithOnlyACutLineIsARewriteInFlight(t *testing.T) {
+	path := writeLeaseFile(t, "1790000200 aa:bb:cc:00:00:02 192.168.99.45 host-b 01:aa")
+	sleeps := 0
+	defer func(old func(time.Duration)) { leaseFileSleep = old }(leaseFileSleep)
+	leaseFileSleep = func(d time.Duration) {
+		time.Sleep(d)
+		if sleeps++; sleeps == 6 {
+			if err := os.WriteFile(path, []byte(leaseFileThreeLines), 0o644); err != nil {
+				t.Errorf("rewrite: %v", err)
+			}
+		}
+	}
+	fields, err := LeaseFileLine(path, "192.168.99.45")
+	if err != nil || len(fields) != 5 || fields[4] != "01:aa:bb:cc:00:00:02" {
+		t.Fatalf("fields=%q err=%v after %d pauses, want the full line past three reads of a cut file", fields, err, sleeps)
+	}
+}

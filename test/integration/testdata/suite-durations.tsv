@@ -10,8 +10,8 @@
 #
 # POPULATION: TOP-LEVEL TEST FUNCTIONS, PARENTS ONLY.
 # One row per `func TestX(t *testing.T)` in test/integration/*_test.go —
-# 244 of them, the main suite's 237 and the failure suite's 7. MEASURED
-# on this table: 244 data rows, and 244 `func TestX(t *testing.T)` in
+# 272 of them, the main suite's 265 and the failure suite's 7. MEASURED
+# on this table: 272 data rows, and 272 `func TestX(t *testing.T)` in
 # test/integration/*_test.go counted independently of them.
 #
 # THIS NUMBER HAS NOW BEEN WRONG TWICE, and the second time is the
@@ -612,6 +612,21 @@
 # them. Gateway is three arms of one network and one container at about
 # 12 each; IgnoreConflicts is two creates, one refused, and one leased
 # container; ForceCreate adds a veth, two creates and one container.
+#
+# TestReleaseLease_OnRemoveHandsBackFromAParentWithNoIPv4 is INFERRED
+# (#1288): TestReleaseLease_OnRemoveHoldsTheAddressThenHandsItBack's walk
+# (100.00) on a veth parent of its own, whose create and delete are well
+# under a second, so the same 100.00. The first run that executes it
+# costs it.
+#   six rows   the TestIPv4Off* rows are INFERRED, not measured: they arrive with #1135 and no corpus run could
+#              have costed them. Each v6-fixture row is one fixture, one container, one plugin restart and two
+#              6 s settles, above TestDHCPv6_NoAddressModes_StartTheEndpoint (80.63) divided by its three
+#              arms; the refusal row is one rejected create. The first run costs them.
+#   nine rows  the #1132 TestIPAMv6Pool_* rows beside TypedSubnetCreates* are INFERRED: each is one v6 fixture
+#              (TypedSubnetCreates*, 30.00, less its network) plus what it adds. A started container is
+#              TestIPAMv6_DockerShowsTheAddressTheServersReplyCarried (20.00); a refused start adds its release
+#              wait; the exhausted row is two DHCPv6 timeouts of about 26 s; restart and on-stop are their
+#              TestIPAMv6_* twins plus the fixture; the slaac row is one refused create. The first run costs them.
 TestAdvertDNS_ReachesTheResolverAndDHCPv6ComesFirst	75.00
 TestAdvertRoutes_BecomeContainerRoutesUnlessSkipRoutes	150.00
 TestAuditLog_DefaultOff	12.63
@@ -710,6 +725,16 @@ TestIPAM_StaticIPIsHonouredWithASubnet	24.00
 TestIPAM_StaticIPWithoutASubnetIsStillTheAddressAsked	7.00
 TestIPAM_TwoEndpointsCannotShareOneHardwareAddress	16.00
 TestIPAM_TwoNetworksCannotShareOnePool	40.00
+TestIPAMv6Pool_AReplyOutsideTheTypedPrefixIsRefusedAndReleased	35.00
+TestIPAMv6Pool_AnExhaustedServerFailsInsideTheBudget	80.00
+TestIPAMv6Pool_AnIP6InTheRangeIsTheAddress	30.00
+TestIPAMv6Pool_AnIP6OutsideThePrefixIsRefusedBeforeAnySolicit	25.00
+TestIPAMv6Pool_AnIgnoredHintIsRefusedNamingBothAndReleased	35.00
+TestIPAMv6Pool_NoIP6HintGetsTheServersAddress	30.00
+TestIPAMv6Pool_OnStopSendsOneReleasePerFamily	30.00
+TestIPAMv6Pool_RestartKeepsTheV6AddressAndDUID	40.00
+TestIPAMv6Pool_SLAACWithAPoolIsRefusedAtCreate	20.00
+TestIPAMv6Pool_TypedSubnetCreatesAndInspectShowsBothPools	30.00
 TestIPAMv6_ASLAACAddressFollowsTheFreshMACAndMacAddressPinsIt	90.00
 TestIPAMv6_ASilentManagedServerFailsTheStartInsideAMinute	35.00
 TestIPAMv6_ASingleRestartChangesTheMACAndKeepsDUIDIAIDAndAddress	30.00
@@ -723,6 +748,12 @@ TestIPv6Temporary_BridgeHoldsAStableAndATemporaryAddress	20.00
 TestIPv6Temporary_IPAMMacvlanHoldsAStableAndATemporaryAddress	30.00
 TestIPv6Temporary_MacvlanHoldsAStableAndATemporaryAddress	25.00
 TestIPv6Temporary_MacvlanWithoutTheOptionAsksForNoIATA	25.00
+TestIPv4OffBridgeDHCP	75.00
+TestIPv4OffBridgeSLAAC	80.00
+TestIPv4OffIPAMWithoutIPv6	75.00
+TestIPv4OffIPv6OffRefused	2.00
+TestIPv4OffIPvlanDHCP	75.00
+TestIPv4OffMacvlanDHCP	75.00
 TestIPv6_AcceptedAtCreate	0.02
 TestIPv6_DNS6Propagation	34.17
 TestIPv6_TheV4OnlyPathIsUnchanged	11.57
@@ -784,6 +815,7 @@ TestRecovery_DaemonRestart_PreservesContainer	30.00
 TestRecovery_PluginDisableEnable_PreservesEndpoint	12.86
 TestReleaseLease_DefaultNetworksStillKeepTheirAddresses	26.00
 TestReleaseLease_OnRemoveHandsAnIPAMAddressBackToo	100.00
+TestReleaseLease_OnRemoveHandsBackFromAParentWithNoIPv4	100.00
 TestReleaseLease_OnRemoveHandsTheV6AddressBackToo	108.00
 TestReleaseLease_OnRemoveHoldsTheAddressThenHandsItBack	100.00
 TestReleaseLease_OnRemoveKeepsTheAddressForARestartInsideTheWindow	105.00

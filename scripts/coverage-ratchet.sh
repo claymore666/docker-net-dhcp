@@ -27,7 +27,8 @@
 #       the FIELDS of a line instead: a percentage belongs to the name
 #       immediately before its `coverage:`, so a swallowed name gets no
 #       number and a swallowing name is not credited with one either.
-#   <baseline-file>: lines of "<package> <min-percent>", '#' comments ok.
+#   <baseline-file>: lines of "<package> <min-percent>", '#' comments ok,
+#       and one "toolchain <go env GOVERSION>" line (#1301).
 #
 # RATCHET_EPSILON (default 0.5): tolerated drop in percentage points,
 # absorbing run-to-run noise from timing-dependent integration paths.
@@ -297,6 +298,79 @@ if [ ! -f "$HEAD_BASELINE" ] || [ ! -r "$HEAD_BASELINE" ]; then
     exit 2
 fi
 
+# Floors and readings must be in one unit: Go 1.27.2's cover tool counts
+# statements differently from 1.27.1's over the same blocks (#1301), so each
+# floor file carries `toolchain <go env GOVERSION>`. Floors from another
+# toolchain, or with no line, give way to the head copy when that one matches
+# this run: the v2.6.0 release PR takes that path, its merge base holding
+# main's 1.27.1 file. Lowering the head copy still needs the Coverage-floor
+# trailer (scripts/check-coverage-floor.sh). RATCHET_GO_VERSION stands in for
+# `go env GOVERSION` in the self-tests.
+if [ -n "${RATCHET_GO_VERSION-}" ]; then
+    RUN_TC="$RATCHET_GO_VERSION"
+elif [ -z "$GO_BIN" ] || ! RUN_TC=$(GOPROXY=off GOWORK=off "$GO_BIN" env -C "$REPO_ROOT" GOVERSION 2>/dev/null) \
+        || [ -z "$RUN_TC" ]; then
+    echo "::error title=Unknown toolchain::'go env GOVERSION' gave no answer (no 'go' on PATH, or it failed)," \
+         "so the ratchet cannot tell whether the floors and this run count statements in one unit (#1301)." >&2
+    exit 2
+fi
+
+toolchain_of() { # stdin: a floor file; prints its toolchain, nothing when it has no line
+    awk '$1 == "toolchain" { n++; v = $2; if (NF != 2) bad = 1 }
+         END { if (n > 1 || bad) exit 3; print v }'
+}
+
+has_floors() { # stdin: a floor file; true when it holds a row besides the toolchain line
+    awk '{ sub(/^[[:space:]]+/, "") } /^#/ || NF == 0 || $1 == "toolchain" { next } { f = 1; exit }
+         END { exit !f }'
+}
+
+tc_refuse() { # <source>
+    echo "::error title=Unreadable toolchain line::$1 carries more than one 'toolchain' line, or one" \
+         "that is not 'toolchain <version>' (#1301)." >&2
+    exit 2
+}
+
+# pick_floors <what> <source> <its toolchain> <head file> <head toolchain>
+# sets PICKED to base, head, or none after printing the re-baseline FAIL.
+pick_floors() {
+    PICKED="base"
+    [ "$3" = "$RUN_TC" ] && return 0
+    echo "TOOLCHAIN $1 in $2 were measured on ${3:-an unrecorded toolchain}, this run on $RUN_TC;" \
+         "statement counting differs between Go releases (#1301)."
+    if [ "$5" = "$RUN_TC" ]; then
+        PICKED="head"
+        echo "TOOLCHAIN $1 are read from $4 instead, measured on $5."
+        return 0
+    fi
+    PICKED="none"
+    echo "FAIL  re-baseline needed: $1 measured on ${5:-an unrecorded toolchain} in $4, run on $RUN_TC." \
+         "Set them from a coverage run on $RUN_TC, with the toolchain line to match (#1301)."
+}
+
+# A file with no floor keeps its own refusal below: nothing to compare is not
+# a re-baseline.
+BASE_TC=$(toolchain_of < "$BASELINE_FILE") || tc_refuse "$BASELINE_FILE"
+HEAD_TC=$(toolchain_of < "$HEAD_BASELINE") || tc_refuse "$HEAD_BASELINE"
+PICKED="base"
+if has_floors < "$BASELINE_FILE"; then
+    pick_floors "package floors" "$BASELINE_FILE" "$BASE_TC" "$HEAD_BASELINE" "$HEAD_TC"
+fi
+case "$PICKED" in
+    head)
+        if [ -n "$REPORT" ] && [ -f "$REPORT" ]; then
+            echo "TOOLCHAIN the resolver report $REPORT describes the floors set aside, so the head copy" \
+                 "is not cross-checked: the NOT CROSS-CHECKED line below is this fallback."
+        fi
+        BASELINE_FILE="$HEAD_BASELINE"
+        REPORT=""
+        ;;
+    none)
+        echo "The per-function floors are not compared until the package floors are re-baselined."
+        exit 1
+        ;;
+esac
+
 compared=0
 compared_pkgs=""
 floor_bad=0
@@ -305,7 +379,7 @@ renamed_rows=0
 
 while read -r pkg want; do
     [ -z "$pkg" ] && continue
-    case "$pkg" in '#'*) continue ;; esac
+    case "$pkg" in '#'*|toolchain) continue ;; esac
     compared=$((compared + 1))
     compared_pkgs="${compared_pkgs}${pkg}
 "
@@ -612,7 +686,7 @@ func_skip_or_refuse() { # <reason>
 }
 
 func_check() {
-    local floors_text src want key pkg name spelled n got bad checked failed rows
+    local floors_text src want key pkg name spelled n got bad checked failed rows base_tc head_tc=""
     if [ -z "$FUNC_PROFILE" ]; then
         func_skip_or_refuse "RATCHET_FUNC_PROFILE is not set, so there is no merged profile in this run"
         return 0
@@ -640,6 +714,18 @@ func_check() {
         floors_text=$(cat -- "$FUNC_HEAD_FLOORS")
         src="the working copy (no pull_request context)"
     fi
+    base_tc=$(toolchain_of <<< "$floors_text") || tc_refuse "$src"
+    if [ -r "$FUNC_HEAD_FLOORS" ]; then
+        head_tc=$(toolchain_of < "$FUNC_HEAD_FLOORS") || tc_refuse "$FUNC_HEAD_FLOORS"
+    fi
+    PICKED="base"
+    if has_floors <<< "$floors_text"; then
+        pick_floors "function floors" "$src" "$base_tc" "$FUNC_HEAD_FLOORS" "$head_tc"
+    fi
+    case "$PICKED" in
+        head) floors_text=$(cat -- "$FUNC_HEAD_FLOORS"); src="the head copy $FUNC_HEAD_FLOORS" ;;
+        none) fail=1; return 0 ;;
+    esac
 
     # The table, reduced to "<package> <func> <percent>" by shape: a row is
     # `<path>.go:<line>:` then a name then `NN.N%`. Anything else (the
@@ -657,7 +743,7 @@ func_check() {
     failed=0
     local seen=" "
     while read -r key want extra; do
-        case "$key" in ''|'#'*) continue ;; esac
+        case "$key" in ''|'#'*|toolchain) continue ;; esac
         case "$want" in
             ''|*[!0-9.]*|.*|*.|*.*.*) bad=1
                 echo "::error title=Function floor unreadable::'$key' has no readable floor (got '${want:-}'); a missing number reads as 0 and every function beats it." >&2

@@ -564,5 +564,25 @@ chk "func lines: still 5 of 5"        "$O" "every one of the 5 baselined package
 no  "func lines: no UNBASELINED flag" "$O" "*** UNBASELINED"
 eq  "func lines: same exit as the log without them" "$X" "$(runx "$D/log.full")"
 
+# --- the toolchain line (#1301) ----------------------------------------
+# Both floor files carry `toolchain <version>`; it is no package, so it is
+# neither counted, listed as missing, nor read as a row. The ratchet's
+# TOOLCHAIN lines are no verdicts either.
+{ echo 'toolchain go1.27.2'; cat "$D/dev.base"; } > "$D/tc-dev.base"
+{ echo 'toolchain go1.27.1'; cat "$D/main.base"; } > "$D/tc-main.base"
+{ echo "$ratchetcmd"
+  echo "TOOLCHAIN package floors in /tmp/base.txt were measured on go1.27.1, this run on go1.27.2;"
+  echo "TOOLCHAIN package floors are read from .github/coverage-baseline.txt instead, measured on go1.27.2."
+  verdicts; } | freshgroup "Coverage ratchet" > "$D/log.tc"
+tcrun() { COVREAD_LOG="$1" COVREAD_BASE_DEV="$D/tc-dev.base" COVREAD_BASE_MAIN="$D/tc-main.base" bash "$READER"; }
+O=$(tcrun "$D/log.tc"); X=$(tcrun "$D/log.tc" > /dev/null 2>&1; echo $?)
+chk "toolchain: still 5 of 5"         "$O" "every one of the 5 baselined package(s) got a verdict."
+no  "toolchain: no UNBASELINED flag"  "$O" "*** UNBASELINED"
+no  "toolchain: no row for the line"  "$O" "toolchain"
+eq  "toolchain: exit as without it"   "$X" "$(runx "$D/log.full")"
+O=$(tcrun "$D/log.partial")
+chk "toolchain: a partial log is still 1 of 5" "$O" "*** INCOMPLETE: 1 of 5"
+no  "toolchain: and the line is not listed as a missing package" "$O" "toolchain"
+
 echo; echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

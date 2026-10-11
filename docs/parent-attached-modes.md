@@ -39,7 +39,7 @@ substitute yours, and `ip -brief link` lists them):
 # On arm64 use the -arm64 tag. A network stores this exact reference
 # as its driver, so it must name the plugin you installed.
 docker network create \
-    --driver=ghcr.io/claymore666/docker-net-dhcp:v2.5.0 \
+    --driver=ghcr.io/claymore666/docker-net-dhcp:v2.6.0 \
     --ipam-driver=null \
     -o mode=macvlan \
     -o parent=eth0 \
@@ -131,6 +131,19 @@ and removes itself.
   consulting a route. A bare parent is fine. See
   [`conflict_check`](reference.md#driver-options-network-level) and
   [`/Plugin.Health`](reference.md#pluginhealth).
+- **`release_lease` needs no IPv4 address on the parent either** (v2.6.0+,
+  [#1288](https://github.com/claymore666/docker-net-dhcp/issues/1288)).
+  On a parent the host holds no IPv4 address on, the DHCPRELEASE goes
+  out from the leased address itself, to the DHCP server, or to the
+  lease's gateway when the server sits behind a relay. An IPv6 Release
+  still needs a link-local address on the parent, which a parent with
+  IPv6 disabled does not have. See
+  [`release_lease`](reference.md#driver-options-network-level).
+- **`--ipv4=false` networks** (Docker 28 or later, v2.6.0+,
+  [#1135](https://github.com/claymore666/docker-net-dhcp/issues/1135))
+  run no DHCPv4 and need an `ipv6_mode` other than `off`; on `ipvlan`
+  the mode must be `dhcp`, because `slaac` and `auto` are refused there.
+  See [`--ipv4=false`](reference.md#driver-options-network-level).
 - **ipvlan-specific:** custom MAC addresses are unsupported (children
   share the parent's MAC). Passing `--mac-address` on `docker run`
   with an ipvlan network will fail with `invalid MAC address`.

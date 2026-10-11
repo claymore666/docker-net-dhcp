@@ -71,7 +71,7 @@ func TestClientOptionLiterals_EveryV4SiteCarriesUserClass(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	v6Only := map[string]bool{"ipam_endpoint.go": true}
+	v6Only := map[string]bool{"ipam_endpoint.go": true, "ipam_reserve6.go": true}
 	seen := map[string]bool{}
 	fset := token.NewFileSet()
 	for _, f := range files {

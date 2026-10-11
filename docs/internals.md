@@ -35,6 +35,15 @@ The parts and what passes between them are drawn in
    and the `validate_dhcp` probe link are treated the same (v2.5.0, #1247).
 3. A one-shot DHCP acquisition runs on the container end (still in the
    host namespace). The plugin provides the initial IP address to Docker.
+   On a network created with `--ipv4=false` this step runs no DHCPv4: the
+   flag is read from the engine at `CreateNetwork`, stored with the
+   network's options so Join, replay and a plugin restart see it without
+   asking the engine, and every IPv4 step of the flow (the one-shot, the
+   persistent client, the release, the gateway and routes in Join, the
+   `validate_dhcp` probe) is gated on it. Join also tells Docker not to
+   attach `docker_gwbridge` when the network has no IPv6 gateway either,
+   because that attach would give the container an IPv4 address after all
+   (v2.6.0, #1135).
 4. Docker moves the container end of the `veth` pair into the
    container's network namespace and sets the IP address. At this point
    that first acquisition is finished with.
@@ -122,7 +131,8 @@ acquired, and nothing below it:
   With a Docker-generated MAC there is nothing narrower, so the
   ambiguous case is counted as `ipam_rebind_ambiguous` instead of
   guessed.
-- IPv6 is acquired later, since v2.3.0. `RequestAddress` leases the v4
+- IPv6 is acquired later, since v2.3.0, unless the network has an IPv6
+  pool. `RequestAddress` leases the v4
   address only; the DHCPv6 exchange runs at `CreateEndpoint` on the
   endpoint's own link, as the null shape's one-shot does, and
   `CreateEndpoint` reports the v6 address to the daemon. The v6 lease
@@ -130,8 +140,21 @@ acquired, and nothing below it:
   container's v4 address back carries its DUID, IAID and last v6 address
   too, and a v6 failure that ends the endpoint gives up both records
   (#960).
+- A network with a typed IPv6 `--subnet` has an IPv6 pool of its own
+  (v2.6.0, #1132), and for that pool the acquisition moves to
+  `RequestAddress` as well (`pkg/plugin/ipam_reserve6.go`). The engine
+  asks for the v4 address and then the v6 one, each on its own
+  throwaway link and budget; the v6 call runs the DHCPv6 exchange with
+  `--ip6` as the requested address, refuses a Reply that names another
+  address or lies outside the typed prefix (the lease is released), and
+  writes a RESERVED v6 record that `CreateEndpoint` consumes instead of
+  running its own exchange. `ReleaseAddress` on the v6 pool gives a
+  stranded record up, and when the v6 call fails the plugin gives up the
+  v4 reservation itself, because the engine sends no `ReleaseAddress` for
+  the v4 address it was given just before.
 - The pool binding lives in the network's own state file, and a file
-  carrying one is stamped schema 2
+  carrying one is stamped schema 2, or schema 3 when it carries an IPv6
+  pool so that an older build refuses it instead of misreading it
   ([`pkg/plugin/state.go`](https://github.com/claymore666/docker-net-dhcp/blob/main/pkg/plugin/state.go)).
   The IPAM handlers read that file and never call Docker: the daemon
   replays `RequestPool` and one `RequestAddress` per stored endpoint
@@ -1136,8 +1159,8 @@ container and checks the interface the engine actually created. There is
 no version threshold to hit. The upstream fix (moby/moby#52866,
 stopping the remote-driver proxy from dropping `DstName`) merged to moby
 master on 2026-08-26, is milestoned for engine 29.8.0, and that engine
-was released on 2026-09-03. The lane's engine is 29.8.2, read from the
-run's `Fixture engine drift` step, so the probe now succeeds there and
+was released on 2026-09-03. The lane's engine is 29.9.0, read from the
+engine drift check in the run's `Prepare the lane` step, so the probe now succeeds there and
 the dependent tests run. They still skip on any box whose engine is
 older, and a skip there is expected and is not a signal that the run
 diverged.

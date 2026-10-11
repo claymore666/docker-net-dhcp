@@ -87,7 +87,7 @@ net_dhcp_releases_sent_total{family="ipv6"} 3886089
 net_dhcp_releases_reclaimed_total{family="ipv4"} 5172289
 net_dhcp_releases_reclaimed_total{family="ipv6"} 7617051
 
-# HELP net_dhcp_release_failures_total Attempts to hand a lease back that put no message on the wire: no lease record for the endpoint, no address or no server on the record, a record the sender refuses, no address on the parent to send from, the send itself failing, or a DHCPv6 address that could not be taken off the link first (RFC 9915 section 18.2.7 requires that before the exchange). The address is left to expire on the server's clock, which is what a release_lease=never network does on every teardown.
+# HELP net_dhcp_release_failures_total Attempts to hand a lease back that put no message on the wire: no lease record for the endpoint, no address or no server on the record, a record the sender refuses, no link-local address on the parent to send an IPv6 release from, a relayed IPv4 server with no gateway on the lease or a gateway that does not answer, the send itself failing, or a DHCPv6 address that could not be taken off the link first (RFC 9915 section 18.2.7 requires that before the exchange). The address is left to expire on the server's clock, which is what a release_lease=never network does on every teardown.
 # TYPE net_dhcp_release_failures_total counter
 net_dhcp_release_failures_total{family="ipv4"} 5241287
 net_dhcp_release_failures_total{family="ipv6"} 2796525

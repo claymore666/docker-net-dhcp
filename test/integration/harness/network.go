@@ -23,6 +23,17 @@ import (
 // CreateNetwork creates a plugin network of mode bridge, macvlan or ipvlan on the harness's parent for that mode (#556), with cleanup, and returns its ID.
 func CreateNetwork(t *testing.T, ctx context.Context, name, mode string, extraOpts map[string]string) string {
 	t.Helper()
+	return createNetwork(t, ctx, name, mode, extraOpts, nil)
+}
+
+func CreateNetworkIPv4Off(t *testing.T, ctx context.Context, name, mode string, extraOpts map[string]string) string {
+	t.Helper()
+	off := false
+	return createNetwork(t, ctx, name, mode, extraOpts, &off)
+}
+
+func createNetwork(t *testing.T, ctx context.Context, name, mode string, extraOpts map[string]string, enableIPv4 *bool) string {
+	t.Helper()
 	cli, err := NewDockerClient()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
@@ -48,9 +59,10 @@ func CreateNetwork(t *testing.T, ctx context.Context, name, mode string, extraOp
 	// The span includes the plugin's preflight DHCP probe, an 8 s budget that returns on the first OFFER (#368).
 	createStart := time.Now()
 	res, err := cli.NetworkCreate(ctx, name, docker.NetworkCreateOptions{
-		Driver:  DriverName,
-		IPAM:    &network.IPAM{Driver: "null"},
-		Options: opts,
+		Driver:     DriverName,
+		IPAM:       &network.IPAM{Driver: "null"},
+		Options:    opts,
+		EnableIPv4: enableIPv4,
 	})
 	EndPhase(t, PhaseNetworkCreate, createStart)
 	if err != nil {

@@ -1788,7 +1788,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 				Debug("re-reading the endpoint's link before opening the client failed")
 		} else {
 			ctrLink = link
-			if !v6 {
+			if !v6 || !m.opts.ipv4Enabled() {
 				m.ctrLink = link
 			}
 		}
@@ -2259,9 +2259,12 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 			m.setHostname(m.plugin.safeHostname(ctrHostname).name)
 		}
 
-		if m.errChan, err = m.setupClient(false); err != nil {
-			close(m.stopChan)
-			return err
+		// A v4-off network has no DHCPv4 client; its absence is not a start failure (#1135).
+		if m.opts.ipv4Enabled() {
+			if m.errChan, err = m.setupClient(false); err != nil {
+				close(m.stopChan)
+				return err
+			}
 		}
 
 		if m.opts.ipv6Enabled() {
@@ -2276,7 +2279,9 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 			if m.errChanV6, err = m.setupClient(true); err != nil {
 				close(m.stopChan)
 				// The v4 goroutine may be mid-renew on m.netHandle; drain its exit so the handles are not closed under it.
-				<-m.errChan
+				if m.opts.ipv4Enabled() {
+					<-m.errChan
+				}
 				return err
 			}
 		}
@@ -2316,6 +2321,9 @@ func (m *dhcpManager) nameTheRunningClient(phases *joinPhases, lookup func() err
 		return true
 	}
 
+	if !m.opts.ipv4Enabled() {
+		return true
+	}
 	client := m.healthClient()
 	if client == nil {
 		m.plugin.hostnameApplyFailures.Add(1)
@@ -2403,8 +2411,10 @@ func (m *dhcpManager) stop(leaving bool) error {
 
 	// Drain both consumer goroutines before the deferred closes: netlink Handle.Close is unsynchronised with requests.
 	lastIP, lastIPv6 := m.lastIPs()
-	errV4 := <-m.errChan
-	var errV6 error
+	var errV4, errV6 error
+	if m.opts.ipv4Enabled() {
+		errV4 = <-m.errChan
+	}
 	if m.opts.ipv6Enabled() {
 		errV6 = <-m.errChanV6
 	}
@@ -2412,8 +2422,10 @@ func (m *dhcpManager) stop(leaving bool) error {
 	// Whether the client ever bound decides what the stop meant, not its exit error: a client stopped before binding
 	// returns the library's cancellation error, and testing errV4 first counted that as a fault (#607, #549). The
 	// flags are safe to read after each goroutine's final send; v6 follows the same rule (#608).
-	neverBoundV4 := m.settleFamily(false, lastIP, errV4, leaving)
-	neverBoundV6 := false
+	neverBoundV4, neverBoundV6 := false, false
+	if m.opts.ipv4Enabled() {
+		neverBoundV4 = m.settleFamily(false, lastIP, errV4, leaving)
+	}
 	if m.opts.ipv6Enabled() {
 		neverBoundV6 = m.settleFamily(true, lastIPv6, errV6, leaving)
 		// After the drain, so no late event puts one back; a Close keeps them, as the container keeps running (#214).

@@ -96,7 +96,8 @@ show_baseline() { # ref outfile label
 [ -n "${COVREAD_BASE_DEV:-}"  ] || show_baseline "${COVREAD_DEV_REF:-origin/dev}"   "$BASE_DEV"  dev
 [ -n "${COVREAD_BASE_MAIN:-}" ] || show_baseline "${COVREAD_MAIN_REF:-origin/main}" "$BASE_MAIN" main
 
-datalines() { grep -vE '^[ \t]*(#|$)' "$1" | awk -F'[ \t]+' 'NF==2 { n=split($1,a,"/"); k = (n>=2) ? a[n-1]"/"a[n] : $1; print k, $2 }'; }
+# The `toolchain` line (#1301) is not a package row.
+datalines() { grep -vE '^[ \t]*(#|$)' "$1" | awk -F'[ \t]+' 'NF==2 && $1 != "toolchain" { n=split($1,a,"/"); k = (n>=2) ? a[n-1]"/"a[n] : $1; print k, $2 }'; }
 datalines "$BASE_DEV"  > "$TMP/dev.data"
 datalines "$BASE_MAIN" > "$TMP/main.data"
 

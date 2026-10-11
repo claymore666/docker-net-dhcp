@@ -15,7 +15,7 @@ below decide what is in a release; this page follows them.
 | v2.3.1 | released | IPv6 routes at Join, the fixed-MAC hand-over in IPAM mode, and diagrams of the plugin and the lab | [milestone 38](https://github.com/claymore666/docker-net-dhcp/milestone/38) |
 | v2.4.0 | released | The rest of IPv6, and the DHCP options the client does not read yet | [milestone 34](https://github.com/claymore666/docker-net-dhcp/milestone/34) |
 | v2.5.0 | released | CI consolidation and code debt, and DHCPv6 prefix delegation | [milestone 35](https://github.com/claymore666/docker-net-dhcp/milestone/35) |
-| v2.6.0 | planned | The CI consolidation tracking issue | [milestone 39](https://github.com/claymore666/docker-net-dhcp/milestone/39) |
+| v2.6.0 | released | Networks without an IPv4 pool, an IPv6 pool in the IPAM shape, and the CI consolidation | [milestone 39](https://github.com/claymore666/docker-net-dhcp/milestone/39) |
 
 ### v2.3.0, released
 
@@ -120,10 +120,16 @@ below decide what is in a release; this page follows them.
 - [#178], the frozen `docker/docker` module replaced by the ones moby
   publishes
 
-### v2.6.0, planned
+### v2.6.0, released
 
-- [#733], the tracking issue for the CI consolidation: factor the corpus,
-  and establish that a gate can be removed
+- [#1135], networks created with `--ipv4=false` (Docker 28 or later):
+  no DHCPv4 and no IPv4 address on the endpoint, IPv6 only
+- [#1132], an IPv6 pool from a typed IPv6 `--subnet` in the IPAM shape,
+  which serves `--ip6` and `--ipv6`
+- [#1288], `release_lease` sends the IPv4 release from a parent that
+  holds no IPv4 address
+- [#733], the CI consolidation: one preflight and one suite runner for
+  the four integration lanes
 
 ## The release line
 
@@ -135,14 +141,11 @@ flowchart LR
     v23["v2.3<br/>host plumbing"]
     v24["v2.4<br/>the rest of IPv6"]
     v25["v2.5<br/>CI, code debt and<br/>prefix delegation"]
-    v26["v2.6<br/>CI consolidation<br/>tracking"]
+    v26["v2.6<br/>IPv6-only networks and<br/>the IPAM IPv6 pool"]
     v20 --> v21 --> v22 --> v23 --> v24 --> v25 --> v26
-    classDef planned stroke-dasharray: 6 4
-    class v26 planned
 ```
 
-v2.0 to v2.5 are released and v2.6 is planned; the planned one is the
-dashed node. There are no dates. Every
+v2.0 to v2.6 are released. There are no dates. Every
 release, patches included, is in
 [the release notes](https://github.com/claymore666/docker-net-dhcp/blob/main/RELEASE_NOTES.md).
 
@@ -397,10 +400,13 @@ project does, that review is where it gets corrected.
 [#1118]: https://github.com/claymore666/docker-net-dhcp/issues/1118
 [#1125]: https://github.com/claymore666/docker-net-dhcp/issues/1125
 [#1126]: https://github.com/claymore666/docker-net-dhcp/issues/1126
+[#1132]: https://github.com/claymore666/docker-net-dhcp/issues/1132
+[#1135]: https://github.com/claymore666/docker-net-dhcp/issues/1135
 [#1137]: https://github.com/claymore666/docker-net-dhcp/issues/1137
 [#1157]: https://github.com/claymore666/docker-net-dhcp/issues/1157
 [#1177]: https://github.com/claymore666/docker-net-dhcp/issues/1177
 [#1203]: https://github.com/claymore666/docker-net-dhcp/issues/1203
+[#1288]: https://github.com/claymore666/docker-net-dhcp/issues/1288
 [moby/moby#52866]: https://github.com/moby/moby/pull/52866
 [moby/moby#52870]: https://github.com/moby/moby/issues/52870
 [moby/moby#52871]: https://github.com/moby/moby/pull/52871

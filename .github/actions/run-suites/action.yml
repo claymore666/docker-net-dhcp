@@ -1,0 +1,57 @@
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+name: Run the integration suites
+description: Run a lane's main suite, then its failure suite whatever main returned, and summarise where the time went.
+inputs:
+  plugin-ref:
+    description: The installed plugin the suites drive, exported as INTEGRATION_PLUGIN_REF.
+    required: true
+  main:
+    description: make arguments for the first suite, for example `integration-test` or `integration-test-shard SHARD=1 OF=9 SUITE=main`.
+    required: true
+  failure:
+    description: make arguments for the failure suite, run even when the first suite fails; empty for a job that runs one suite.
+    required: false
+    default: ''
+  log:
+    description: Log name; the suites tee into /tmp/itest-<log>-main.log and /tmp/itest-<log>-failure.log.
+    required: true
+  main-timeout:
+    description: ITEST_TIMEOUT for the first suite; empty keeps the Makefile default.
+    required: false
+    default: ''
+  failure-timeout:
+    description: ITEST_TIMEOUT for the failure suite; empty keeps the Makefile default.
+    required: false
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Run the suites
+      shell: bash
+      env:
+        INTEGRATION_PLUGIN_REF: ${{ inputs.plugin-ref }}
+        SUITES_MAIN: ${{ inputs.main }}
+        SUITES_FAILURE: ${{ inputs.failure }}
+        SUITES_LOG: ${{ inputs.log }}
+        SUITES_MAIN_TIMEOUT: ${{ inputs.main-timeout }}
+        SUITES_FAILURE_TIMEOUT: ${{ inputs.failure-timeout }}
+      run: bash "${GITHUB_WORKSPACE}/scripts/integration-suites.sh"
+
+    # Informational: integration-timing.sh owns no verdict and tolerates a
+    # missing log, so it runs after a red or cancelled suite too (#733).
+    - name: Test timing summary
+      if: always()
+      shell: bash
+      env:
+        SUITES_LOG: ${{ inputs.log }}
+      run: |
+        shopt -s nullglob
+        logs=(/tmp/itest-"${SUITES_LOG}"-*.log)
+        if [ "${#logs[@]}" -eq 0 ]; then
+          echo "no suite log under /tmp/itest-${SUITES_LOG}-*.log"
+          exit 0
+        fi
+        for log in "${logs[@]}"; do
+          bash "${GITHUB_WORKSPACE}/scripts/integration-timing.sh" "$log"
+        done

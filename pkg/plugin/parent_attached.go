@@ -391,10 +391,15 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 		// (#371).
 		clientID := resolveClientID(opts, r.EndpointID, mac)
 
-		recordID = p.recordCreated(r.NetworkID,
-			endpointRecordKey(mode, r.EndpointID, mac), dhcp.ClientIdentity(clientID))
+		if opts.ipv4Enabled() {
+			recordID = p.recordCreated(r.NetworkID,
+				endpointRecordKey(mode, r.EndpointID, mac), dhcp.ClientIdentity(clientID))
+		}
+		// Set here, since a v4-off network has no v4 half to set it, and the persistent client finds the link by it
+		// (#1135).
 		p.updateJoinHint(r.EndpointID, func(hint *joinHint) {
 			hint.RecordID = recordID
+			hint.MacAddress = mac
 		})
 
 		// An ipvlan slave inherits the parent's MAC, so its DUID is endpoint-derived (#895).
@@ -429,7 +434,6 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 				Records:  p.records,
 				RecordID: recordID,
 			}
-			// The v4 half runs first and its update sets hint.MacAddress to this mac, so the v6 half leaves it (#960).
 			if v6 {
 				addr, err := p.acquireInitialV6(ctx, opts, base, v6Acquire{iface: la.Name, networkID: r.NetworkID,
 					endpointID: r.EndpointID, callStart: callStart, timeout: timeout, pol: pol,
@@ -452,7 +456,6 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 			}
 
 			p.updateJoinHint(r.EndpointID, func(hint *joinHint) {
-				hint.MacAddress = mac
 				res.Interface.Address = info.IP
 				hint.IPv4 = addr
 				hint.Gateway = info.Gateway
@@ -468,8 +471,10 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 			return nil
 		}
 
-		if err := runDHCP(false); err != nil {
-			return err
+		if opts.ipv4Enabled() {
+			if err := runDHCP(false); err != nil {
+				return err
+			}
 		}
 		if opts.ipv6Enabled() {
 			if err := runDHCP(true); err != nil {

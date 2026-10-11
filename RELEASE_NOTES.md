@@ -8,6 +8,130 @@ The notes below go back to the first release of this project.
 
 [predecessor]: https://github.com/devplayer0/docker-net-dhcp
 
+## v2.6.0
+
+A network created with `--ipv4=false` runs no DHCPv4, and an IPAM-mode
+network takes a typed IPv6 `--subnet` as its IPv6 pool, with `--ip6` as
+the address hint to the DHCPv6 server. `release_lease` hands an IPv4
+lease back from a parent that has no IPv4 address, and the plugin image
+is built with Go 1.27.2.
+
+### Upgrade notes
+
+**The privilege prompt does not change.** No field `docker plugin upgrade`
+prompts on has moved since v2.0.0. The manifest is the same as v2.5.0's,
+so `docker plugin upgrade` from v2.5.0 asks for nothing new.
+
+<!-- manifest-delta: begin baseline=v2.5.0 -->
+
+| field | v2.5.0 | v2.6.0 | prompted |
+| --- | --- | --- | --- |
+| `linux.capabilities` | `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | no change |
+| `network.type` | `host` | `host` | no change |
+| `ipchost` | `false` | `false` | no change |
+| `pidhost` | `true` | `true` | no change |
+| `mounts` | `/var/run/docker.sock:bind`, `/var/lib/net-dhcp:rbind,rw`, `/var/run/docker:rbind,ro` | `/var/run/docker.sock:bind`, `/var/lib/net-dhcp:rbind,rw`, `/var/run/docker:rbind,ro` | no change |
+| `propagatedmount` | `(absent)` | `(absent)` | no change |
+| `linux.devices` | `(absent)` | `(absent)` | no change |
+| `linux.allowalldevices` | `false` | `false` | no change |
+| `env` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `DHCPV6_ABSENCE_MEMORY`, `STATE_DIR`, `METRICS_ADDR`, `DOCKER_HOST` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `DHCPV6_ABSENCE_MEMORY`, `STATE_DIR`, `METRICS_ADDR`, `DOCKER_HOST` | no change |
+
+<!-- manifest-delta: end -->
+
+| What changed | What it does to you |
+| --- | --- |
+| A network created with `docker network create --ipv4=false` (Docker 28 or later) runs no DHCPv4 (#1135) | Its containers get no IPv4 address, no IPv4 default route and no `docker_gwbridge` link, where the plugin ran DHCPv4 on such a network before. `--ipv4=false` with `ipv6_mode=off`, `--ip` on such a network, and the flag written as a `-o` option are refused |
+| `lease_state` in the `/Plugin.Health` `endpoints` entries takes the new value `ipv4_off`, with an empty `address`, for an endpoint of a `--ipv4=false` network (#1135) | A dashboard or alert that expects only `bound`, `acquiring` or `link_local` needs updating |
+| An IPv4 release with `release_lease` from a parent that has no IPv4 address is sent and counts in `releases_sent`, where it counted in `release_failures` (#1288) | An alert on `release_failures` for such a parent goes quiet. A relayed server whose lease names no gateway, or a gateway that does not answer, still counts there |
+| A network with an IPv6 pool stores its options at state schema v3; every other network stays at v2 or v1 (#1132) | Going back to v2.5.0 or earlier, the plugin refuses such a network's stored options and leaves the file as found. Other networks load as before |
+
+### New
+
+- A network created with `docker network create --ipv4=false` on Docker 28
+  or later now runs no DHCPv4. The plugin reads the engine's flag at create
+  and stores it with the network's options, so a container start and a
+  plugin restart see it without asking the engine. Its containers get only
+  their DHCPv6 or SLAAC address, with no IPv4 address, no IPv4 default
+  route and no second link on `docker_gwbridge`: Join tells Docker not to
+  attach one when the network has no IPv6 gateway either. The
+  `validate_dhcp` probe is skipped with a warning, and no option 108 is
+  sent. `/Plugin.Health` shows `lease_state` `ipv4_off` with an empty
+  `address`. Refused at `docker network create`, each naming the remedy:
+  `--ipv4=false` with `ipv6_mode=off`, and the flag written as a `-o`
+  option (`ipv4`, `ipv4_off` or `com.docker.network.enable_ipv4`). `--ip`
+  on such a network is refused when a container starts or connects. `mode=ipvlan`
+  still needs `ipv6_mode=dhcp` (#1135).
+- On a network with this plugin as IPAM driver, `--ipv6` works with a
+  typed IPv6 `--subnet` (a /126 or shorter) and `-o ipv6_mode=dhcp`. The
+  prefix becomes the network's IPv6 pool, so Docker, `docker inspect` and
+  Compose know each container's IPv6 address. The DHCPv6 server picks the
+  address in a short exchange when Docker asks for it, and `--ip6` goes to
+  the server as the address hint. A reply naming another address than
+  `--ip6`, or one outside the typed subnet, is refused and released, the
+  message names both addresses, and the container does not start. A
+  silent or exhausted server fails the start inside the plugin's time
+  budget. A container restart keeps the address and the DUID, a plugin
+  restart keeps the address, and `release_lease` sends one Release per
+  family. Refused at
+  `docker network create`, naming the subnet or the option: a /127 or
+  /128, `::/0`, a multicast or IPv4-mapped prefix, an IPv6 pool with an
+  `ipv6_mode` other than `dhcp`, and an IPv6 pool with no IPv4 pool from
+  this driver beside it. `--ip6` with `ipv6_temporary=true` and two
+  containers with one `--mac-address` are refused when a container starts
+  or connects. `--ipv6` with no IPv6 `--subnet` stays refused (#1132).
+
+### Fixed
+
+- `release_lease` (`on_stop` and `on_remove`) now hands an IPv4 lease back
+  when the parent interface has no IPv4 address, the usual shape of a
+  dedicated macvlan or ipvlan parent. Before, the DHCPRELEASE was skipped
+  and counted in `release_failures`, so the lease stayed held on the DHCP
+  server until it expired. The release goes out from the leased address
+  to the DHCP server, or to the lease's gateway when the server sits
+  behind a relay. An IPv6 Release still needs a link-local address on the
+  parent, and a plugin-made bridge or `vlan` sub-interface still refuses
+  `release_lease` at create (#1288).
+- The plugin ships dhcp-golib v1.5.0 (v2.5.0: v1.4.4). The library's
+  link-release path in that tag is what carries the #1288 release from a
+  parent with no IPv4 address (#1307).
+- The plugin image is built with Go 1.27.2 (v2.5.0: 1.27.1), which fixes
+  four standard-library `net/http` advisories (GO-2026-6611, GO-2026-6612,
+  GO-2026-6613, GO-2026-6617) (#1291).
+- The plugin writes the `disable_ipv6` sysctl of the links it creates (a
+  `vlan` sub-interface, a plugin-made bridge, a macvlan or ipvlan child)
+  through a directory handle rooted at the sysctl directory, so a link
+  name can never reach a file outside it. Link names were already
+  validated, and nothing changes in use (#1289).
+- The `rapid_commit` row of the reference said Kea answers Rapid Commit
+  for both families. Kea answers it for DHCPv6 only, with `rapid-commit`
+  set on the subnet; its DHCPv4 server does not implement RFC 4039, so on
+  a Kea DHCPv4 segment the exchange stays at four messages (#1293).
+
+### CI
+
+- The four integration lanes share one preflight (runner image and tool
+  check, engine drift check, orphan cleanup) and one suite runner. The
+  coverage lane now checks the runner image too, and the failure suite
+  runs once the job reaches the suite step (#733).
+- Each coverage floor file names the Go toolchain its floors were measured
+  on, the ratchet asks for a re-baseline when a run's toolchain differs,
+  and the floors are re-measured on Go 1.27.2 (#1301).
+- Every Go pin in the workflows and the runner image is 1.27.2, and the
+  staticcheck job builds staticcheck against `golang.org/x/tools` v0.51.0,
+  which reads Go 1.27.2's export data (#1291).
+- The recorded engine request fixtures are re-recorded on Docker 29.9.0,
+  which asks the plugin whether a network needs a gateway address before
+  `CreateNetwork` (#1298).
+- The README and the testing guide describe the real-server lab, which runs
+  each release against Kea, ISC dhcpd and dnsmasq, and record the v2.5.0
+  run (#1295).
+- The client-id integration test looks for the override in the lease's
+  client-id field only, where it also matched the container name in the
+  hostname field (#1272).
+- A unit test pins that a DHCPv4 NAK on a dual-stack endpoint keeps the
+  delegated IPv6 prefix route and a DHCPv6 NAK removes only that route
+  (#1283).
+
 ## v2.5.0
 
 A network can ask the DHCPv6 server for a delegated prefix (`ipv6_pd`),
@@ -23,8 +147,6 @@ moves into the container, dual-stack DNS, and the option values
 prompts on has moved since v2.0.0. The manifest is the same as v2.4.0's,
 so `docker plugin upgrade` from v2.4.0 asks for nothing new.
 
-<!-- manifest-delta: begin baseline=v2.4.0 -->
-
 | field | v2.4.0 | v2.5.0 | prompted |
 | --- | --- | --- | --- |
 | `linux.capabilities` | `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | no change |
@@ -36,8 +158,6 @@ so `docker plugin upgrade` from v2.4.0 asks for nothing new.
 | `linux.devices` | `(absent)` | `(absent)` | no change |
 | `linux.allowalldevices` | `false` | `false` | no change |
 | `env` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `DHCPV6_ABSENCE_MEMORY`, `STATE_DIR`, `METRICS_ADDR`, `DOCKER_HOST` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `DHCPV6_ABSENCE_MEMORY`, `STATE_DIR`, `METRICS_ADDR`, `DOCKER_HOST` | no change |
-
-<!-- manifest-delta: end -->
 
 | What changed | What it does to you |
 | --- | --- |

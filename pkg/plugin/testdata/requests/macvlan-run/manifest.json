@@ -1,6 +1,6 @@
 {
-  "engine": "29.8.0",
-  "captured": "2026-09-11",
-  "commit": "f836cfa",
+  "engine": "29.9.0",
+  "captured": "2026-10-09",
+  "commit": "0520d15",
   "flow": "docker run on a macvlan DHCP network, to exit"
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/claymore666/dhcp-golib/lease"
 	log "github.com/sirupsen/logrus"
 
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
 
@@ -134,17 +135,21 @@ func (p *Plugin) apiRequestPool(w http.ResponseWriter, r *http.Request) {
 // RequestPool answers with the canonical pool identity and writes nothing durable, so the start-up replay derives the
 // stored PoolID (#110).
 func (p *Plugin) RequestPool(req RequestPoolRequest) (RequestPoolResponse, error) {
-	if req.V6 {
-		return RequestPoolResponse{}, fmt.Errorf("%w: --ipv6 is refused on a network that uses this plugin as its IPAM driver, because the plugin allocates no IPv6 pool. IPv6 on such a network needs no Docker pool: drop --ipv6 and switch it on with `-o ipv6=true` or `-o ipv6_mode=<mode>`, and each container gets its IPv6 address from the DHCPv6 server or the router advertisement on its link", util.ErrIPAM)
+	if req.V6 && req.Pool == "" {
+		return RequestPoolResponse{}, fmt.Errorf("%w: --ipv6 is refused on a network that uses this plugin as its IPAM driver unless an IPv6 --subnet is typed, because the plugin allocates no IPv6 pool of its own. Either type an IPv6 `--subnet <prefix>` (such as fd00:1::/64) to give Docker a pool to keep its books in, or drop --ipv6 and switch IPv6 on with `-o ipv6=true` or `-o ipv6_mode=<mode>`, and each container gets its IPv6 address from the DHCPv6 server or the router advertisement on its link", util.ErrIPAM)
 	}
 	if req.SubPool != "" {
 		return RequestPoolResponse{}, fmt.Errorf("%w: --ip-range is not supported: addresses come from the LAN's DHCP server, which this plugin does not narrow", util.ErrIPAM)
 	}
-	poolID, err := ipamPoolID(req.AddressSpace, req.Pool, req.Options)
+	idOf, canon := ipamPoolID, ipamCanonicalPool
+	if req.V6 {
+		idOf, canon = ipamPoolID6, ipamCanonicalPool6
+	}
+	poolID, err := idOf(req.AddressSpace, req.Pool, req.Options)
 	if err != nil {
 		return RequestPoolResponse{}, err
 	}
-	pool, err := ipamCanonicalPool(req.Pool)
+	pool, err := canon(req.Pool)
 	if err != nil {
 		return RequestPoolResponse{}, err
 	}
@@ -216,15 +221,27 @@ func (p *Plugin) RequestAddress(ctx context.Context, req RequestAddressRequest) 
 		return none, err
 	}
 
+	// The pool of the family the engine asked in; the v6 PoolID is the only v6 one a binding holds (#1132).
+	v6Pool := sn.Binding.PoolID6 != "" && req.PoolID == sn.Binding.PoolID6
+	pool := sn.Binding.Pool
+	if v6Pool {
+		pool = sn.Binding.Pool6
+	}
+
 	if req.Options[ipamOptRequestAddressType] == ipamOptGateway {
 		if req.Address == "" {
 			return none, fmt.Errorf("%w: this plugin does not allocate a gateway address. The gateway comes from the DHCP server and reaches the container at Join. Pass --gateway if you need Docker's own network record to name one", util.ErrIPAM)
 		}
-		return ipamEchoAddress(req.Address, sn.Binding.Pool)
+		return ipamEchoAddress(req.Address, pool)
 	}
 
 	if req.Address != "" && ipamIsAuxOfNetwork(sn.Binding, req.Address) {
-		return ipamEchoAddress(req.Address, sn.Binding.Pool)
+		return ipamEchoAddress(req.Address, pool)
+	}
+
+	// Before the MAC and reserve arms, which lease IPv4 only: a v4 lease must not answer a v6 call (#1132).
+	if v6Pool {
+		return p.requestAddress6(ctx, networkID, sn, req)
 	}
 
 	mac, err := ipamRequestedMAC(req.Options)
@@ -331,10 +348,10 @@ func ipamRequestedMAC(opts map[string]string) (net.HardwareAddr, error) {
 }
 
 func ipamIsAuxOfNetwork(b *ipamBinding, address string) bool {
-	if b.Gateway == address {
+	if b.Gateway == address || b.Gateway6 == address {
 		return true
 	}
-	for _, a := range b.Aux {
+	for _, a := range append(append([]string(nil), b.Aux...), b.Aux6...) {
 		if a == address {
 			return true
 		}
@@ -348,7 +365,7 @@ func ipamEchoAddress(address, pool string) (RequestAddressResponse, error) {
 	if err != nil {
 		return RequestAddressResponse{}, fmt.Errorf("%w: %q is not an address", util.ErrIPAM, address)
 	}
-	bits := 32
+	bits := addr.BitLen()
 	if pool != "" && pool != ipamAnyPool {
 		p, err := netip.ParsePrefix(pool)
 		if err == nil {
@@ -398,8 +415,13 @@ func (p *Plugin) ReleaseAddress(req ReleaseAddressRequest) error {
 	if err != nil {
 		return nil
 	}
-	rec, ok := ipamLiveRecord(rb, networkID, addr)
+	scope := networkID
+	if addr.Is6() {
+		scope = dhcp.Scope6(networkID)
+	}
+	rec, ok := ipamLiveRecord(rb, scope, addr)
 	if !ok {
+		p.ipamDropReservation6(rb, scope, req.PoolID, addr)
 		p.ipamReleaseUnknown.Add(1)
 		return nil
 	}

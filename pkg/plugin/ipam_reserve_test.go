@@ -331,11 +331,11 @@ func TestSaveNetwork_StampsTheIPAMSchemaVersion(t *testing.T) {
 		t.Fatalf("stateFilePath: %v", err)
 	}
 	v := schemaVersionOfFile(t, path)
-	if v != stateSchemaVersion {
+	if v != stateSchemaVersionIPAM {
 		t.Errorf(`"v" = %d, want %d — a 2.0 build must refuse this file rather than read `+
-			`the options out of it and serve the network as null-IPAM`, v, stateSchemaVersion)
+			`the options out of it and serve the network as null-IPAM`, v, stateSchemaVersionIPAM)
 	}
-	if stateSchemaVersion == stateSchemaVersionBase {
+	if stateSchemaVersionIPAM == stateSchemaVersionBase {
 		t.Error("the IPAM schema version equals the base one, so nothing distinguishes a " +
 			"file an older build may read from one it must refuse")
 	}

@@ -9,7 +9,6 @@ import (
 	"context"
 	"net"
 	"net/netip"
-	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -35,22 +34,14 @@ func ipam6Network(t *testing.T, ctx context.Context, name string, opts map[strin
 	harness.CreateNetworkIPAM(t, ctx, name, "macvlan", harness.SubnetCIDR, nil, all)
 }
 
-// ipam6Lease returns the IAID and client DUID of the lease file's v6 line holding addr, or two empty strings.
+// ipam6Lease returns the IAID and client DUID of the lease file's v6 line holding addr, or two empty strings (#1167).
 func ipam6Lease(t *testing.T, leaseFile, addr string) (iaid, duid string) {
 	t.Helper()
-	if !waitLeaseFile(t, leaseFile, addr, true) {
+	f := waitLeaseFileLine(t, leaseFile, addr)
+	if f == nil {
 		return "", ""
 	}
-	data, err := os.ReadFile(leaseFile)
-	if err != nil {
-		t.Fatalf("read lease file %s: %v", leaseFile, err)
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		if f := strings.Fields(line); len(f) >= 5 && strings.EqualFold(f[2], addr) {
-			return f[1], f[len(f)-1]
-		}
-	}
-	return "", ""
+	return f[1], f[len(f)-1]
 }
 
 // ipam6IdentityOf is the DUID-LL and decimal IAID resolveIdentity6 mints from mac, as dnsmasq prints them.

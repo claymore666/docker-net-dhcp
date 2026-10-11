@@ -227,5 +227,42 @@ guarded_tmpdir dir
     || no "a refusal left $(wc -c < "$dir/out.txt") byte(s) at out.txt"
 rm -rf "$dir"
 
+# --- the toolchain line (#1301) -----------------------------------------
+# The ratchet reads it from the resolved copy to tell which unit the floors
+# are in, so it is handed on whole; it is no package, so the report neither
+# counts nor names it, and a file holding only it holds no floor.
+tc_repo() { # tc_repo <dir> <baseline body>
+    (
+        cd "$1" || exit 2
+        git init -q -b dev .
+        git config user.email t@t; git config user.name t
+        git config commit.gpgsign false
+        mkdir -p .github
+        printf '%b' "$2" > .github/coverage-baseline.txt
+        git add -A; git commit -qm "fork point"
+        git checkout -q -b feature
+        git commit -q --allow-empty -m "work"
+    ) >/dev/null 2>&1
+}
+guarded_tmpdir dir
+tc_repo "$dir" 'toolchain go1.27.2\npkg/a 80.0\npkg/b 50.0\n'
+(cd "$dir" && bash "$GATE" dev "$dir/out.txt" >/dev/null 2>&1); rc=$?
+if [ "$rc" -eq 0 ] && grep -qx 'count 2' "$dir/out.txt.report" && ! grep -q 'toolchain' "$dir/out.txt.report"; then
+    ok "the toolchain line is neither counted nor named in the report"
+else
+    no "the toolchain line reached the report (exit $rc)"; sed 's/^/    /' "$dir/out.txt.report" 2>/dev/null
+fi
+grep -qx 'toolchain go1.27.2' "$dir/out.txt" 2>/dev/null \
+    && ok "and the resolved copy keeps it for the ratchet" \
+    || no "the resolved copy lost the toolchain line"
+rm -rf "$dir"
+guarded_tmpdir dir
+tc_repo "$dir" '# floors live here\ntoolchain go1.27.2\n'
+(cd "$dir" && bash "$GATE" dev "$dir/out.txt" >/dev/null 2>&1); rc=$?
+[ "$rc" -eq 2 ] && [ ! -e "$dir/out.txt" ] \
+    && ok "a merge-base baseline holding only a toolchain line refuses" \
+    || no "a toolchain-only baseline was handed on (exit $rc)"
+rm -rf "$dir"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"testing"
@@ -636,6 +637,13 @@ func (f *V6Fixture) AwaitIgnoredSolicit(budget time.Duration) {
 		"either no client asked, or the server answered and this segment is not "+
 		"silent at all; log:\n%s", f.mode, budget, f.readLog())
 }
+
+// DHCPv6 shares the DHCPREQUEST word but follows it with a DUID, not an address or MAC (#1135).
+func (f *V6Fixture) CountDHCPv4Messages() int {
+	return len(dhcpv4LogLine.FindAllString(f.readLog(), -1))
+}
+
+var dhcpv4LogLine = regexp.MustCompile(`(?m)DHCP(DISCOVER|OFFER|REQUEST|ACK|NAK)\([^)]*\) (\d+\.\d+\.\d+\.\d+|([0-9a-f]{2}:){5}[0-9a-f]{2})( |$)`)
 
 func (f *V6Fixture) readLog() string {
 	data, err := os.ReadFile(f.logFile)
