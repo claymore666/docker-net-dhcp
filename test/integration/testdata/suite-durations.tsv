@@ -10,8 +10,8 @@
 #
 # POPULATION: TOP-LEVEL TEST FUNCTIONS, PARENTS ONLY.
 # One row per `func TestX(t *testing.T)` in test/integration/*_test.go —
-# 272 of them, the main suite's 265 and the failure suite's 7. MEASURED
-# on this table: 272 data rows, and 272 `func TestX(t *testing.T)` in
+# 273 of them, the main suite's 266 and the failure suite's 7. MEASURED
+# on this table: 273 data rows, and 273 `func TestX(t *testing.T)` in
 # test/integration/*_test.go counted independently of them.
 #
 # THIS NUMBER HAS NOW BEEN WRONG TWICE, and the second time is the
@@ -501,6 +501,12 @@
 #              (30.44): one v6 fixture, one network, one container and
 #              one read. 3 x 30.44 is 91.32, rounded up so a first run
 #              costs less than the table says.
+#   one row    TestJoin_TheAdvertisedRoutesAreInTheContainerAtStart_ParentAttached
+#              (#1316) is 220.00, INFERRED: no run has executed it. Seven
+#              arms, each one v6 fixture, one network, one container and
+#              one read, the shape of the #1125 row (100.00 for three
+#              arms, 33.33 each): 7 x 33.33 is 233, and 220.00 stays
+#              under it so a first run costs less than the table says.
 #   #1116 row  TestBridgeFirewallVerdict_NamedAtCreateAndAtTheDeadline
 #              (#1116) is 75.00, INFERRED: no run has executed it. It
 #              is TestLifecycleBridge_GoldenPath (12.19) for the
@@ -770,6 +776,7 @@ TestJoinGuard_AStartInsideAForcedAdvertisementWindowKeepsTheGateway	40.00
 TestJoinGuard_AStartInsideAForcedAdvertisementWindowKeepsTheGateway_Macvlan	40.00
 TestJoinNoContainer_AddressIsHeldUntilItExpires	26.95
 TestJoin_TheAdvertisedRoutesAreInTheContainerAtStart	100.00
+TestJoin_TheAdvertisedRoutesAreInTheContainerAtStart_ParentAttached	220.00
 TestLeaseRenewIPv6_HonorsT1	73.85
 TestLeaseRenew_HonorsT1	27.38
 TestLeaseRetention_ARestartRebootsRatherThanDiscovers	12.92
