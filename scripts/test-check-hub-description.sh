@@ -120,9 +120,41 @@ wiring() {
     fi
 }
 wiring "release.yml has a verify-hub-description job" '^  verify-hub-description:'
-wiring "it loops over HUB_NAME and HUB_ALIAS" 'for repo in "\$HUB_NAME" "\$HUB_ALIAS"; do'
-wiring "it runs this script on README.md" 'bash scripts/check-hub-description.sh "\$repo" README.md "\$HUB_SHORT_DESCRIPTION"'
-wiring "it is gated on HAS_HUB_CREDS" "if: env.HAS_HUB_CREDS == 'true'"
+# Run the step's own shell against a stub checker: an exit 1 for either
+# name must turn the step red, and both names must be checked.
+step="$(printf '%s\n' "$job" | awk '/^      - name: Read both Docker Hub descriptions back$/{f=1; next}
+    f && /^      - /{exit} f && /^        run: \|$/{r=1; next} f && r' | sed 's/^          //')"
+mkdir -p "$dir/stub/scripts"
+printf '%s\n' 'echo "$1 $2 $3" >> "$CALLS"' '[ "$1" != "$FAIL_FOR" ]' > "$dir/stub/scripts/check-hub-description.sh"
+run_step() {
+    : > "$dir/calls"
+    (cd "$dir/stub" && CALLS="$dir/calls" FAIL_FOR="$1" HUB_NAME=ns/primary HUB_ALIAS=ns/alias \
+        HUB_SHORT_DESCRIPTION="$SHORT" GITHUB_STEP_SUMMARY="$dir/summary" bash -eo pipefail -c "$step" >/dev/null 2>&1)
+}
+for fail_for in ns/primary ns/alias; do
+    if run_step "$fail_for"; then
+        echo "FAIL: the read-back step ends green when the check fails for $fail_for"
+        failures=$((failures + 1))
+    else
+        echo "PASS: the read-back step goes red when the check fails for $fail_for"
+    fi
+done
+if run_step none && [ "$(cat "$dir/calls")" = "ns/primary README.md $SHORT
+ns/alias README.md $SHORT" ]; then
+    echo "PASS: the read-back step checks both names on README.md and passes when both match"
+else
+    echo "FAIL: the read-back step did not check both names and pass; calls: $(cat "$dir/calls")"
+    failures=$((failures + 1))
+fi
+# Only the credential guard may decide whether the job runs: no job-level
+# condition, so an rc tag (the runbook's re-sync path) is read back too.
+ifs="$(printf '%s\n' "$job" | grep -E '^ *if:' | sed 's/^ *//' | sort | tr '\n' '|')"
+if [ "$ifs" = "if: env.HAS_HUB_CREDS != 'true'|if: env.HAS_HUB_CREDS == 'true'|if: env.HAS_HUB_CREDS == 'true'|" ]; then
+    echo "PASS: the job's only conditions are the credential guard on its three steps"
+else
+    echo "FAIL: verify-hub-description carries another condition: $ifs"
+    failures=$((failures + 1))
+fi
 if printf '%s\n' "$job" | grep -E 'continue-on-error|steps\.[a-z-]+\.(outcome|conclusion)' >/dev/null; then
     echo "FAIL: verify-hub-description carries continue-on-error or reads a step outcome"
     failures=$((failures + 1))
