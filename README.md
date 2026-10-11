@@ -15,6 +15,16 @@ for IPv4 and IPv6. One `docker network create`, then `networks: [lan-dhcp]`
 in any Compose file. No static addresses, no sidecars, no plumbing per
 container.
 
+The problem it solves: with plain macvlan or static addressing, a
+container can come back from an update or a restart with a different
+address, or two containers can end up on one address. This plugin leases
+each address from the LAN's DHCP server and, in `bridge` and `macvlan`
+mode, keeps one identity per container across restarts and upgrades, so
+the router's lease table and its reservations stay true.
+
+Every release is run against real DHCP servers (Kea, ISC dhcpd, dnsmasq)
+in a separate lab ([real-server lab](docs/testing.md#real-server-lab)).
+
 This is the successor of `devplayer0/docker-net-dhcp`, not a patched copy:
 2.x has its own DHCP engine and its own lifecycle code.
 
@@ -120,11 +130,10 @@ with what this project will not do, is on the [roadmap](docs/roadmap.md).
 - Tests assert on the wire and on the server: packet captures and the
   DHCP server's lease log, not the plugin's own counters
   ([how this plugin is tested](docs/testing.md)).
-- A separate lab runs each release against real DHCP servers (Kea, ISC
-  dhcpd, dnsmasq) installed the way their users install them, on their
-  own VMs, one isolated cell per server; every scenario is judged
-  against the server's own lease table, and the evidence of each run is
-  published ([the lab](docs/testing.md#real-server-lab),
+- The real-server lab installs each server the way its users install
+  it, on its own VMs, one isolated cell per server; every scenario is
+  judged against the server's own lease table, and the evidence of each
+  run is published ([the lab](docs/testing.md#real-server-lab),
   [docker-net-dhcp-lab](https://github.com/claymore666/docker-net-dhcp-lab)).
 - Every pull request carries a public review verdict, and every release
   ships signatures, SLSA provenance and an SBOM
