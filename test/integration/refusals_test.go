@@ -147,6 +147,16 @@ var refusalCases = []refusalCase{
 		},
 	},
 	{
+		name:    "conflict_check=wait is refused on ipvlan and the message says why",
+		refused: createShape{mode: "ipvlan", opts: map[string]string{"conflict_check": "wait"}},
+		want:    []string{"conflict_check=wait cannot be set in mode=ipvlan", "ARP replies to its own probes", "async"},
+		controls: map[string]createShape{
+			"the same value is accepted on macvlan": {mode: "macvlan", opts: map[string]string{"conflict_check": "wait"}},
+			"ipvlan with async is accepted":         {mode: "ipvlan", opts: map[string]string{"conflict_check": "async"}},
+			"ipvlan with off is accepted":           {mode: "ipvlan", opts: map[string]string{"conflict_check": "off"}},
+		},
+	},
+	{
 		name:    "require_mac is refused on ipvlan and the message says why",
 		refused: createShape{mode: "ipvlan", opts: map[string]string{"require_mac": "true"}},
 		want:    []string{"require_mac cannot be set in mode=ipvlan", "share the parent's MAC"},

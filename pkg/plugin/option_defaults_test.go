@@ -83,7 +83,7 @@ func resolveOptions(t *testing.T, opts DHCPNetworkOptions, set map[string]bool) 
 	ipvlanM, ipvlanErr := parseIPvlanMode(opts.IPvlanMode)
 	m6, m6Err := opts.ipv6Mode()
 	iid, iidErr := opts.ipv6IID()
-	cc, ccErr := dhcp.ParseConflictCheck(opts.ConflictCheck)
+	cc, ccErr := opts.conflictCheckMode()
 	rl, rlErr := parseReleaseLease(opts.ReleaseLease)
 	r.Macvlan, r.Ipvlan = fmt.Sprint(mac, macErr), fmt.Sprint(ipvlanM, ipvlanErr)
 	r.IPv6, r.IID = fmt.Sprint(m6, m6Err), fmt.Sprint(iid, iidErr)
@@ -152,7 +152,7 @@ func TestDecodeOpts_AWrittenOutDocumentedDefaultEqualsTheOmittedOption(t *testin
 	}
 }
 
-// The two refusals a written-out default can add, both stated in docs/reference.md; omitted passes (#1315, #817).
+// The two refusals a written-out default can add, each stated in docs/reference.md; omitted passes (#1315, #817, #1347).
 func TestDecodeOpts_AWrittenOutDefaultIsRefusedWhereTheReferenceSaysSo(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -166,6 +166,7 @@ func TestDecodeOpts_AWrittenOutDefaultIsRefusedWhereTheReferenceSaysSo(t *testin
 		{"ipv6=false beside ipv6_mode=auto", ModeMacvlan, map[string]interface{}{"ipv6_mode": "auto"}, map[string]interface{}{"ipv6_mode": "auto", "ipv6": "false"}, "ipv6=false"},
 		{"macvlan_mode=bridge outside macvlan", ModeBridge, nil, map[string]interface{}{"macvlan_mode": "bridge"}, "macvlan_mode"},
 		{"ipvlan_mode=l2 outside ipvlan", ModeMacvlan, nil, map[string]interface{}{"ipvlan_mode": "l2"}, "ipvlan_mode"},
+		{"conflict_check=wait on ipvlan", ModeIPvlan, nil, map[string]interface{}{"conflict_check": "wait"}, "conflict_check=wait"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

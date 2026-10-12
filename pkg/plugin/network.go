@@ -185,9 +185,12 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 	}
 
 	// RFC 5227 conflict detection, keyed on the decoded mode and the operator's own lease_timeout (#882).
-	mode, err := dhcp.ParseConflictCheck(opts.ConflictCheck)
+	mode, err := opts.conflictCheckMode()
 	if err != nil {
 		return fmt.Errorf("%w: %v", util.ErrIPAM, err)
+	}
+	if err := validateConflictCheckMode(opts); err != nil {
+		return err
 	}
 	if err := dhcp.CheckLeaseTimeout(opts.LeaseTimeout, mode); err != nil {
 		return fmt.Errorf("%w: %v", util.ErrIPAM, err)
