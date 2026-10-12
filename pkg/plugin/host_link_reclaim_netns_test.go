@@ -7,9 +7,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"testing"
 
 	dNetwork "github.com/moby/moby/api/types/network"
+	log "github.com/sirupsen/logrus"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/vishvananda/netlink"
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
@@ -107,6 +111,68 @@ func TestCreateEndpoint_LeavesNoLinkForACallTheDaemonStoppedWaitingFor(t *testin
 				}
 			})
 		}
+	}
+}
+
+// The cleanup of an abandoned endpoint fails when the network's options can no longer be read; the cancellation stays
+// the cause and the left-over link is named in the log (#1339).
+func TestCreateEndpoint_WarnsWhenRemovingAnAbandonedEndpointFails(t *testing.T) {
+	if !inOwnNetns(t) {
+		return
+	}
+	netnsDummy(t, "abpw0")
+	withStateDir(t, t.TempDir())
+	if err := saveOptions("n1339", DHCPNetworkOptions{Mode: ModeMacvlan, Parent: "abpw0"}); err != nil {
+		t.Fatalf("saveOptions: %v", err)
+	}
+	statePath, err := stateFilePath("n1339")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	calls := 0
+	restore := dhcpGetIP
+	dhcpGetIP = func(context.Context, string, *dhcp.DHCPClientOptions) (dhcp.Info, dhcp.RAObservation, error) {
+		calls++
+		cancel()
+		if err := os.Remove(statePath); err != nil {
+			t.Errorf("removing the state file: %v", err)
+		}
+		return dhcp.Info{IP: "192.168.99.62/24", Gateway: "192.168.99.1"}, dhcp.RAObservation{}, nil
+	}
+	t.Cleanup(func() { dhcpGetIP = restore })
+
+	p := newPluginForTest()
+	p.docker = &fakeDocker{inspectErr: errors.New("inspect refused")}
+	p.records = recordingPlugin(t).records
+	ep := fmt.Sprintf("ac%062x", 0)
+	t.Cleanup(func() {
+		if l, err := netlink.LinkByName(subLinkName(ep)); err == nil {
+			_ = netlink.LinkDel(l)
+		}
+	})
+	hook := logtest.NewLocal(log.StandardLogger())
+	defer hook.Reset()
+
+	_, err = p.CreateEndpoint(ctx, CreateEndpointRequest{NetworkID: "n1339", EndpointID: ep, Interface: &EndpointInterface{}})
+	if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "so it was removed") {
+		t.Errorf("CreateEndpoint answered %v, want the daemon's cancellation worded as a removal", err)
+	}
+	if calls != 1 {
+		t.Errorf("the one-shot ran %d times, want 1", calls)
+	}
+	var warns []*log.Entry
+	for _, e := range hook.AllEntries() {
+		if e.Level == log.WarnLevel && strings.Contains(e.Message, "ip link del") {
+			warns = append(warns, e)
+		}
+	}
+	if len(warns) != 1 {
+		t.Fatalf("%d warnings name `ip link del`, want 1: %v", len(warns), hook.AllEntries())
+	}
+	if got := warns[0].Data["endpoint"]; got != shortID(ep) {
+		t.Errorf("the warning names endpoint %v, want %s", got, shortID(ep))
 	}
 }
 
