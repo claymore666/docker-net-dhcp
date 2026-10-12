@@ -2468,6 +2468,8 @@ after it leaves the parent tagged:</p>
 <a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">    </span>-o<span class="w"> </span><span class="nv">mode</span><span class="o">=</span>macvlan<span class="w"> </span>-o<span class="w"> </span><span class="nv">parent</span><span class="o">=</span>eth0<span class="w"> </span>-o<span class="w"> </span><span class="nv">vlan</span><span class="o">=</span><span class="m">100</span><span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">    </span>lan-vlan100
 </code></pre></div>
+<p><code>-o parent=eth0.100</code> alone, as Docker's own driver takes it, does not create the sub-interface: when <code>eth0.100</code> is missing and <code>eth0</code> exists, the refusal names <code>-o parent=eth0 -o vlan=100</code>
+(<a href="https://github.com/claymore666/docker-net-dhcp/issues/1345">#1345</a>).</p>
 <p><strong>Ownership.</strong> When <code>eth0.100</code> is missing, the plugin creates it, sets
 it up and marks it with the interface alias <code>docker-net-dhcp</code>;
 <code>ip -d link show eth0.100</code> shows <code>vlan protocol 802.1Q id 100</code> and
