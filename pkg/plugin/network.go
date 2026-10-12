@@ -689,9 +689,9 @@ func (p *Plugin) DeleteNetwork(r DeleteNetworkRequest) error {
 	return nil
 }
 
-// removeNetworkHostState hands held on_remove addresses back, then removes the options and retires the vlan
-// sub-interface and bridge from the options read before they go; DeleteNetwork and the stale-network sweep share it
-// (#984, #902, #1251). It returns the options-removal error.
+// removeNetworkHostState hands held on_remove addresses back, then removes the options, the parent's orphaned endpoint
+// links, and the vlan sub-interface and bridge, from the options read before they go; DeleteNetwork and the
+// stale-network sweep share it (#984, #902, #1251, #1339). It returns the options-removal error.
 func (p *Plugin) removeNetworkHostState(ctx context.Context, networkID, op string) error {
 	if released := p.releaseNetworkRecords(networkID); released > 0 {
 		log.WithFields(log.Fields{
@@ -710,6 +710,9 @@ func (p *Plugin) removeNetworkHostState(ctx context.Context, networkID, op strin
 
 	deleteErr := deleteOptions(networkID)
 	if optsErr == nil {
+		if m := opts.effectiveMode(); m == ModeMacvlan || m == ModeIPvlan {
+			reclaimOrphanChildren(opts.linkParent(), p.endpointKnown)
+		}
 		p.retireVlanLink(ctx, networkID, opts, op)
 		p.retireBridge(ctx, networkID, opts, op)
 	}
@@ -1022,7 +1025,21 @@ var endpointCallStart = time.Now
 // CreateEndpoint builds the host-side link, runs a one-shot DHCP acquisition and stashes the result for Join. A failed
 // create gets no Join or DeleteEndpoint, so the hint is dropped here, where every path returns (#1183).
 func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (CreateEndpointResponse, error) {
+	p.creatingEndpoints.Store(r.EndpointID, struct{}{})
+	defer p.creatingEndpoints.Delete(r.EndpointID)
+	// The daemon sends no Join or DeleteEndpoint for a call it stopped waiting for, so a link made for it would stay
+	// on the parent and refuse every ipvlan child there (#1339).
+	if err := ctx.Err(); err != nil {
+		return CreateEndpointResponse{}, fmt.Errorf("the daemon stopped waiting before the endpoint was created: %w", err)
+	}
 	res, err := p.createEndpoint(ctx, r)
+	if err == nil && ctx.Err() != nil {
+		err = fmt.Errorf("the daemon stopped waiting for this endpoint, so it was removed: %w", ctx.Err())
+		if delErr := p.DeleteEndpoint(context.Background(), DeleteEndpointRequest{NetworkID: r.NetworkID, EndpointID: r.EndpointID}); delErr != nil {
+			log.WithError(delErr).WithField("endpoint", shortID(r.EndpointID)).
+				Warn("Removing an endpoint the daemon stopped waiting for failed; remove its dh- link with `ip link del`")
+		}
+	}
 	if err != nil {
 		p.takeJoinHint(r.EndpointID)
 	}

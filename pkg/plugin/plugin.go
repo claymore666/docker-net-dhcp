@@ -460,6 +460,8 @@ type Plugin struct {
 	// endpointFingerprints keeps each endpoint's MAC and IPv4 for DeleteEndpoint's tombstone, after Leave took the
 	// manager (#46).
 	endpointFingerprints map[string]endpointFingerprint
+	// creatingEndpoints holds the endpoint IDs of CreateEndpoint calls in flight, which the link reclaim spares (#1339).
+	creatingEndpoints sync.Map
 
 	// handBackMu guards handingBack, the held records a deferred release has taken, and runningOnHeld; a leaf lock
 	// (#1237).
@@ -889,6 +891,19 @@ func (p *Plugin) takeJoinHint(endpointID string) (joinHint, bool) {
 	return h, ok
 }
 
+// endpointKnown reports whether the plugin holds state for endpointID, from its CreateEndpoint to its DeleteEndpoint.
+func (p *Plugin) endpointKnown(endpointID string) bool {
+	if _, ok := p.creatingEndpoints.Load(endpointID); ok {
+		return true
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	_, hinted := p.joinHints[endpointID]
+	_, managed := p.persistentDHCP[endpointID]
+	_, created := p.endpointFingerprints[endpointID]
+	return hinted || managed || created
+}
+
 // registerDHCPManager registers a manager before its Start goroutine runs and returns any manager it displaced,
 // which the caller must Stop or its client keeps running on the interface (#480).
 func (p *Plugin) registerDHCPManager(endpointID string, m *dhcpManager) *dhcpManager {
@@ -1144,6 +1159,8 @@ func (p *Plugin) recoverEndpoints(ctx context.Context, daemonWait time.Duration)
 		return true
 	}
 	p.dropStaleNetworks(ctx, nets)
+	// Every endpoint Docker lists on any of this plugin's networks, since networks may share a parent (#1339).
+	listed, parents, unread := map[string]bool{}, map[string]bool{}, false
 	for _, n := range nets {
 		if !IsDHCPPlugin(n.Driver) {
 			continue
@@ -1160,7 +1177,12 @@ func (p *Plugin) recoverEndpoints(ctx context.Context, daemonWait time.Duration)
 			log.WithError(err).WithField("network", shortID(n.ID)).
 				Warn("recovery: NetworkInspect failed; skipping")
 			recordSyncFailure()
+			unread = true
 			continue
+		}
+		for cid, info := range netInfo.Containers {
+			listed[info.EndpointID] = true
+			listed[strings.TrimPrefix(cid, "ep-")] = true
 		}
 		opts, err := p.netOptions(netCtx, n.ID)
 		netCancel()
@@ -1174,6 +1196,9 @@ func (p *Plugin) recoverEndpoints(ctx context.Context, daemonWait time.Duration)
 				Warn("recovery: failed to load network options; skipping")
 			recordSyncFailure()
 			continue
+		}
+		if m := opts.effectiveMode(); m == ModeMacvlan || m == ModeIPvlan {
+			parents[opts.linkParent()] = true
 		}
 		for cid, info := range netInfo.Containers {
 			// libnetwork's "ep-<endpoint>" placeholder is a container mid-creation; Join will handle it.
@@ -1201,6 +1226,12 @@ func (p *Plugin) recoverEndpoints(ctx context.Context, daemonWait time.Duration)
 			if listed, ok := ipamListedMACs(netInfo.Containers); ok {
 				p.giveUpStrandedIPAMRecords(ctx, n.ID, listed, time.Now())
 			}
+		}
+	}
+	// Skipped when a network went unread, since its endpoints' links would look orphaned (#1339).
+	if !unread {
+		for parent := range parents {
+			reclaimOrphanChildren(parent, func(id string) bool { return listed[id] || p.endpointKnown(id) })
 		}
 	}
 	if recovered > 0 || failed > 0 || gone > 0 || alreadyManaged > 0 {
