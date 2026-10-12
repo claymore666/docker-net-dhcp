@@ -1735,6 +1735,18 @@ func (p *Plugin) addRoutes(opts *DHCPNetworkOptions, v6 bool, link netlink.Link,
 			continue
 		}
 
+		if family == unix.AF_INET6 && route.Gw != nil && route.Gw.IsLinkLocalUnicast() && !p.engineWaitsForV6Link() {
+			// Engines below 28 look the next hop up before the link is up and fail the start with "route not found";
+			// the persistent client only installs the advertisement's routes, so a host one is left out (#1344, #1149).
+			log.
+				WithFields(logFields).
+				WithField("route", route.Dst.String()).
+				WithField("gateway", route.Gw.String()).
+				WithField("engine_version", p.engineSnapshot().Version).
+				Info("[Join] Leaving out a host IPv6 route via a link-local next hop: this engine looks up its route before the link is up")
+			continue
+		}
+
 		staticRoute := &StaticRoute{
 			Destination: route.Dst.String(),
 			// Default to an on-link route
