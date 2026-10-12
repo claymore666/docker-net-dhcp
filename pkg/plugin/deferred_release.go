@@ -179,9 +179,9 @@ func (p *Plugin) handOneRecordBack(id string, due func(lease.Record) bool, opts 
 	held, _ := rec.Addr()
 	log.WithFields(fields).
 		Info("No container claimed this address back inside the restart window, so release_lease=on_remove is handing it back")
-	out := releaseFromRecord(rec, opts, v6, held, resolved, fields)
+	out, err := releaseFromRecord(rec, opts, v6, held, resolved, fields)
 	p.countRelease(v6, out == releaseSent)
-	announceReleaseOutcome(log.WithFields(fields).WithField("outcome", string(out)), out)
+	announceReleaseOutcome(log.WithFields(fields), out, err)
 	p.closeRecord(rec.ID)
 	return out == releaseSent
 }

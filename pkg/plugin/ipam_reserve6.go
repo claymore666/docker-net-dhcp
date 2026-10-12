@@ -278,9 +278,9 @@ func (p *Plugin) ipamReleaseRefused6(opts DHCPNetworkOptions, recordID string) s
 	}
 	fields := log.Fields{"record": recordID, "ip": rec.Lease.Addr.String(), "is_ipv6": true}
 	held, _ := rec.Addr()
-	out := releaseFromRecord(rec, opts, true, held, nil, fields)
+	out, err := releaseFromRecord(rec, opts, true, held, nil, fields)
 	p.countRelease(true, out == releaseSent)
-	announceReleaseOutcome(log.WithFields(fields).WithField("outcome", string(out)), out)
+	announceReleaseOutcome(log.WithFields(fields), out, err)
 	if out != releaseSent {
 		return notSent
 	}

@@ -128,13 +128,13 @@ const (
 // else chaddr, and v6 on DUID and IAID, never the source address, so Identity is replayed as sent. Every v6 address
 // and prefix route the Release names comes off first (RFC 9915 section 18.2.7); a DHCPRELEASE is unicast (RFC 2131 section 4.4.4) and names
 // the lease by ciaddr (section 3.1), so the v4 address stays.
-func (m *dhcpManager) releaseHeldLease(v6 bool) releaseOutcome {
+func (m *dhcpManager) releaseHeldLease(v6 bool) (releaseOutcome, error) {
 	if !v6 && m.onLinkLocal() {
-		return releaseLinkLocal
+		return releaseLinkLocal, nil
 	}
 	rec, ok := m.releaseRecord(v6)
 	if !ok {
-		return releaseNoRecord
+		return releaseNoRecord, nil
 	}
 
 	if v6 {
@@ -142,7 +142,7 @@ func (m *dhcpManager) releaseHeldLease(v6 bool) releaseOutcome {
 			log.WithError(err).WithFields(m.logFields(true)).
 				Warn("Not releasing the DHCPv6 lease: the address could not be taken off the link first, " +
 					"and RFC 9915 section 18.2.7 requires that before the exchange begins")
-			return releaseWithdrawFailed
+			return releaseWithdrawFailed, nil
 		}
 		// An unreachable aggregate forwards nothing; holding the Release for it would strand the lease (RFC 8415 section 18.2.7, #214).
 		m.seedPrefixRoutes(&rec.Lease)
@@ -160,7 +160,7 @@ func (m *dhcpManager) releaseHeldLease(v6 bool) releaseOutcome {
 // releaseFromRecord needs only the record, the options and the family, which is all the deferred release holds (#984).
 // resolved is the sweep's shared probe answers for the link path, nil outside a sweep (#1288).
 func releaseFromRecord(rec lease.Record, opts DHCPNetworkOptions, v6 bool, held netip.Addr,
-	resolved *runtime.LinkResolveCache, fields log.Fields) releaseOutcome {
+	resolved *runtime.LinkResolveCache, fields log.Fields) (releaseOutcome, error) {
 	src, iface, err := hostSourceFor(opts, v6, held)
 	if !v6 && errors.Is(err, errParentHasNoAddress) {
 		return releaseOnLink(rec, opts.hostLink(), resolved, fields)
@@ -168,29 +168,29 @@ func releaseFromRecord(rec lease.Record, opts DHCPNetworkOptions, v6 bool, held 
 	if err != nil {
 		log.WithError(err).WithFields(fields).
 			Warn("Not releasing: no address on the parent for this family to send the release from")
-		return releaseNoSource
+		return releaseNoSource, nil
 	}
 
 	if err := rtSendRelease(rec, runtime.ReleaseConfig{Interface: iface, Source: src}); err != nil {
 		log.WithError(err).WithFields(fields).
 			WithField("source", src.String()).
 			Debug("The release was refused or could not be sent")
-		return classifyReleaseError(err)
+		return classifyReleaseError(err), err
 	}
-	return releaseSent
+	return releaseSent, nil
 }
 
 var rtSendRelease = runtime.SendRelease
 
 // releaseOnLink sends a v4 release from the leased address over a parent with no host IPv4, e.g. a macvlan one (#1288).
-func releaseOnLink(rec lease.Record, iface string, resolved *runtime.LinkResolveCache, fields log.Fields) releaseOutcome {
+func releaseOnLink(rec lease.Record, iface string, resolved *runtime.LinkResolveCache, fields log.Fields) (releaseOutcome, error) {
 	if err := rtSendReleaseOnLink(rec, runtime.LinkReleaseConfig{Interface: iface, Resolved: resolved}); err != nil {
 		log.WithError(err).WithFields(fields).
 			WithField("interface", iface).
 			Debug("The release over the address-less parent was refused or could not be sent")
-		return classifyReleaseError(err)
+		return classifyReleaseError(err), err
 	}
-	return releaseSent
+	return releaseSent, nil
 }
 
 var rtSendReleaseOnLink = runtime.SendReleaseOnLink
@@ -265,12 +265,16 @@ func classifyReleaseError(err error) releaseOutcome {
 	}
 }
 
-func (m *dhcpManager) announceRelease(v6 bool, out releaseOutcome) {
-	announceReleaseOutcome(log.WithFields(m.logFields(v6)).WithField("outcome", string(out)), out)
+func (m *dhcpManager) announceRelease(v6 bool, out releaseOutcome, err error) {
+	announceReleaseOutcome(log.WithFields(m.logFields(v6)), out, err)
 }
 
-// announceReleaseOutcome takes the entry, since the deferred release has no manager (#984).
-func announceReleaseOutcome(entry *log.Entry, out releaseOutcome) {
+// announceReleaseOutcome takes the fields, since the deferred release has no manager (#984), and logs err (#1346).
+func announceReleaseOutcome(entry *log.Entry, out releaseOutcome, err error) {
+	entry = entry.WithField("outcome", string(out))
+	if err != nil {
+		entry = entry.WithError(err)
+	}
 	switch out {
 	case releaseSent:
 		entry.Debug("The lease was handed back before the client stopped")
@@ -303,12 +307,12 @@ func announceReleaseOutcome(entry *log.Entry, out releaseOutcome) {
 }
 
 func (m *dhcpManager) releaseFamily(v6 bool) bool {
-	out := m.releaseHeldLease(v6)
+	out, err := m.releaseHeldLease(v6)
 	sent := out == releaseSent
 	if out != releaseLinkLocal {
 		m.countRelease(v6, sent)
 	}
-	m.announceRelease(v6, out)
+	m.announceRelease(v6, out, err)
 	return sent
 }
 
