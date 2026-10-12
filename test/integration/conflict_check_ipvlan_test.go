@@ -66,10 +66,10 @@ func TestConflictCheck_IpvlanNeverHearsTheSquatter(t *testing.T) {
 	if answered == 0 {
 		t.Fatalf("the squatter %s never answered for %s on the wire: the conflict was not on offer to be heard", squatMAC, squatAddr)
 	}
-	if ef.CountLogLines("DHCPOFFER", squatAddr) == 0 {
+	if ef.CountOffersOf(squatAddr) == 0 {
 		t.Fatalf("the server never offered %s, so the squatted address was not the one in question", squatAddr)
 	}
-	t.Logf("probes for %s=%d, squatter replies=%d, offers of it=%d", squatAddr, probed, answered, ef.CountLogLines("DHCPOFFER", squatAddr))
+	t.Logf("probes for %s=%d, squatter replies=%d, offers of it=%d", squatAddr, probed, answered, ef.CountOffersOf(squatAddr))
 
 	// RFC 5227 section 2.1's whole probe window has passed by the time docker run returns; this waits a further stretch.
 	for end := time.Now().Add(15 * time.Second); time.Now().Before(end); time.Sleep(500 * time.Millisecond) {

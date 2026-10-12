@@ -841,6 +841,26 @@ func (ef *EphemeralFixture) CountLogLines(substrings ...string) int {
 	return count
 }
 
+// CountOffersOf counts the lines naming addr as offered, on dnsmasq and on Kea 2.6 (DHCP4_LEASE_OFFER) and
+// 2.4 (DHCP4_LEASE_ADVERT); a Kea 2.6.3 DHCPOFFER line names no address (#1322).
+func (ef *EphemeralFixture) CountOffersOf(addr string) int {
+	ef.t.Helper()
+	return countOffersOf(ef.readLog(), addr)
+}
+
+func countOffersOf(log, addr string) int {
+	count := 0
+	for _, line := range strings.Split(log, "\n") {
+		for _, spelling := range []string{"dhcpoffer", "dhcp4_lease_offer", "dhcp4_lease_advert"} {
+			if lineMatches(line, []string{spelling, addr}, nil) {
+				count++
+				break
+			}
+		}
+	}
+	return count
+}
+
 // Kea 2.4.1 also writes DHCP4_LEASE_ADVERT for an offer and no DHCPOFFER line: measured on hosted run 34537348413,
 // every DHCPOFFER count read zero (#942). The stand-in is chosen per message type, from the log.
 func (ef *EphemeralFixture) logTokens(log string) map[string]string {
