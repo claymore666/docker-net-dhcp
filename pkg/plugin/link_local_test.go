@@ -511,7 +511,7 @@ func TestHealth_ALinkLocalEndpointIsCountedAndShown(t *testing.T) {
 func TestRelease_ALinkLocalEndpointHasNothingToHandBackAndCountsNothing(t *testing.T) {
 	p := recordingPlugin(t)
 	m := llManager(t, p, "169.254.10.1/16")
-	if out := m.releaseHeldLease(false); out != releaseLinkLocal {
+	if out, _ := m.releaseHeldLease(false); out != releaseLinkLocal {
 		t.Fatalf("outcome = %q, want %q", out, releaseLinkLocal)
 	}
 	if m.releaseFamily(false) {

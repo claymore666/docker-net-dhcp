@@ -650,6 +650,10 @@
 #              (#1322): the fixture and one ipvlan container as in its
 #              TestConflictCheck_* siblings (9 to 37 s), plus the 15 s
 #              window that proves no DECLINE follows. Its lane replaces it.
+#   one row    TestReleaseLease_ABridgeReleaseLeavesBesideAHostDHCPClient is INFERRED at 95.00
+#              (#1346): TestReleaseLease_OnRemoveHoldsTheAddressThenHandsItBack (100.00)
+#              without its 20 s held probe, on the bridge fixture, plus one held
+#              socket. Its lane replaces it.
 TestAdvertDNS_ReachesTheResolverAndDHCPv6ComesFirst	75.00
 TestAdvertRoutes_BecomeContainerRoutesUnlessSkipRoutes	150.00
 TestAuditLog_DefaultOff	12.63
@@ -846,6 +850,7 @@ TestRapidCommit_MacvlanWithoutTheOptionKeepsTheFourMessageExchange	11.72
 TestRecovery_DaemonKilled_LeaseIsHeldUntilItExpires	31.98
 TestRecovery_DaemonRestart_PreservesContainer	30.00
 TestRecovery_PluginDisableEnable_PreservesEndpoint	12.86
+TestReleaseLease_ABridgeReleaseLeavesBesideAHostDHCPClient	95.00
 TestReleaseLease_DefaultNetworksStillKeepTheirAddresses	26.00
 TestReleaseLease_OnRemoveHandsAnIPAMAddressBackToo	100.00
 TestReleaseLease_OnRemoveHandsBackFromAParentWithNoIPv4	100.00
