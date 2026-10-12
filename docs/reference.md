@@ -915,11 +915,14 @@ change in Docker's engine (#949).
 **IPv6 is switched on with a driver option, or with `--ipv6` and an IPv6
 `--subnet`.** `-o ipv6=true` or `-o ipv6_mode=<mode>` switches IPv6 on, with every
 mode an `--ipam-driver null` network of the same driver mode takes, and
-nothing else on the create line changes. The address comes from the
+nothing else on the create line changes. Docker's `--ipv6` on an
+`--ipam-driver null` network, with neither of those options, since v2.6.0
+behaves as `-o ipv6=true` ([#1343](https://github.com/claymore666/docker-net-dhcp/issues/1343));
+`--ipv6` beside `-o ipv6_mode=off` is refused as contradictory. The address comes from the
 container's link when the endpoint is created, from the DHCPv6 server or
 the router's advertisement, and Docker shows it as `GlobalIPv6Address`.
-The plugin allocates no IPv6 pool of its own, so Docker's `--ipv6` with
-no IPv6 `--subnet` is refused with a message that names the two options
+The plugin allocates no IPv6 pool of its own, so with this plugin as the
+IPAM driver Docker's `--ipv6` with no IPv6 `--subnet` is refused with a message that names the two options
 and the subnet, and `--ip6` is not served in that shape. The
 DHCPv6 identity (DUID and IAID) is derived from the MAC the endpoint had
 at its first start and stored, so `docker restart` keeps it, and the
