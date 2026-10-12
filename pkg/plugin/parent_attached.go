@@ -46,6 +46,25 @@ func validateParentForChild(name string) (netlink.Link, error) {
 	return link, nil
 }
 
+// vlanSpellingRemedy answers a missing `<link>.<id>` parent, the spelling Docker's own macvlan and ipvlan drivers
+// create a sub-interface for, with this plugin's spelling when <link> exists (#1345).
+func vlanSpellingRemedy(name string) string {
+	i := strings.LastIndex(name, ".")
+	if i < 1 {
+		return ""
+	}
+	if _, err := nlLinkByName(name); err == nil {
+		return ""
+	}
+	if id, err := parseVlanID(name[i+1:]); err != nil || id == 0 {
+		return ""
+	}
+	if _, err := nlLinkByName(name[:i]); err != nil {
+		return ""
+	}
+	return fmt.Sprintf("; to have a VLAN sub-interface %v created, use -o parent=%v -o vlan=%v", name, name[:i], name[i+1:])
+}
+
 // refuseEnslavedParent refuses a parent that is a port of a link other than own: the kernel moves a bridge port or a
 // bond member into a new bridge without an error, measured on Linux 6.12. Only the bridge path reads it; a macvlan or
 // ipvlan child on a port meets the held rx_handler as EBUSY (#370, #903).
