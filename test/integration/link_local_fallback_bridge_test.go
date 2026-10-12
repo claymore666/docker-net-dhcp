@@ -73,13 +73,15 @@ func TestLinkLocalFallback_ABridgeWithNoServerStartsOnALinkLocalAddress(t *testi
 	}
 	ep := harness.EndpointShortID(t, ctx, cli, id, netName)
 
-	onLink := linkV4(t, ctx, id)
-	if len(onLink) != 1 || !strings.HasPrefix(onLink[0], ip+"/16") {
-		t.Fatalf("the container's eth0 holds %v, want exactly %s/16 (#1323)", onLink, ip)
+	// Bridge mode names the container link after the bridge, so eth0 does not exist; read every IPv4 line but lo's (#1323).
+	var held []string
+	for _, line := range strings.Split(strings.TrimSpace(harness.ExecOutput(t, ctx, id, "ip", "-o", "-4", "addr", "show")), "\n") {
+		if f := strings.Fields(line); len(f) >= 4 && f[1] != "lo" {
+			held = append(held, f[1]+" "+f[3])
+		}
 	}
-	if links := harness.ExecOutput(t, ctx, id, "ip", "-o", "-4", "addr", "show"); strings.Count(strings.TrimSpace(links), "\n") != 1 ||
-		!strings.Contains(links, " eth0 ") {
-		t.Fatalf("the container holds IPv4 on more than lo and eth0, so the engine added its gateway bridge (#1323):\n%s", links)
+	if len(held) != 1 || !strings.HasSuffix(held[0], " "+ip+"/16") {
+		t.Fatalf("the container's non-loopback IPv4 is %v, want exactly one link holding %s/16 and no gateway bridge (#1323)", held, ip)
 	}
 	if routes := harness.ExecOutput(t, ctx, id, "ip", "-4", "route", "show"); strings.Contains(routes, "default") {
 		t.Fatalf("a link-local endpoint got a default route, which Join withholds for it (#1323):\n%s", routes)
