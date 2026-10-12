@@ -11,6 +11,7 @@ import (
 	log "github.com/sirupsen/logrus"
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
 
 type clientRole int
@@ -32,10 +33,29 @@ func (r clientRole) mode(want proto.ConflictMode) proto.ConflictMode {
 	return want
 }
 
+// conflictCheckMode is the RFC 5227 mode of the network; an absent option on ipvlan is async, since the pre-bind probe
+// hears no reply there and only costs its window (#1347). A stored explicit wait is kept as stored.
+func (o DHCPNetworkOptions) conflictCheckMode() (proto.ConflictMode, error) {
+	if o.ConflictCheck == "" && o.effectiveMode() == ModeIPvlan {
+		return proto.ConflictAsync, nil
+	}
+	return dhcp.ParseConflictCheck(o.ConflictCheck)
+}
+
+// validateConflictCheckMode refuses conflict_check=wait on ipvlan: the child shares the parent's MAC and does not
+// receive the ARP replies to its own probes, measured on Linux 6.12 (RFC 5227 section 2.1.1, #1347).
+func validateConflictCheckMode(o DHCPNetworkOptions) error {
+	if o.effectiveMode() == ModeIPvlan && o.ConflictCheck == proto.ConflictWait.String() {
+		return fmt.Errorf("%w: conflict_check=wait cannot be set in mode=ipvlan: an ipvlan child does not receive the ARP replies to its own probes, so the probe before the address is used cannot hear a device already holding it (RFC 5227 section 2.1.1). Use conflict_check=async, which keeps listening after the address is bound, or off",
+			util.ErrModeMismatch)
+	}
+	return nil
+}
+
 // conflictWiring sets the RFC 5227 mode from the network's stored options, and the callbacks, for all three client
 // sites (#901).
 func (p *Plugin) conflictWiring(o *dhcp.DHCPClientOptions, opts DHCPNetworkOptions, role clientRole, networkID, endpointID string, v6 bool) error {
-	mode, err := dhcp.ParseConflictCheck(opts.ConflictCheck)
+	mode, err := opts.conflictCheckMode()
 	if err != nil {
 		return fmt.Errorf("invalid persisted conflict_check: %w", err)
 	}

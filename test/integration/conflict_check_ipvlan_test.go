@@ -14,7 +14,7 @@ import (
 )
 
 // TestConflictCheck_IpvlanNeverHearsTheSquatter pins the documented limit that an ipvlan child does not receive the
-// ARP replies to its own probes, so conflict_check cannot decline a squatted offer there (#1322).
+// ARP replies to its own probes, so conflict_check cannot decline a squatted offer there (#1322, #1347).
 //
 // Each link of the chain is read before the absence counts: the probe on the wire, the squatter's reply on the wire,
 // the server's offer of the squatted address, and then no DHCPDECLINE and the container on the squatted address.
@@ -39,7 +39,7 @@ func TestConflictCheck_IpvlanNeverHearsTheSquatter(t *testing.T) {
 
 	harness.CreateNetwork(t, ctx, netName, "ipvlan", map[string]string{
 		"parent":         harness.EphemeralHostVeth,
-		"conflict_check": "wait",
+		"conflict_check": "async",
 	})
 	id, ip, _ := harness.RunContainer(t, ctx, netName, netName+"-ctr")
 	mac := containerLinkMAC(t, ctx, id)
@@ -47,6 +47,13 @@ func TestConflictCheck_IpvlanNeverHearsTheSquatter(t *testing.T) {
 		t.Fatal("could not read the container link's MAC, so its probes cannot be told from other frames")
 	}
 
+	// The probes run behind the bind under async; this waits out the whole window before the wire is counted below.
+	for end := time.Now().Add(15 * time.Second); time.Now().Before(end); time.Sleep(500 * time.Millisecond) {
+		if got := ef.CountLogLines("DHCPDECLINE"); got > declinesBefore {
+			t.Fatalf("a DHCPDECLINE reached the server (%d -> %d): conflict_check now works on ipvlan, so the "+
+				"documented limit and this pin are out of date", declinesBefore, got)
+		}
+	}
 	probed := 0
 	for _, f := range cap.ProbesFrom(mac) {
 		if f.TargetIP.String() == squatAddr {
@@ -71,13 +78,6 @@ func TestConflictCheck_IpvlanNeverHearsTheSquatter(t *testing.T) {
 	}
 	t.Logf("probes for %s=%d, squatter replies=%d, offers of it=%d", squatAddr, probed, answered, ef.CountOffersOf(squatAddr))
 
-	// RFC 5227 section 2.1's whole probe window has passed by the time docker run returns; this waits a further stretch.
-	for end := time.Now().Add(15 * time.Second); time.Now().Before(end); time.Sleep(500 * time.Millisecond) {
-		if got := ef.CountLogLines("DHCPDECLINE"); got > declinesBefore {
-			t.Fatalf("a DHCPDECLINE reached the server (%d -> %d): conflict_check now works on ipvlan, so the "+
-				"documented limit and this pin are out of date", declinesBefore, got)
-		}
-	}
 	if ip != squatAddr {
 		t.Errorf("docker inspect reports %s, want the squatted %s", ip, squatAddr)
 	}
