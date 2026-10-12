@@ -135,11 +135,11 @@ so `docker plugin upgrade` from v2.5.0 asks for nothing new.
   (#1345).
 - `release_lease=on_remove` in bridge mode sends its DHCPRELEASE beside a
   DHCP client running on the host for that bridge. The release socket
-  shares the client port the way systemd-networkd, dhclient, NetworkManager
-  and dhcpcd (for IPv4) hold it, and a failed send now logs its error in the
-  `send_failed` warning. dhcpcd's DHCPv6 client holds port 546 without
-  sharing, so on such a host the IPv6 Release still fails, with the reason
-  in the log (#1346, dhcp-golib v1.5.1).
+  shares the client port the way systemd-networkd, dhclient and
+  NetworkManager hold it, and a failed send now logs its error in the
+  `send_failed` warning. A host client that holds the DHCPv6 port 546
+  without sharing still makes the IPv6 Release fail, with the reason in
+  the log (#1346, dhcp-golib v1.5.1).
 - `conflict_check=wait` on `mode=ipvlan` is refused at `docker network
   create`: an ipvlan child does not receive the ARP replies to its own
   probes (RFC 5227 section 2.1.1), so the pre-bind probe could never find a
