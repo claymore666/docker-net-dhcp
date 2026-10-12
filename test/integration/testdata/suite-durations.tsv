@@ -522,6 +522,9 @@
 #   one row    TestDHCPv6_AnEndpointWithNoV6LeaseStartsOnAHostWithRARoutes (45.00) arrives with #1317 and is
 #              INFERRED: one V6 fixture and one bridge container (the 12.00 of a plain container test) plus
 #              the 11 to 15 s the DHCPv6 exchange takes to give up on a segment with no advertisement.
+#   one row    TestLinkLocalFallback_ABridgeWithNoServerStartsOnALinkLocalAddress (50.00) arrives with #1323
+#              and is INFERRED: the macvlan row of the same fixture minus the wait for a lease (70.00), a
+#              create-time probe of up to 8 s plus the 22 to 25 s a serverless start takes.
 #   samples    3 for every corpus row. SIXTY-EIGHT rows are not corpus
 #              samples, and the seventeen groups below are disjoint and
 #              exhaust them: the five `one row` notes above -- 73.85,
@@ -801,6 +804,7 @@ TestLifecycleIPvlan_GoldenPath	11.80
 TestLifecycleMacvlan_GoldenPath	11.61
 TestLifecycleMacvlan_IPv6_GoldenPath	17.68
 TestLifecycleMacvlan_IPv6_GoldenPath_IPAM	17.68
+TestLinkLocalFallback_ABridgeWithNoServerStartsOnALinkLocalAddress	50.00
 TestLinkLocalFallback_AServerlessStartThenMovesToALease	70.00
 TestMTUOption_AMacvlanParentBelowTheOptionFailsTheEndpointAndLeavesNoLink	10.00
 TestMTUOption_AnIPAMMacvlanParentBelowTheOptionFailsTheEndpointAndLeavesNoLink	15.00
