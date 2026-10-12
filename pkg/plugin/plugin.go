@@ -986,6 +986,8 @@ type endpointFingerprint struct {
 	// RecordKey is the key the endpoint's lease records were filed under, so release_lease=on_remove reaches an
 	// endpoint with no MAC to tombstone: ipvlan, passthru recovery, a recovery with no hostname (#1249).
 	RecordKey net.HardwareAddr
+	// LeftUnmanaged: Leave found no running client, so DeleteEndpoint makes the on_stop release (#1342).
+	LeftUnmanaged bool
 }
 
 // dhcpHostname is a hostname with its trust bit, one value because safeHostname's "" means both refused and absent,
@@ -1056,6 +1058,15 @@ func (p *Plugin) markEndpointReleased(endpointID string) {
 	}
 	fp.Released = true
 	p.endpointFingerprints[endpointID] = fp
+}
+
+func (p *Plugin) markEndpointLeftUnmanaged(endpointID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if fp, ok := p.endpointFingerprints[endpointID]; ok {
+		fp.LeftUnmanaged = true
+		p.endpointFingerprints[endpointID] = fp
+	}
 }
 
 // hintIfname returns the join hint's custom interface name, or "".
