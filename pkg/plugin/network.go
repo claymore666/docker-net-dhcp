@@ -959,9 +959,12 @@ func (p *Plugin) checkStoredOptions(id string, opts DHCPNetworkOptions) error {
 // netOptionsRaw decodes without the name check, from disk first, falling back to NetworkInspect for networks
 // older than persistence; TestNetOptionsRaw_HasNoOtherCallers keeps netOptions and netMode its only callers (#727).
 func (p *Plugin) netOptionsRaw(ctx context.Context, id string) (DHCPNetworkOptions, error) {
-	cached, loadErr := loadOptions(id)
+	stored, loadErr := loadNetwork(id)
 	if loadErr == nil {
-		return cached, nil
+		if stored.IPv4OffUnset {
+			p.backfillIPv4Off(ctx, id, &stored)
+		}
+		return stored.Options, nil
 	}
 
 	// The backfill runs only on os.IsNotExist: a newer schema, a corrupt file or a transient EIO falls back to the

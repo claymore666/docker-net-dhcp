@@ -4,12 +4,14 @@
 package plugin
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
 
 	"github.com/claymore666/dhcp-golib/proto"
 	dNetwork "github.com/moby/moby/api/types/network"
+	log "github.com/sirupsen/logrus"
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
@@ -91,4 +93,31 @@ const ipv4OffStateName = "ipv4_off"
 func (p *Plugin) inspectIPv4Off(n dNetwork.Inspect) bool {
 	below, known := engineBelowFloor(p.engineSnapshot().Version, MinEngineV6GatewayWaitVersion)
 	return known && !below && !n.EnableIPv4
+}
+
+// backfillIPv4Off stores the engine's flag for a state file written before v2.6.0 (no IPv4Off key), once; an engine
+// below 28 reports none, so such a network is v4-on, and an unprobed engine or failed read stores nothing (#1341).
+func (p *Plugin) backfillIPv4Off(ctx context.Context, id string, sn *storedNetwork) {
+	_, known := engineBelowFloor(p.engineSnapshot().Version, MinEngineV6GatewayWaitVersion)
+	if !known {
+		return
+	}
+	n, err := inspectNetwork(ctx, p.docker, id)
+	if err != nil {
+		log.WithError(err).WithField("network", shortID(id)).
+			Warn("Could not read the engine's IPv4 flag for a network stored before v2.6.0; treating it as IPv4-enabled for this call")
+		return
+	}
+	// v4 off with no IPv6 left would leave an endpoint no address, the pair create refuses: keep what it did (#1341, #1135).
+	cand := sn.Options
+	cand.IPv4Off = p.inspectIPv4Off(n)
+	if validateIPv4Off(cand) == nil {
+		sn.Options = cand
+	} else {
+		log.WithField("network", shortID(id)).
+			Warn("Network was created with --ipv4=false but enables no other address family; keeping DHCPv4 on. Recreate it with -o ipv6_mode=dhcp, slaac or auto")
+	}
+	if err := saveNetwork(id, sn.Options, sn.Binding); err != nil {
+		log.WithError(err).WithField("network", shortID(id)).Debug("Failed to store the IPv4 flag read from the engine")
+	}
 }
