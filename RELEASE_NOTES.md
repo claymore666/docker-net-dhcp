@@ -46,10 +46,10 @@ so `docker plugin upgrade` from v2.5.0 asks for nothing new.
 | An IPv4 release with `release_lease` from a parent that has no IPv4 address is sent and counts in `releases_sent`, where it counted in `release_failures` (#1288) | An alert on `release_failures` for such a parent goes quiet. A relayed server whose lease names no gateway, or a gateway that does not answer, still counts there |
 | A network with an IPv6 pool stores its options at state schema v3; every other network stays at v2 or v1 (#1132) | Going back to v2.5.0 or earlier, the plugin refuses such a network's stored options and leaves the file as found. Other networks load as before |
 | `conflict_check=wait` is refused at `docker network create` on `mode=ipvlan`, and an ipvlan network that sets no `conflict_check` runs `async` (#1347) | A compose file that writes `conflict_check=wait` on an ipvlan network fails at create and needs `async` or `off`. An existing ipvlan network that stored `wait` keeps running it until recreated |
-| Docker's `--ipv6` on an `--ipam-driver null` network with no `-o ipv6` or `-o ipv6_mode` now enables DHCPv6 (#1343) | Such a network's containers get an IPv6 address where they got none. `--ipv6` beside `-o ipv6_mode=off`, `link_local_fallback` or `ipv6_iid=stable-privacy` is refused at create, naming `ipv6_mode=dhcp` |
+| Docker's `--ipv6` on an `--ipam-driver null` network with no `-o ipv6` or `-o ipv6_mode` now enables DHCPv6 (#1343) | Such a network's containers get an IPv6 address where they got none. `--ipv6` beside `-o ipv6_mode=off` is refused at create as contradictory; beside `link_local_fallback` or `ipv6_iid=stable-privacy` it is refused naming `ipv6_mode=dhcp` |
 | On an engine below Docker 28, a host IPv6 route whose next hop is link-local is left out of Join (#1344) | Containers on such an engine no longer fail to start when the host learned routes from a Router Advertisement; they lack those routes until the engine is 28 or later |
 | `release_lease=on_stop` releases the address of an endpoint whose DHCP client never started, at `docker stop` (#1342) | `releases_sent` counts these; before, the lease stayed held on the server until it expired |
-| Missing `-o parent=<link>.<id>` is refused with a line naming `-o parent=<link> -o vlan=<id>` (#1345) | The message text changed; a check that matched the old text needs updating |
+| On macvlan and ipvlan, a missing `-o parent=<link>.<id>` is refused with a line naming `-o parent=<link> -o vlan=<id>` (#1345) | The message text changed; a check that matched the old text needs updating |
 
 ### New
 
@@ -136,7 +136,7 @@ so `docker plugin upgrade` from v2.5.0 asks for nothing new.
 - `release_lease=on_remove` in bridge mode sends its DHCPRELEASE beside a
   DHCP client running on the host for that bridge. The release socket
   shares the client port the way systemd-networkd, dhclient, NetworkManager
-  and dhcpcd hold it, and a failed send now logs its error in the
+  and dhcpcd (for IPv4) hold it, and a failed send now logs its error in the
   `send_failed` warning. dhcpcd's DHCPv6 client holds port 546 without
   sharing, so on such a host the IPv6 Release still fails, with the reason
   in the log (#1346, dhcp-golib v1.5.1).
@@ -170,13 +170,18 @@ The release candidate v2.6.0-rc1 ran once through the real-server lab
 (docker-net-dhcp-lab v0.2.0): Kea, ISC dhcpd, dnsmasq, udhcpd and Pi-hole
 as servers, Kea HA and ISC failover pairs, hosts on Debian 13, Ubuntu
 24.04 and Debian 11 with Docker 20.10, each cell upgrading from v2.5.0.
-Eleven of fourteen cells wrote verdicts; the three that did not stopped
-on lab-side prerequisites. The run's FAIL and BLOCKED rows trace to the
-lab losing its hosts over ssh under load and to a defect in its verdict
-writer, with one plugin finding: a `CreateEndpoint` that outlived the
-daemon's timeout under load left its link on the parent, which is #1339
-above. The results page with every verdict is release v0.2.0 of
-claymore666/docker-net-dhcp-lab.
+Eleven of fourteen cells wrote verdicts: kea-relay stopped at its relay
+probe, a lab error, and chr and openwrt on a missing base image on the lab
+host. Every cell exited with a lab-side infrastructure error, so a BLOCKED
+row mostly means the cell lost its Docker host over ssh under load, and
+the D3, D4 and F scenario rows are missing because a defect in the lab's
+verdict writer aborted each shape at scenario D2b. Thirty-eight FAIL
+verdicts show `CreateEndpoint` hitting the daemon's client timeout under
+load; the link such a create leaves on the parent, which blocked the
+following shapes in one cell, is what #1339 above removes. The results
+page does not attribute the remaining FAIL rows; two cells rerun alone
+passed their first verdicts. The results page with every verdict is
+release v0.2.0 of claymore666/docker-net-dhcp-lab.
 
 ### CI
 
