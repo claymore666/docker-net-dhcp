@@ -601,7 +601,7 @@ func (p *Plugin) createBridgeNetwork(networkID string, opts DHCPNetworkOptions, 
 func (p *Plugin) createParentAttachedNetwork(networkID string, opts DHCPNetworkOptions, binding *ipamBinding) error {
 	parent, err := validateParentForChild(opts.linkParent())
 	if err != nil {
-		return err
+		return fmt.Errorf("%w%s", err, vlanSpellingRemedy(opts.linkParent()))
 	}
 	if err := mtuUnderParent(opts.MTU, parent); err != nil {
 		return err

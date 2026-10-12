@@ -745,6 +745,9 @@ docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.6.0 \
     lan-vlan100
 ```
 
+`-o parent=eth0.100` alone, as Docker's own driver takes it, does not create the sub-interface: when `eth0.100` is missing and `eth0` exists, the refusal names `-o parent=eth0 -o vlan=100`
+([#1345](https://github.com/claymore666/docker-net-dhcp/issues/1345)).
+
 **Ownership.** When `eth0.100` is missing, the plugin creates it, sets
 it up and marks it with the interface alias `docker-net-dhcp`;
 `ip -d link show eth0.100` shows `vlan protocol 802.1Q id 100` and
