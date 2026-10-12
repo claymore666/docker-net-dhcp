@@ -582,6 +582,33 @@ func tagEndpointLink(link netlink.Link, endpointID string) error {
 	return nlLinkSetAlias(link, endpointAliasPrefix+endpointID)
 }
 
+// reclaimOrphanChildren removes parent's children tagged for an endpoint known denies, which a create the daemon
+// stopped waiting for or a failed forced DeleteEndpoint leaves; on the parent it refuses every ipvlan child (#1339).
+func reclaimOrphanChildren(parent string, known func(endpointID string) bool) {
+	pl, err := nlLinkByName(parent)
+	if err != nil {
+		return
+	}
+	links, err := util.DumpResult(nlLinkList())
+	if err != nil {
+		log.WithError(err).WithField("parent", parent).Warn("Failed to list links; orphaned endpoint links stay")
+		return
+	}
+	for _, l := range links {
+		a := l.Attrs()
+		id, tagged := strings.CutPrefix(a.Alias, endpointAliasPrefix)
+		if !tagged || a.ParentIndex != pl.Attrs().Index || a.Name != subLinkName(id) || known(id) {
+			continue
+		}
+		fields := log.Fields{"parent": parent, "link": a.Name}
+		if err := nlLinkDel(l); err != nil {
+			log.WithError(err).WithFields(fields).Warn("Failed to remove an orphaned endpoint link; remove it with `ip link del`")
+			continue
+		}
+		log.WithFields(fields).Info("Removed an endpoint link no endpoint owns")
+	}
+}
+
 // findEndpointLink returns the MAC's link tagged for endpointID, else an untagged one where the MAC is the endpoint's
 // own or, on recovery only, the sole candidate, since the engine's own ipvlan may reach a Join's sandbox first (#1243).
 func findEndpointLink(handle linkLister, mac net.HardwareAddr, endpointID string, sharedMAC, recovered bool) (netlink.Link, error) {
