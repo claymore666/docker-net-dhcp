@@ -61,6 +61,29 @@ func DnsmasqLease6Name(leases, addr string) (string, bool) {
 	return "", false
 }
 
+// DnsmasqLease6DUID returns the DUID of the v6 lease line holding addr, or "" when none does (#1321).
+func DnsmasqLease6DUID(leases, addr string) string {
+	want, err := netip.ParseAddr(addr)
+	if err != nil {
+		return ""
+	}
+	v6 := false
+	for _, line := range strings.Split(leases, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 1 && fields[0] == "duid" {
+			v6 = true
+			continue
+		}
+		if !v6 || len(fields) < 5 {
+			continue
+		}
+		if got, err := netip.ParseAddr(fields[2]); err == nil && got == want {
+			return fields[len(fields)-1]
+		}
+	}
+	return ""
+}
+
 // DnsmasqLease6Addrs splits duid's lease lines into IA_NA and IA_TA (IAID "T" plus a number) addresses (#927).
 func DnsmasqLease6Addrs(leases, duid string) (stable, temporary []string) {
 	v6 := false

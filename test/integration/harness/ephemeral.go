@@ -794,6 +794,22 @@ func (ef *EphemeralFixture) V6LeaseAddrs(duid string) (stable, temporary []strin
 	return DnsmasqLease6Addrs(string(b), duid)
 }
 
+// V6LeaseDUID returns the DUID the dnsmasq lease file holds addr under, or "" (#1321).
+func (ef *EphemeralFixture) V6LeaseDUID(addr string) string {
+	ef.t.Helper()
+	if ef.backend != backendDnsmasq {
+		ef.t.Fatal("V6LeaseDUID reads dnsmasq's lease file; this fixture runs another server")
+	}
+	b, err := os.ReadFile(ef.leaseFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ""
+		}
+		ef.t.Fatalf("read the dnsmasq lease file: %v", err)
+	}
+	return DnsmasqLease6DUID(string(b), addr)
+}
+
 // ServerIP returns the server's bare IP.
 func (ef *EphemeralFixture) ServerIP() string {
 	return strings.SplitN(ef.serverCIDR, "/", 2)[0]
