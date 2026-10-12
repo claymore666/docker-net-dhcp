@@ -92,7 +92,12 @@ docker inspect app | jq '.[0].NetworkSettings.Networks'
    back about a minute later if no container has claimed them (v2.2.0+,
    #984).
 7. The macvlan link is reaped automatically when the container netns is
-   destroyed.
+   destroyed. A child that a cancelled `CreateEndpoint` left on the
+   parent, because the daemon stopped waiting before the create finished,
+   is removed at the cancelled create itself, at `docker network rm`, by
+   the stale-network sweep and at plugin start, when no known endpoint
+   owns it (v2.6.0+, #1339). Bridge veths and IPAM-mode children are not
+   swept; for those only the cancelled create removes its own link.
 
 The host's NIC config (IP, routes, netplan/`systemd-networkd`,
 `/etc/network/interfaces`) is **never touched**. The one host link the

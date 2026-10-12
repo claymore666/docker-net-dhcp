@@ -14,7 +14,8 @@ A network created with `--ipv4=false` runs no DHCPv4, and an IPAM-mode
 network takes a typed IPv6 `--subnet` as its IPv6 pool, with `--ip6` as
 the address hint to the DHCPv6 server. `release_lease` hands an IPv4
 lease back from a parent that has no IPv4 address, and the plugin image
-is built with Go 1.27.2.
+is built with Go 1.27.2. Nine defects found by the pre-release bug hunt
+and the first real-server lab run against rc1 are fixed before the final.
 
 ### Upgrade notes
 
@@ -44,6 +45,11 @@ so `docker plugin upgrade` from v2.5.0 asks for nothing new.
 | `lease_state` in the `/Plugin.Health` `endpoints` entries takes the new value `ipv4_off`, with an empty `address`, for an endpoint of a `--ipv4=false` network (#1135) | A dashboard or alert that expects only `bound`, `acquiring` or `link_local` needs updating |
 | An IPv4 release with `release_lease` from a parent that has no IPv4 address is sent and counts in `releases_sent`, where it counted in `release_failures` (#1288) | An alert on `release_failures` for such a parent goes quiet. A relayed server whose lease names no gateway, or a gateway that does not answer, still counts there |
 | A network with an IPv6 pool stores its options at state schema v3; every other network stays at v2 or v1 (#1132) | Going back to v2.5.0 or earlier, the plugin refuses such a network's stored options and leaves the file as found. Other networks load as before |
+| `conflict_check=wait` is refused at `docker network create` on `mode=ipvlan`, and an ipvlan network that sets no `conflict_check` runs `async` (#1347) | A compose file that writes `conflict_check=wait` on an ipvlan network fails at create and needs `async` or `off`. An existing ipvlan network that stored `wait` keeps running it until recreated |
+| Docker's `--ipv6` on an `--ipam-driver null` network with no `-o ipv6` or `-o ipv6_mode` now enables DHCPv6 (#1343) | Such a network's containers get an IPv6 address where they got none. `--ipv6` beside `-o ipv6_mode=off` is refused at create as contradictory; beside `link_local_fallback` or `ipv6_iid=stable-privacy` it is refused naming `ipv6_mode=dhcp` |
+| On an engine below Docker 28, a host IPv6 route whose next hop is link-local is left out of Join (#1344) | Containers on such an engine no longer fail to start when the host learned routes from a Router Advertisement; they lack those routes until the engine is 28 or later |
+| `release_lease=on_stop` releases the address of an endpoint whose DHCP client never started, at `docker stop` (#1342) | `releases_sent` counts these; before, the lease stayed held on the server until it expired |
+| On macvlan and ipvlan, a missing `-o parent=<link>.<id>` is refused with a line naming `-o parent=<link> -o vlan=<id>` (#1345) | The message text changed; a check that matched the old text needs updating |
 
 ### New
 
@@ -91,6 +97,55 @@ so `docker plugin upgrade` from v2.5.0 asks for nothing new.
   behind a relay. An IPv6 Release still needs a link-local address on the
   parent, and a plugin-made bridge or `vlan` sub-interface still refuses
   `release_lease` at create (#1288).
+- A `dh-*` host link left on a macvlan or ipvlan parent by a `CreateEndpoint`
+  that outlived the daemon's timeout is removed again: at the cancelled
+  create itself, at `DeleteNetwork`, by the stale-network sweep and at
+  plugin start, when no known endpoint owns it. Such a link blocked every
+  ipvlan child on that parent until reboot (#1339).
+- The "arrived with no body" refusal names what happened: the daemon re-sent
+  a call whose body it had already spent, after a transport failure on the
+  first attempt (the daemon log line `Unable to connect to plugin: ... retrying`)
+  or the timeout of a plugin enabled with `docker plugin enable --timeout`.
+  It said the plugin call timeout had expired at a 30s default; `docker
+  plugin install` and a daemon restart set no call timeout, and the docs
+  say so now (#1340).
+- An `--ipv4=false` network created under v2.5.0 has no stored IPv4 flag.
+  The plugin now reads the engine's flag once for such a network and stores
+  it, so the upgraded network stops running DHCPv4. When that network
+  enables no other address family, it keeps DHCPv4 on and logs one warning
+  naming the recreate step (#1341).
+- `release_lease=on_stop` hands the address back at `docker stop` for an
+  endpoint whose persistent DHCP client failed to start, from the lease
+  records, both families. Before, `Leave` found no client and nothing was
+  released (#1342).
+- Docker's `--ipv6` on an `--ipam-driver null` network, with neither
+  `-o ipv6` nor `-o ipv6_mode` written, now behaves as `-o ipv6=true` and
+  is stored with the network's options. It was accepted and gave
+  containers no IPv6 at all, because the engine disables IPv6 on a link it
+  has no address for. `--ipv6` beside `-o ipv6_mode=off` is refused as
+  contradictory (#1343).
+- On an engine below Docker 28, a host IPv6 route with a link-local next
+  hop (as systemd-networkd and NetworkManager install from a Router
+  Advertisement) is left out of Join, with one Info line per route. Those
+  engines looked the next hop up before the link was up and failed the
+  container start (#1344).
+- `-o parent=eth0.100` for a VLAN sub-interface that does not exist is
+  refused with a line naming `-o parent=eth0 -o vlan=100`, the spelling
+  this plugin takes where Docker's own drivers create the sub-interface
+  (#1345).
+- `release_lease=on_remove` in bridge mode sends its DHCPRELEASE beside a
+  DHCP client running on the host for that bridge. The release socket
+  shares the client port the way systemd-networkd, dhclient and
+  NetworkManager hold it, and a failed send now logs its error in the
+  `send_failed` warning. A host client that holds the DHCPv6 port 546
+  without sharing still makes the IPv6 Release fail, with the reason in
+  the log (#1346, dhcp-golib v1.5.1).
+- `conflict_check=wait` on `mode=ipvlan` is refused at `docker network
+  create`: an ipvlan child does not receive the ARP replies to its own
+  probes (RFC 5227 section 2.1.1), so the pre-bind probe could never find a
+  conflict and only cost its window. An absent `conflict_check` on ipvlan
+  resolves to `async`, whose post-bind listener does detect a late squatter
+  (#1347).
 - The plugin ships dhcp-golib v1.5.1 (v2.5.0: v1.4.4). The library's
   link-release path, added in v1.5.0, is what carries the #1288 release
   from a parent with no IPv4 address (#1307). v1.5.1 lets the release
@@ -108,6 +163,25 @@ so `docker plugin upgrade` from v2.5.0 asks for nothing new.
   for both families. Kea answers it for DHCPv6 only, with `rapid-commit`
   set on the subnet; its DHCPv4 server does not implement RFC 4039, so on
   a Kea DHCPv4 segment the exchange stays at four messages (#1293).
+
+### Lab run
+
+The release candidate v2.6.0-rc1 ran once through the real-server lab
+(docker-net-dhcp-lab v0.2.0): Kea, ISC dhcpd, dnsmasq, udhcpd and Pi-hole
+as servers, Kea HA and ISC failover pairs, hosts on Debian 13, Ubuntu
+24.04 and Debian 11 with Docker 20.10, each cell upgrading from v2.5.0.
+Eleven of fourteen cells wrote verdicts: kea-relay stopped at its relay
+probe, a lab error, and chr and openwrt on a missing base image on the lab
+host. Every cell exited with a lab-side infrastructure error, so a BLOCKED
+row mostly means the cell lost its Docker host over ssh under load, and
+the D3, D4 and F scenario rows are missing because a defect in the lab's
+verdict writer aborted each shape at scenario D2b. Thirty-eight FAIL
+verdicts show `CreateEndpoint` hitting the daemon's client timeout under
+load; the link such a create leaves on the parent, which blocked the
+following shapes in one cell, is what #1339 above removes. The results
+page does not attribute the remaining FAIL rows; two cells rerun alone
+passed their first verdicts. The results page with every verdict is
+release v0.2.0 of claymore666/docker-net-dhcp-lab.
 
 ### CI
 
@@ -133,6 +207,14 @@ so `docker plugin upgrade` from v2.5.0 asks for nothing new.
 - A unit test pins that a DHCPv4 NAK on a dual-stack endpoint keeps the
   delegated IPv6 prefix route and a DHCPv6 NAK removes only that route
   (#1283).
+- The two open code-scanning alerts are closed: the staticcheck step builds
+  the pinned binary from its shim module instead of an unversioned
+  `go install`, and the runtime image pins `zlib` 1.3.2-r1 beside the
+  moved OpenSSL pins (#1353).
+- Dependency bumps: `github.com/docker/go-connections` 0.8.2,
+  `github.com/moby/moby/client` 0.6.2, `golang.org/x/sys` 0.49.0; the CI
+  runner image's `debian:trixie-slim` digest; `actions/upload-artifact`
+  7.0.2 and `github/codeql-action` 4.38.3 (#1334, #1335, #1336).
 
 ## v2.5.0
 
