@@ -2624,11 +2624,14 @@ change in Docker's engine (#949).</p>
 <p><strong>IPv6 is switched on with a driver option, or with <code>--ipv6</code> and an IPv6
 <code>--subnet</code>.</strong> <code>-o ipv6=true</code> or <code>-o ipv6_mode=&lt;mode&gt;</code> switches IPv6 on, with every
 mode an <code>--ipam-driver null</code> network of the same driver mode takes, and
-nothing else on the create line changes. The address comes from the
+nothing else on the create line changes. Docker's <code>--ipv6</code> on an
+<code>--ipam-driver null</code> network, with neither of those options, since v2.6.0
+behaves as <code>-o ipv6=true</code> (<a href="https://github.com/claymore666/docker-net-dhcp/issues/1343">#1343</a>);
+<code>--ipv6</code> beside <code>-o ipv6_mode=off</code> is refused as contradictory. The address comes from the
 container's link when the endpoint is created, from the DHCPv6 server or
 the router's advertisement, and Docker shows it as <code>GlobalIPv6Address</code>.
-The plugin allocates no IPv6 pool of its own, so Docker's <code>--ipv6</code> with
-no IPv6 <code>--subnet</code> is refused with a message that names the two options
+The plugin allocates no IPv6 pool of its own, so with this plugin as the
+IPAM driver Docker's <code>--ipv6</code> with no IPv6 <code>--subnet</code> is refused with a message that names the two options
 and the subnet, and <code>--ip6</code> is not served in that shape. The
 DHCPv6 identity (DUID and IAID) is derived from the MAC the endpoint had
 at its first start and stored, so <code>docker restart</code> keeps it, and the
