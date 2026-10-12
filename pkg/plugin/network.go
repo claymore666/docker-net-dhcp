@@ -390,6 +390,10 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		return err
 	}
 
+	if err := applyEngineIPv6(&opts, optsSet, r.Options); err != nil {
+		return err
+	}
+
 	if err := validateIPAMData(r.IPv4Data); err != nil {
 		return err
 	}
