@@ -182,7 +182,9 @@ func TestLeaseFileHolds_ARemovedLineIsReleasedWithinAFewRereads(t *testing.T) {
 	if err := os.WriteFile(path, []byte(removed), 0o644); err != nil {
 		t.Fatalf("rewrite: %v", err)
 	}
-	start := time.Now()
+	sleeps := 0
+	defer func(old func(time.Duration)) { leaseFileSleep = old }(leaseFileSleep)
+	leaseFileSleep = func(time.Duration) { sleeps++ }
 	held, err = LeaseFileHolds(path, "192.168.99.45")
 	if err != nil {
 		t.Fatalf("LeaseFileHolds: %v", err)
@@ -190,8 +192,8 @@ func TestLeaseFileHolds_ARemovedLineIsReleasedWithinAFewRereads(t *testing.T) {
 	if held {
 		t.Fatalf("a line that is gone was reported held")
 	}
-	if took := time.Since(start); took > 100*time.Millisecond {
-		t.Fatalf("a real removal took %v to report, want under 100ms", took)
+	if sleeps != LeaseFileRereadTries-1 {
+		t.Fatalf("paused %d times, want %d", sleeps, LeaseFileRereadTries-1)
 	}
 }
 
