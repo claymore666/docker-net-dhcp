@@ -190,6 +190,7 @@ cp "$D/r.dev" "$D/r.main"
 REAL=$HERE/testdata/coverage-run-32623575563.log
 rreal() { COVREAD_LOG="$REAL" COVREAD_BASE_DEV="$D/r.dev" COVREAD_BASE_MAIN="$D/r.main" bash "$READER"; }
 O=$(rreal); X=$( rreal >/dev/null 2>&1; echo $? ); echo "--- real per-job log ---"; echo "$O"
+O_REAL=$O
 chk "real: reads the merged numbers" "$(echo "$O" | tr -s ' ')" "plugin 88.3 86.8 +1.5 over"
 chk "real: 5 of 5"                   "$O" "every one of the 5 baselined package(s) got a verdict."
 eq  "real: unit-only block excluded" "$(echo "$O" | grep -c 'different objects')" "0"
@@ -216,6 +217,25 @@ chk "control: step-column scoping finds nothing in the real log" "$O" "*** NO RA
 # measuring a broken script rather than a shape the mechanism cannot read.
 O=$(COVREAD_LOG="$D/log.agree" COVREAD_BASE_DEV="$D/dev.base" COVREAD_BASE_MAIN="$D/main.base" bash "$D/old-scoping.sh" 2>&1)
 eq  "control: step-column scoping still reads the fresh shape" "$(echo "$O" | grep -c 'NO RATCHET STEP')" "0"
+
+# --- A NUL BYTE IN THE LOG (release read of run 38320330964) -----------
+# dns_propagate_test logs a NUL-padded resolv.conf, GNU grep then treats
+# the whole per-job log as binary and prints "binary file matches" instead
+# of the lines, so the reader saw no verdicts and refused with exit 2
+# (#794). Same real log, one NUL-bearing line spliced in: the reading
+# must not change by a byte.
+{ head -n 3 "$REAL"; printf 'nameserver 127.0.0.11\000\000\000\n'; tail -n +4 "$REAL"; } > "$D/r.nul.log"
+eq  "nul: fixture carries NUL bytes" "$(tr -cd '\000' < "$D/r.nul.log" | wc -c)" "3"
+ON=$(COVREAD_LOG="$D/r.nul.log" COVREAD_BASE_DEV="$D/r.dev" COVREAD_BASE_MAIN="$D/r.main" bash "$READER")
+XN=$( COVREAD_LOG="$D/r.nul.log" COVREAD_BASE_DEV="$D/r.dev" COVREAD_BASE_MAIN="$D/r.main" bash "$READER" >/dev/null 2>&1; echo $? )
+eq  "nul: reading identical to the clean log" "$ON" "$O_REAL"
+eq  "nul: exit 0"                             "$XN" "0"
+# Control: the reader without `grep -a` must go blind on the same file,
+# or the case above proves nothing about the flag.
+sed 's/grep -a /grep /g' "$READER" > "$D/no-a.sh"
+eq  "control: no-a reader differs from the fixed one" "$(grep -c 'grep -a ' "$D/no-a.sh")" "0"
+ONA=$(COVREAD_LOG="$D/r.nul.log" COVREAD_BASE_DEV="$D/r.dev" COVREAD_BASE_MAIN="$D/r.main" bash "$D/no-a.sh" 2>&1)
+no  "control: no-a reader cannot read the NUL log" "$ONA" "every one of the 5 baselined package(s) got a verdict."
 
 
 # --- verdict-space fixture: every (dev,main) combination, on its own
