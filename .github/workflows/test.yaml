@@ -1144,7 +1144,10 @@ jobs:
         run: |
           d="$(mktemp -d)" && cd "$d" && go mod init staticcheck-shim >/dev/null
           go get honnef.co/go/tools/cmd/staticcheck@v0.8.1 golang.org/x/tools@v0.51.0
-          go install honnef.co/go/tools/cmd/staticcheck
+          # go build keeps the shim's x/tools; Scorecard reads an unversioned
+          # go install as unpinned (#1353).
+          mkdir -p "$(go env GOPATH)/bin"
+          go build -o "$(go env GOPATH)/bin/staticcheck" honnef.co/go/tools/cmd/staticcheck
 
       # TWO VIEWS, NOT ONE WIDENED FLAG (#871).
       #

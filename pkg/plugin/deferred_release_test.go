@@ -5,6 +5,7 @@ package plugin
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/claymore666/dhcp-golib/lease"
 	log "github.com/sirupsen/logrus"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/vishvananda/netlink"
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
@@ -1006,4 +1008,26 @@ func TestDeferredRelease_OnePassSharesOneProbeAcrossItsLinkReleases(t *testing.T
 		t.Errorf("the removal carried cache %p beside the sweep's %p, want a cache of its own: an answer "+
 			"remembered past its pass can name a MAC that has since moved", removal, sweep)
 	}
+}
+
+func TestDeferredRelease_AFailedSendLogsItsError(t *testing.T) {
+	p, sender := deferredPlugin(t, ReleaseOnRemove)
+	sendErr := errors.New("bind: address already in use")
+	sender.err = sendErr
+	deadline := time.Now()
+	heldRecord(t, p, deferredMAC(0x02), "192.168.99.10/24", deadline)
+	hook := logtest.NewLocal(log.StandardLogger())
+
+	p.sweepDeferredReleases(deadline.Add(releaseSettle))
+
+	for _, e := range hook.AllEntries() {
+		if e.Data["outcome"] != string(releaseSendFailed) {
+			continue
+		}
+		if got, _ := e.Data[log.ErrorKey].(error); !errors.Is(got, sendErr) {
+			t.Errorf("the on_remove send_failed line's error field is %v, want %q", e.Data[log.ErrorKey], sendErr)
+		}
+		return
+	}
+	t.Fatalf("no send_failed line was logged for a release whose send failed")
 }

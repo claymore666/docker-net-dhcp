@@ -328,6 +328,8 @@ func loadOptions(networkID string) (DHCPNetworkOptions, error) {
 type storedNetwork struct {
 	Options DHCPNetworkOptions
 	Binding *ipamBinding
+	// IPv4OffUnset marks a file written before v2.6.0, which carries no IPv4Off key (#1341).
+	IPv4OffUnset bool
 }
 
 // IPAMMode reports whether this network's addresses come from the bundled IPAM driver.
@@ -355,6 +357,10 @@ func loadNetwork(networkID string) (storedNetwork, error) {
 	}
 	*opts = vo.DHCPNetworkOptions
 	sn.Binding = vo.IPAM
+	var keys struct{ IPv4Off *bool }
+	if err := json.Unmarshal(data, &keys); err == nil {
+		sn.IPv4OffUnset = keys.IPv4Off == nil
+	}
 	return sn, nil
 }
 

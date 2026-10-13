@@ -46,6 +46,25 @@ func validateParentForChild(name string) (netlink.Link, error) {
 	return link, nil
 }
 
+// vlanSpellingRemedy answers a missing `<link>.<id>` parent, the spelling Docker's own macvlan and ipvlan drivers
+// create a sub-interface for, with this plugin's spelling when <link> exists (#1345).
+func vlanSpellingRemedy(name string) string {
+	i := strings.LastIndex(name, ".")
+	if i < 1 {
+		return ""
+	}
+	if _, err := nlLinkByName(name); err == nil {
+		return ""
+	}
+	if id, err := parseVlanID(name[i+1:]); err != nil || id == 0 {
+		return ""
+	}
+	if _, err := nlLinkByName(name[:i]); err != nil {
+		return ""
+	}
+	return fmt.Sprintf("; to have a VLAN sub-interface %v created, use -o parent=%v -o vlan=%v", name, name[:i], name[i+1:])
+}
+
 // refuseEnslavedParent refuses a parent that is a port of a link other than own: the kernel moves a bridge port or a
 // bond member into a new bridge without an error, measured on Linux 6.12. Only the bridge path reads it; a macvlan or
 // ipvlan child on a port meets the held rx_handler as EBUSY (#370, #903).
@@ -561,6 +580,33 @@ const endpointAliasPrefix = vlanOwnerAlias + " endpoint "
 // libnetwork never sets, so findEndpointLink tells apart ipvlan and passthru children wearing one MAC (#1243).
 func tagEndpointLink(link netlink.Link, endpointID string) error {
 	return nlLinkSetAlias(link, endpointAliasPrefix+endpointID)
+}
+
+// reclaimOrphanChildren removes parent's children tagged for an endpoint known denies, which a create the daemon
+// stopped waiting for or a failed forced DeleteEndpoint leaves; on the parent it refuses every ipvlan child (#1339).
+func reclaimOrphanChildren(parent string, known func(endpointID string) bool) {
+	pl, err := nlLinkByName(parent)
+	if err != nil {
+		return
+	}
+	links, err := util.DumpResult(nlLinkList())
+	if err != nil {
+		log.WithError(err).WithField("parent", parent).Warn("Failed to list links; orphaned endpoint links stay")
+		return
+	}
+	for _, l := range links {
+		a := l.Attrs()
+		id, tagged := strings.CutPrefix(a.Alias, endpointAliasPrefix)
+		if !tagged || a.ParentIndex != pl.Attrs().Index || a.Name != subLinkName(id) || known(id) {
+			continue
+		}
+		fields := log.Fields{"parent": parent, "link": a.Name}
+		if err := nlLinkDel(l); err != nil {
+			log.WithError(err).WithFields(fields).Warn("Failed to remove an orphaned endpoint link; remove it with `ip link del`")
+			continue
+		}
+		log.WithFields(fields).Info("Removed an endpoint link no endpoint owns")
+	}
 }
 
 // findEndpointLink returns the MAC's link tagged for endpointID, else an untagged one where the MAC is the endpoint's

@@ -6,6 +6,7 @@ package plugin
 import (
 	"fmt"
 	"net/netip"
+	"strconv"
 
 	log "github.com/sirupsen/logrus"
 
@@ -47,6 +48,42 @@ func (o DHCPNetworkOptions) ipv6Mode() (proto.Mode6, error) {
 func (o DHCPNetworkOptions) ipv6Enabled() bool {
 	m, err := o.ipv6Mode()
 	return err == nil && m != proto.Mode6Off
+}
+
+// engineEnableIPv6Key is where the engine reports `docker network create --ipv6` (#1343).
+const engineEnableIPv6Key = "com.docker.network.enable_ipv6"
+
+// applyEngineIPv6 reads Docker's `--ipv6` flag: with no ipv6 or ipv6_mode option written it behaves as `-o ipv6=true`,
+// because the engine otherwise leaves every endpoint link without IPv6 (#1343). Beside ipv6_mode=off the two contradict.
+func applyEngineIPv6(opts *DHCPNetworkOptions, set map[string]bool, options map[string]interface{}) error {
+	v, ok := options[engineEnableIPv6Key]
+	if !ok {
+		return nil
+	}
+	on := false
+	switch t := v.(type) {
+	case bool:
+		on = t
+	case string:
+		b, err := strconv.ParseBool(t)
+		if err != nil {
+			return fmt.Errorf("%w: the engine sent %s=%v, which is not a boolean", util.ErrIPAM, engineEnableIPv6Key, v)
+		}
+		on = b
+	default:
+		return fmt.Errorf("%w: the engine sent %s=%v, which is not a boolean", util.ErrIPAM, engineEnableIPv6Key, v)
+	}
+	if !on {
+		return nil
+	}
+	if m, isSet, _ := dhcp.ParseIPv6Mode(opts.IPv6Mode); isSet && m == proto.Mode6Off {
+		return fmt.Errorf("%w: Docker's --ipv6 and ipv6_mode=off contradict each other: one says the network has "+
+			"IPv6 and the other says it has none. Drop one of them", util.ErrIPAM)
+	}
+	if !set["IPv6"] && !set["IPv6Mode"] {
+		opts.IPv6 = true
+	}
+	return nil
 }
 
 func validateIPv6Options(opts DHCPNetworkOptions, set map[string]bool) error {

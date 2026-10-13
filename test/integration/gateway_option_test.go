@@ -13,7 +13,7 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
-// TestGatewayOption_OverridesTheOfferedRouter checks that -o gateway= replaces the offered router on the macvlan, bridge and IPAM paths.
+// TestGatewayOption_OverridesTheOfferedRouter checks that -o gateway= replaces the offered router on the macvlan, ipvlan, bridge and IPAM paths (#1320).
 func TestGatewayOption_OverridesTheOfferedRouter(t *testing.T) {
 	// Inside each fixture subnet, outside the pool, and none of the fixtures' own or tagged addresses.
 	const (
@@ -30,6 +30,7 @@ func TestGatewayOption_OverridesTheOfferedRouter(t *testing.T) {
 		{name: "macvlan", mode: "macvlan", override: macvlanOverride, offered: harness.DefaultGateway},
 		{name: "bridge", mode: "bridge", override: bridgeOverride, offered: bridgeServerIP()},
 		{name: "ipam-macvlan", mode: "macvlan", ipam: true, override: macvlanOverride, offered: harness.DefaultGateway},
+		{name: "ipvlan", mode: "ipvlan", override: macvlanOverride, offered: harness.DefaultGateway},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)

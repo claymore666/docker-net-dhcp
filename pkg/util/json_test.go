@@ -178,6 +178,13 @@ func TestParseJSONOrErrorResponse_AnEmptyBodyNamesTheResend(t *testing.T) {
 				"reason the container did not start:\n%s", want, body)
 		}
 	}
+	if !strings.Contains(body, "Unable to connect to plugin") {
+		t.Errorf("the response does not name the daemon log line of a re-send after a transport failure:\n%s", body)
+	}
+	if strings.Contains(body, "by default") {
+		t.Errorf("the response still claims a default call timeout, which a plugin from `docker plugin install` "+
+			"does not have:\n%s", body)
+	}
 	if strings.Contains(body, "failed to parse request body") {
 		t.Errorf("an empty body still answers with the generic parse error, which names "+
 			"neither the timeout nor the re-send:\n%s", body)

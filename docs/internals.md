@@ -116,11 +116,13 @@ acquired, and nothing below it:
   It builds a throwaway link of its own, runs the exchange on it, and
   removes it, so the address is Docker's to hand out by the time the
   endpoint is created.
-- The budget is therefore the daemon's plugin-call budget, which comes
-  from `docker plugin enable --timeout` and which the plugin is never
-  told. A network's `lease_timeout` is capped to it for the reservation,
-  and the cap is logged. That is why the flag has to stay at its 30s
-  default; the reference states the rule for operators under
+- The budget is therefore the daemon's plugin-call budget, which the
+  plugin takes to be 30s. `docker plugin enable --timeout` (CLI default
+  30s) can only lower it, the plugin is never told the value, and
+  `docker plugin install` and a daemon restart set no timeout at all.
+  A network's `lease_timeout` is capped to it for the reservation, and
+  the cap is logged. That is why the flag must not go below 30s; the
+  reference states the rule for operators under
   [Address allocation](reference.md#address-allocation).
 - The identity that carries a restarted container's address back is the
   client identifier of the previous endpoint, taken from the lease

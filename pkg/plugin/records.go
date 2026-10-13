@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/claymore666/dhcp-golib/lease"
+	"github.com/claymore666/dhcp-golib/runtime"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
@@ -211,4 +212,53 @@ func (p *Plugin) recordRetained(id string, deadline time.Time) {
 	if err := p.records.Retained(id, deadline); err != nil {
 		log.WithError(err).WithField("record", id).Warn("Could not lay the lease record's tombstone")
 	}
+}
+
+// releaseLeftUnmanaged makes the on_stop release from the records when Leave found no running client. It runs here and
+// not at Leave, because the engine has taken the link out of the container by now, so the v6 address is off it before
+// the Release goes out (RFC 9915 18.2.7) (#1342).
+func (p *Plugin) releaseLeftUnmanaged(networkID, endpointID string, key net.HardwareAddr) bool {
+	if p.records == nil || len(key) == 0 {
+		return false
+	}
+	opts, err := loadOptions(networkID)
+	if err != nil || !opts.releasesOnStop() {
+		return false
+	}
+	rb, err := p.records.Rebuilt()
+	if err != nil {
+		log.WithError(err).WithField("network", shortID(networkID)).
+			Warn("Could not read the lease records back; this endpoint's address is left to expire on the server")
+		return false
+	}
+	resolved := runtime.NewLinkResolveCache()
+	released := false
+	for _, v6 := range []bool{false, true} {
+		scope := networkID
+		if v6 {
+			scope = dhcp.Scope6(networkID)
+		}
+		matches := rb.ByScopeMAC(scope, key)
+		if len(matches) == 0 {
+			continue
+		}
+		rec := matches[len(matches)-1]
+		held, ok := rec.Addr()
+		if !ok || rec.Phase == lease.PhaseClosed {
+			continue
+		}
+		fields := log.Fields{
+			"network":  shortID(networkID),
+			"endpoint": shortID(endpointID),
+			"record":   rec.ID,
+			"is_ipv6":  v6,
+			"ip":       held.String(),
+		}
+		out, err := releaseFromRecord(rec, opts, v6, held, resolved, fields)
+		p.countRelease(v6, out == releaseSent)
+		announceReleaseOutcome(log.WithFields(fields), out, err)
+		p.settleReleasedRecord(rec.ID, out == releaseSent)
+		released = released || out == releaseSent
+	}
+	return released
 }

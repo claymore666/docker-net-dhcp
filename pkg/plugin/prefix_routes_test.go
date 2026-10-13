@@ -346,7 +346,7 @@ func TestReleaseLease_ThePrefixRouteGoesBeforeTheRelease(t *testing.T) {
 				return sendPrev(rec, cfg)
 			}
 
-			if got := m.releaseHeldLease(true); got != releaseSent {
+			if got, _ := m.releaseHeldLease(true); got != releaseSent {
 				t.Errorf("releaseHeldLease(v6) = %q, want %q", got, releaseSent)
 			}
 			if got := sender.callCount(); got != 1 {

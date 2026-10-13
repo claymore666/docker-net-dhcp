@@ -794,6 +794,22 @@ func (ef *EphemeralFixture) V6LeaseAddrs(duid string) (stable, temporary []strin
 	return DnsmasqLease6Addrs(string(b), duid)
 }
 
+// V6LeaseDUID returns the DUID the dnsmasq lease file holds addr under, or "" (#1321).
+func (ef *EphemeralFixture) V6LeaseDUID(addr string) string {
+	ef.t.Helper()
+	if ef.backend != backendDnsmasq {
+		ef.t.Fatal("V6LeaseDUID reads dnsmasq's lease file; this fixture runs another server")
+	}
+	b, err := os.ReadFile(ef.leaseFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ""
+		}
+		ef.t.Fatalf("read the dnsmasq lease file: %v", err)
+	}
+	return DnsmasqLease6DUID(string(b), addr)
+}
+
 // ServerIP returns the server's bare IP.
 func (ef *EphemeralFixture) ServerIP() string {
 	return strings.SplitN(ef.serverCIDR, "/", 2)[0]
@@ -820,6 +836,26 @@ func (ef *EphemeralFixture) CountLogLines(substrings ...string) int {
 	for _, line := range strings.Split(log, "\n") {
 		if lineMatches(line, substrings, tokens) {
 			count++
+		}
+	}
+	return count
+}
+
+// CountOffersOf counts the lines naming addr as offered, on dnsmasq and on Kea 2.6 (DHCP4_LEASE_OFFER) and
+// 2.4 (DHCP4_LEASE_ADVERT); a Kea 2.6.3 DHCPOFFER line names no address (#1322).
+func (ef *EphemeralFixture) CountOffersOf(addr string) int {
+	ef.t.Helper()
+	return countOffersOf(ef.readLog(), addr)
+}
+
+func countOffersOf(log, addr string) int {
+	count := 0
+	for _, line := range strings.Split(log, "\n") {
+		for _, spelling := range []string{"dhcpoffer", "dhcp4_lease_offer", "dhcp4_lease_advert"} {
+			if lineMatches(line, []string{spelling, addr}, nil) {
+				count++
+				break
+			}
 		}
 	}
 	return count

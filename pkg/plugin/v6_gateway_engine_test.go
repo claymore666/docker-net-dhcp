@@ -95,10 +95,10 @@ func TestJoin_TheV6GatewayAndLinkLocalNextHopsGoToTheEngineOnlyFrom28(t *testing
 		wantGW     string
 		wantRoutes string
 	}{
-		{"27.5.1", "fe80::1", "", "fd00:cc::/48 via fe80::2, fd00:99::/64 onlink, fd00:bb::/48 via fd00:99::1"},
-		{"24.0.9", "fe80::1", "", "fd00:cc::/48 via fe80::2, fd00:99::/64 onlink, fd00:bb::/48 via fd00:99::1"},
-		{"", "fe80::1", "", "fd00:cc::/48 via fe80::2, fd00:99::/64 onlink, fd00:bb::/48 via fd00:99::1"},
-		{"27.5.1", "", "", "fd00:cc::/48 via fe80::2, fd00:99::/64 onlink, fd00:bb::/48 via fd00:99::1"},
+		{"27.5.1", "fe80::1", "", "fd00:99::/64 onlink, fd00:bb::/48 via fd00:99::1"},
+		{"24.0.9", "fe80::1", "", "fd00:99::/64 onlink, fd00:bb::/48 via fd00:99::1"},
+		{"", "fe80::1", "", "fd00:99::/64 onlink, fd00:bb::/48 via fd00:99::1"},
+		{"27.5.1", "", "", "fd00:99::/64 onlink, fd00:bb::/48 via fd00:99::1"},
 		{"28.0.0", "fe80::1", "fe80::1", "fd00:cc::/48 via fe80::2, fd00:99::/64 onlink, fd00:aa::/48 via fe80::1, fd00:bb::/48 via fd00:99::1"},
 		{"29.8.2", "fe80::1", "fe80::1", "fd00:cc::/48 via fe80::2, fd00:99::/64 onlink, fd00:aa::/48 via fe80::1, fd00:bb::/48 via fd00:99::1"},
 		{"29.8.2", "", "", "fd00:cc::/48 via fe80::2, fd00:99::/64 onlink, fd00:aa::/48 via fe80::1, fd00:bb::/48 via fd00:99::1"},

@@ -10,9 +10,9 @@
 #
 # POPULATION: TOP-LEVEL TEST FUNCTIONS, PARENTS ONLY.
 # One row per `func TestX(t *testing.T)` in test/integration/*_test.go —
-# 272 of them, the main suite's 265 and the failure suite's 7. MEASURED
-# on this table: 272 data rows, and 272 `func TestX(t *testing.T)` in
-# test/integration/*_test.go counted independently of them.
+# split into the main suite and the failure suite. No total is written
+# here: scripts/check-durations-table.sh counts both sides on every run
+# and prints the figure, so a literal in this comment only goes stale.
 #
 # THIS NUMBER HAS NOW BEEN WRONG TWICE, and the second time is the
 # instructive one. It said 137 / 130 / 7 and was stale by five before
@@ -501,6 +501,12 @@
 #              (30.44): one v6 fixture, one network, one container and
 #              one read. 3 x 30.44 is 91.32, rounded up so a first run
 #              costs less than the table says.
+#   one row    TestJoin_TheAdvertisedRoutesAreInTheContainerAtStart_ParentAttached
+#              (#1316) is 220.00, INFERRED: no run has executed it. Seven
+#              arms, each one v6 fixture, one network, one container and
+#              one read, the shape of the #1125 row (100.00 for three
+#              arms, 33.33 each): 7 x 33.33 is 233, and 220.00 stays
+#              under it so a first run costs less than the table says.
 #   #1116 row  TestBridgeFirewallVerdict_NamedAtCreateAndAtTheDeadline
 #              (#1116) is 75.00, INFERRED: no run has executed it. It
 #              is TestLifecycleBridge_GoldenPath (12.19) for the
@@ -509,6 +515,16 @@
 #              per network create, plugin log read and rule restore:
 #              67.19, rounded up so a first run costs less than the
 #              table says.
+#   three rows TestAutoStrict_..._Macvlan (80.00), TestMainPrefix_WhatDockerReportsFollowsTheNamedPrefix_Macvlan
+#              (120.00) and TestSLAAC_StablePrivacy..._Macvlan (50.00) arrive with #1319 and are INFERRED:
+#              each is the shipped bridge row of the same shape (80.00; two arms of 60.00; 50.00), as the
+#              macvlan twin runs the same fixture, container start and reads.
+#   one row    TestDHCPv6_AnEndpointWithNoV6LeaseStartsOnAHostWithRARoutes (45.00) arrives with #1317 and is
+#              INFERRED: one V6 fixture and one bridge container (the 12.00 of a plain container test) plus
+#              the 11 to 15 s the DHCPv6 exchange takes to give up on a segment with no advertisement.
+#   one row    TestLinkLocalFallback_ABridgeWithNoServerStartsOnALinkLocalAddress (50.00) arrives with #1323
+#              and is INFERRED: the macvlan row of the same fixture minus the wait for a lease (70.00), a
+#              create-time probe of up to 8 s plus the 22 to 25 s a serverless start takes.
 #   samples    3 for every corpus row. SIXTY-EIGHT rows are not corpus
 #              samples, and the seventeen groups below are disjoint and
 #              exhaust them: the five `one row` notes above -- 73.85,
@@ -627,20 +643,34 @@
 #              TestIPAMv6_DockerShowsTheAddressTheServersReplyCarried (20.00); a refused start adds its release
 #              wait; the exhausted row is two DHCPv6 timeouts of about 26 s; restart and on-stop are their
 #              TestIPAMv6_* twins plus the fixture; the slaac row is one refused create. The first run costs them.
+#   three rows the #1320 rows are measured on run 38175035202 (one sample) except
+#              TestMTUPropagate_BridgeAndIpvlan, INFERRED at 75.00: that run failed one of
+#              its four subtests, so its 89.11 does not cost a passing tree.
+#   one row    TestConflictCheck_IpvlanNeverHearsTheSquatter is INFERRED at 40.00
+#              (#1322): the fixture and one ipvlan container as in its
+#              TestConflictCheck_* siblings (9 to 37 s), plus the 15 s
+#              window that proves no DECLINE follows. Its lane replaces it.
+#   one row    TestReleaseLease_ABridgeReleaseLeavesBesideAHostDHCPClient is INFERRED at 95.00
+#              (#1346): TestReleaseLease_OnRemoveHoldsTheAddressThenHandsItBack (100.00)
+#              without its 20 s held probe, on the bridge fixture, plus one held
+#              socket. Its lane replaces it.
 TestAdvertDNS_ReachesTheResolverAndDHCPv6ComesFirst	75.00
 TestAdvertRoutes_BecomeContainerRoutesUnlessSkipRoutes	150.00
 TestAuditLog_DefaultOff	12.63
 TestAuditLog_RecordsLifecycle	12.31
 TestAutoStrict_ASilentManagedServerFailsTheEndpointAndTheDefaultFallsBack	80.00
+TestAutoStrict_ASilentManagedServerFailsTheEndpointAndTheDefaultFallsBack_Macvlan	80.00
 TestBridgeFirewallVerdict_NamedAtCreateAndAtTheDeadline	75.00
 TestClasslessStaticRoutes_AbsentWithoutOptIn	12.09
 TestClasslessStaticRoutes_AppliedFromDHCP	11.96
 TestClasslessStaticRoutes_Option249AloneIsApplied	12.00
 TestClientID_DefaultIsMACDerived	11.50
 TestClientID_OverrideAppearsInLeaseFile	11.98
+TestClientID_OverrideReachesTheServerOnBridgeAndIpvlan	22.47
 TestConcurrency_DistinctLeases	45.25
 TestConcurrentRenew_SameInterfaceNameBothRenew	41.65
 TestConflictCheck_BridgeModeDoesNotSelfReport	11.81
+TestConflictCheck_IpvlanNeverHearsTheSquatter	40.00
 TestConflictCheck_OffSendsNoProbe	33.76
 TestConflictCheck_RestartInsideTheAsyncWindow	4.60
 TestConflictCheck_SquattedOfferIsDeclined	37.00
@@ -651,6 +681,7 @@ TestDHCPv6_ADuplicateOnTheSegmentIsRefused	30.08
 TestDHCPv6_ARefusalLogsItsStatusCodeByNameOnce	35.00
 TestDHCPv6_ASquatOnARunningContainerIsCountedAndTheAddressChanges	38.00
 TestDHCPv6_AdvertisedMTUReachesTheContainer	30.00
+TestDHCPv6_AnEndpointWithNoV6LeaseStartsOnAHostWithRARoutes	45.00
 TestDHCPv6_Managed_ServerSilent_IsStillFatal	27.95
 TestDHCPv6_Managed_ServerSilent_IsStillFatal_IPAM	27.95
 TestDHCPv6_Managed_ServerSilent_IsStillFatal_Macvlan	27.95
@@ -746,6 +777,7 @@ TestIPAMv6_TwoRestartedTogetherIsTheDocumentedLimit	45.00
 TestIPv6Mode_SurvivesAPluginRestart	28.00
 TestIPv6Temporary_BridgeHoldsAStableAndATemporaryAddress	20.00
 TestIPv6Temporary_IPAMMacvlanHoldsAStableAndATemporaryAddress	30.00
+TestIPv6Temporary_IpvlanHoldsAStableAndATemporaryAddress	34.92
 TestIPv6Temporary_MacvlanHoldsAStableAndATemporaryAddress	25.00
 TestIPv6Temporary_MacvlanWithoutTheOptionAsksForNoIATA	25.00
 TestIPv4OffBridgeDHCP	75.00
@@ -770,6 +802,7 @@ TestJoinGuard_AStartInsideAForcedAdvertisementWindowKeepsTheGateway	40.00
 TestJoinGuard_AStartInsideAForcedAdvertisementWindowKeepsTheGateway_Macvlan	40.00
 TestJoinNoContainer_AddressIsHeldUntilItExpires	26.95
 TestJoin_TheAdvertisedRoutesAreInTheContainerAtStart	100.00
+TestJoin_TheAdvertisedRoutesAreInTheContainerAtStart_ParentAttached	220.00
 TestLeaseRenewIPv6_HonorsT1	73.85
 TestLeaseRenew_HonorsT1	27.38
 TestLeaseRetention_ARestartRebootsRatherThanDiscovers	12.92
@@ -782,16 +815,19 @@ TestLifecycleIPvlan_GoldenPath	11.80
 TestLifecycleMacvlan_GoldenPath	11.61
 TestLifecycleMacvlan_IPv6_GoldenPath	17.68
 TestLifecycleMacvlan_IPv6_GoldenPath_IPAM	17.68
+TestLinkLocalFallback_ABridgeWithNoServerStartsOnALinkLocalAddress	50.00
 TestLinkLocalFallback_AServerlessStartThenMovesToALease	70.00
 TestMTUOption_AMacvlanParentBelowTheOptionFailsTheEndpointAndLeavesNoLink	10.00
 TestMTUOption_AnIPAMMacvlanParentBelowTheOptionFailsTheEndpointAndLeavesNoLink	15.00
 TestMTUOption_AnIPvlanChildReturnsToTheOptionOnTheNextRenew	80.00
 TestMTUOption_BridgeFollowsASmallerPortOnlyWhileItIsAttached	15.00
 TestMTUOption_TheContainerLinkCarriesTheOptionInEveryMode	50.00
+TestMTUPropagate_BridgeAndIpvlan	75.00
 TestMTUPropagate_DefaultIsUnchanged	12.15
 TestMTUPropagate_OptInSetsLinkMTU	11.79
 TestMainPrefix_AnUnadvertisedPrefixReportsTheFirstAdvertisedOne	60.00
 TestMainPrefix_TheSecondOfTwoAdvertisedPrefixesIsWhatDockerReports	60.00
+TestMainPrefix_WhatDockerReportsFollowsTheNamedPrefix_Macvlan	120.00
 TestMetrics_SocketServesTheFullSurface	0.01
 TestMultiNetwork_SameSubnetRefused	27.75
 TestNonRootContainer_PersistentClientStarts	27.48
@@ -808,11 +844,13 @@ TestRapidCommitV6_MacvlanWithoutTheOptionKeepsTheFourMessageExchange	17.00
 TestRapidCommit_BridgeTakesTheTwoMessageLease	11.90
 TestRapidCommit_BridgeWithoutTheOptionKeepsTheFourMessageExchange	11.56
 TestRapidCommit_IPAMMacvlanTakesTheTwoMessageLease	11.71
+TestRapidCommit_IpvlanTakesTheTwoMessageLease	24.15
 TestRapidCommit_MacvlanTakesTheTwoMessageLease	12.08
 TestRapidCommit_MacvlanWithoutTheOptionKeepsTheFourMessageExchange	11.72
 TestRecovery_DaemonKilled_LeaseIsHeldUntilItExpires	31.98
 TestRecovery_DaemonRestart_PreservesContainer	30.00
 TestRecovery_PluginDisableEnable_PreservesEndpoint	12.86
+TestReleaseLease_ABridgeReleaseLeavesBesideAHostDHCPClient	95.00
 TestReleaseLease_DefaultNetworksStillKeepTheirAddresses	26.00
 TestReleaseLease_OnRemoveHandsAnIPAMAddressBackToo	100.00
 TestReleaseLease_OnRemoveHandsBackFromAParentWithNoIPv4	100.00
@@ -848,6 +886,7 @@ TestSLAAC_AutoRemembersASilentServer_IPAM	70.00
 TestSLAAC_AutoRemembersASilentServer_Macvlan	70.00
 TestSLAAC_RenumberingInOneAdvertisementEndsWithExactlyTheNewSet	95.00
 TestSLAAC_StablePrivacyFormsAnAddressThatIsNotTheMACsAndSurvivesARestart	50.00
+TestSLAAC_StablePrivacyFormsAnAddressThatIsNotTheMACsAndSurvivesARestart_Macvlan	50.00
 TestSLAAC_TheAddressComesBackAfterAPluginRestart	60.00
 TestSLAAC_TheAddressComesBackAfterAPluginRestart_IPAM	60.00
 TestSLAAC_TheAddressComesBackAfterAPluginRestart_Macvlan	60.00
@@ -864,8 +903,10 @@ TestServerPolicy_PrefersTheNamedServer	69.34
 TestStateDirBindSource_MissingSourceContract	5.96
 TestStaticIP_DriverOpt	9.01
 TestStaticRoutes_BridgeCopiesToContainer	11.80
+TestStaticRoutes_IpvlanCopiesToContainer	8.26
 TestStaticRoutes_MacvlanCopiesToContainer	12.23
 TestStaticRoutes_MacvlanSkipRoutesOpt	11.82
+TestStaticRoutes_SkipRoutesKeepsParentRoutesOutOnBridgeAndIpvlan	22.56
 TestSubModes_APluginRecycleKeepsTheSubMode	25.00
 TestSubModes_DockersOwnIPvlanL3NetworkRefusesAnIPvlanNetworkOnItsParent	2.00
 TestSubModes_EachLeasesInTheModeItWasCreatedWith	72.00
@@ -875,6 +916,7 @@ TestTombstoneRestart_PreservesMACAndIP	20.39
 TestUserClass_BridgeRoutesViaTaggedGateway	11.90
 TestUserClass_BridgeWithoutTheOptionUsesDefaultGateway	11.56
 TestUserClass_IPAMMacvlanRoutesViaTaggedGateway	11.71
+TestUserClass_IpvlanRoutesViaTaggedGateway	22.40
 TestUserClass_MacvlanRoutesViaTaggedGateway	12.08
 TestUserClass_MacvlanWithoutTheOptionUsesDefaultGateway	11.72
 TestV6Fixture_AssertExchangeRefusesASegmentNoClientEverUsed	2.34
@@ -883,6 +925,7 @@ TestV6Fixture_ModesComeUpAsRequested	17.89
 TestV6Fixture_RefusesASegmentInAnotherModesShape	65.36
 TestV6Fixture_RefusesASegmentThatCannotTransmit	10.15
 TestV6RACapture_SeesTheAdvertisementOnTheBridgeAndNotOnAQuietLink	1.46
+TestVendorClass_BridgeAndIpvlan	46.14
 TestVendorClass_DefaultUsesUntaggedGateway	12.02
 TestVendorClass_NonMatchingValueUsesDefaultGateway	12.23
 TestVendorClass_OverrideRoutesViaTaggedGateway	12.30

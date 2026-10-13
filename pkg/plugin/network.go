@@ -185,9 +185,12 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 	}
 
 	// RFC 5227 conflict detection, keyed on the decoded mode and the operator's own lease_timeout (#882).
-	mode, err := dhcp.ParseConflictCheck(opts.ConflictCheck)
+	mode, err := opts.conflictCheckMode()
 	if err != nil {
 		return fmt.Errorf("%w: %v", util.ErrIPAM, err)
+	}
+	if err := validateConflictCheckMode(opts); err != nil {
+		return err
 	}
 	if err := dhcp.CheckLeaseTimeout(opts.LeaseTimeout, mode); err != nil {
 		return fmt.Errorf("%w: %v", util.ErrIPAM, err)
@@ -384,6 +387,10 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 	}
 	// The engine's top-level key, not the -o submap: the flag is stored so Join, replay and a restart read it (#1135).
 	if opts.IPv4Off, err = engineIPv4Off(r.Options); err != nil {
+		return err
+	}
+
+	if err := applyEngineIPv6(&opts, optsSet, r.Options); err != nil {
 		return err
 	}
 
@@ -601,7 +608,7 @@ func (p *Plugin) createBridgeNetwork(networkID string, opts DHCPNetworkOptions, 
 func (p *Plugin) createParentAttachedNetwork(networkID string, opts DHCPNetworkOptions, binding *ipamBinding) error {
 	parent, err := validateParentForChild(opts.linkParent())
 	if err != nil {
-		return err
+		return fmt.Errorf("%w%s", err, vlanSpellingRemedy(opts.linkParent()))
 	}
 	if err := mtuUnderParent(opts.MTU, parent); err != nil {
 		return err
@@ -686,9 +693,9 @@ func (p *Plugin) DeleteNetwork(r DeleteNetworkRequest) error {
 	return nil
 }
 
-// removeNetworkHostState hands held on_remove addresses back, then removes the options and retires the vlan
-// sub-interface and bridge from the options read before they go; DeleteNetwork and the stale-network sweep share it
-// (#984, #902, #1251). It returns the options-removal error.
+// removeNetworkHostState hands held on_remove addresses back, then removes the options, the parent's orphaned endpoint
+// links, and the vlan sub-interface and bridge, from the options read before they go; DeleteNetwork and the
+// stale-network sweep share it (#984, #902, #1251, #1339). It returns the options-removal error.
 func (p *Plugin) removeNetworkHostState(ctx context.Context, networkID, op string) error {
 	if released := p.releaseNetworkRecords(networkID); released > 0 {
 		log.WithFields(log.Fields{
@@ -707,6 +714,9 @@ func (p *Plugin) removeNetworkHostState(ctx context.Context, networkID, op strin
 
 	deleteErr := deleteOptions(networkID)
 	if optsErr == nil {
+		if m := opts.effectiveMode(); m == ModeMacvlan || m == ModeIPvlan {
+			reclaimOrphanChildren(opts.linkParent(), p.endpointKnown)
+		}
 		p.retireVlanLink(ctx, networkID, opts, op)
 		p.retireBridge(ctx, networkID, opts, op)
 	}
@@ -956,9 +966,12 @@ func (p *Plugin) checkStoredOptions(id string, opts DHCPNetworkOptions) error {
 // netOptionsRaw decodes without the name check, from disk first, falling back to NetworkInspect for networks
 // older than persistence; TestNetOptionsRaw_HasNoOtherCallers keeps netOptions and netMode its only callers (#727).
 func (p *Plugin) netOptionsRaw(ctx context.Context, id string) (DHCPNetworkOptions, error) {
-	cached, loadErr := loadOptions(id)
+	stored, loadErr := loadNetwork(id)
 	if loadErr == nil {
-		return cached, nil
+		if stored.IPv4OffUnset {
+			p.backfillIPv4Off(ctx, id, &stored)
+		}
+		return stored.Options, nil
 	}
 
 	// The backfill runs only on os.IsNotExist: a newer schema, a corrupt file or a transient EIO falls back to the
@@ -1016,7 +1029,21 @@ var endpointCallStart = time.Now
 // CreateEndpoint builds the host-side link, runs a one-shot DHCP acquisition and stashes the result for Join. A failed
 // create gets no Join or DeleteEndpoint, so the hint is dropped here, where every path returns (#1183).
 func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (CreateEndpointResponse, error) {
+	p.creatingEndpoints.Store(r.EndpointID, struct{}{})
+	defer p.creatingEndpoints.Delete(r.EndpointID)
+	// The daemon sends no Join or DeleteEndpoint for a call it stopped waiting for, so a link made for it would stay
+	// on the parent and refuse every ipvlan child there (#1339).
+	if err := ctx.Err(); err != nil {
+		return CreateEndpointResponse{}, fmt.Errorf("the daemon stopped waiting before the endpoint was created: %w", err)
+	}
 	res, err := p.createEndpoint(ctx, r)
+	if err == nil && ctx.Err() != nil {
+		err = fmt.Errorf("the daemon stopped waiting for this endpoint, so it was removed: %w", ctx.Err())
+		if delErr := p.DeleteEndpoint(context.Background(), DeleteEndpointRequest{NetworkID: r.NetworkID, EndpointID: r.EndpointID}); delErr != nil {
+			log.WithError(delErr).WithField("endpoint", shortID(r.EndpointID)).
+				Warn("Removing an endpoint the daemon stopped waiting for failed; remove its dh- link with `ip link del`")
+		}
+	}
 	if err != nil {
 		p.takeJoinHint(r.EndpointID)
 	}
@@ -1430,14 +1457,18 @@ func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) er
 				"endpoint": shortID(r.EndpointID),
 			}).Info("Endpoint released its lease at Leave; laying no tombstone for it")
 		}
-		if modeKnown && mode != ModeIPvlan && !fp.HostnameRefused && !ipamMode && !fp.Released {
-			p.addTombstone(r.NetworkID, fp.Hostname, fp.MAC, fp.IPv4, fp.IPv6, fp.Prefixes...)
-		}
 		// RETAINED on every mode and hostname decision, so plugin-restart recovery never resumes a gone endpoint's
 		// lease and release_lease=on_remove hands it back; by the key the record was filed under, which create wrote
 		// down, since fp.MAC is empty on ipvlan and the mode may be unknown here (#899, #1249).
 		if isLinkLocalV4String(fp.IPv4) {
 			p.closeLinkLocalRecord(r.NetworkID, fp.RecordKey)
+		}
+		released := fp.Released
+		if fp.LeftUnmanaged && !released {
+			released = p.releaseLeftUnmanaged(r.NetworkID, r.EndpointID, fp.RecordKey)
+		}
+		if modeKnown && mode != ModeIPvlan && !fp.HostnameRefused && !ipamMode && !released {
+			p.addTombstone(r.NetworkID, fp.Hostname, fp.MAC, fp.IPv4, fp.IPv6, fp.Prefixes...)
 		}
 		p.retainRecordFor(r.NetworkID, fp.RecordKey)
 	}
@@ -1726,6 +1757,18 @@ func (p *Plugin) addRoutes(opts *DHCPNetworkOptions, v6 bool, link netlink.Link,
 
 		if route.Protocol == unix.RTPROT_KERNEL || (own != nil && route.Dst.Contains(own.IP)) {
 			// Make sure to leave out the default on-link route created automatically for the IP(s) acquired by DHCP
+			continue
+		}
+
+		if family == unix.AF_INET6 && route.Gw != nil && route.Gw.IsLinkLocalUnicast() && !p.engineWaitsForV6Link() {
+			// Engines below 28 look the next hop up before the link is up and fail the start with "route not found";
+			// the persistent client only installs the advertisement's routes, so a host one is left out (#1344, #1149).
+			log.
+				WithFields(logFields).
+				WithField("route", route.Dst.String()).
+				WithField("gateway", route.Gw.String()).
+				WithField("engine_version", p.engineSnapshot().Version).
+				Info("[Join] Leaving out a host IPv6 route via a link-local next hop: this engine looks up its route before the link is up")
 			continue
 		}
 
@@ -2115,6 +2158,7 @@ func (p *Plugin) settleFailedAttach(r JoinRequest, m *dhcpManager, err error) {
 func (p *Plugin) Leave(ctx context.Context, r LeaveRequest) error {
 	manager, ok := p.takeDHCPManager(r.EndpointID)
 	if !ok {
+		p.markEndpointLeftUnmanaged(r.EndpointID)
 		return util.ErrNoSandbox
 	}
 

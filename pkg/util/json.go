@@ -69,24 +69,25 @@ func ParseJSONOrErrorResponse(v interface{}, w http.ResponseWriter, r *http.Requ
 }
 
 // The daemon hands the same drained buffer to every attempt of a call (moby pkg/plugins/client.go, callWithRetry), so
-// a re-send after its client timeout arrives with no body. The daemon does not pass `--timeout` to the plugin, so its
-// budgets are sized to the 30s default (plugin.pluginCallBudget) and only a lower value changes anything, for the
-// worse (#110). Measured in integration run 34600486961: a reservation held past a 5s timeout surfaced as "failed to
-// parse request body: EOF". io.ErrUnexpectedEOF is a broken connection and keeps the generic text.
+// a re-send arrives with no body. It re-sends after a transport failure inside the first 30s, and after a client
+// timeout only when `docker plugin enable --timeout` set one; `docker plugin install` and a daemon restart set none
+// (#1340). The daemon does not pass the value on, so the plugin sizes its budgets to 30s and only a lower value changes
+// anything, for the worse (#110). io.ErrUnexpectedEOF is a broken connection and keeps the generic text.
 
 // explainRequestBody names the one thing an empty body means on the plugin socket.
 func explainRequestBody(err error) error {
 	if errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
 		return fmt.Errorf("this request arrived with no body. On the plugin socket that means "+
-			"the daemon re-sent a call whose body it had already spent: the first attempt was "+
-			"still running when the plugin call timeout expired (set with `--timeout` when the "+
-			"plugin is enabled, 30s by default), and a re-sent call carries nothing to serve. "+
-			"The work the first call started is unaffected and this one cannot be answered. "+
-			"Note the direction of that lever: this plugin is never told the value you enabled "+
-			"it with, so it sizes its own work to the 30s default and cannot follow yours. "+
-			"A `--timeout` BELOW 30s makes calls fail here every time and is not supported; "+
-			"above it, the extra time is never used. If the exchange itself is slow, the "+
-			"server or the segment is what to change: %w", err)
+			"the daemon re-sent a call whose body it had already spent, and a re-sent call carries "+
+			"nothing to serve. The daemon re-sends after a transport failure on the first attempt "+
+			"(look for `Unable to connect to plugin: ... retrying` at warn level in the Docker "+
+			"daemon log, and for a crash or restart in the plugin log), or, on a plugin enabled "+
+			"with `docker plugin enable --timeout`, after that timeout expired with the first "+
+			"attempt still running. The work the first call started is unaffected and this one "+
+			"cannot be answered. This plugin is never told the `--timeout` value, so it sizes "+
+			"its own work to 30s: a `--timeout` BELOW 30s makes calls that outlast it fail here "+
+			"every time and is not supported; above it, the extra time is never used. If the "+
+			"exchange itself is slow, the server or the segment is what to change: %w", err)
 	}
 	return fmt.Errorf("failed to parse request body: %w", err)
 }

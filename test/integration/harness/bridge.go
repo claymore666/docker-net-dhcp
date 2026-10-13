@@ -37,6 +37,9 @@ const (
 	// wrong fixture is visible (#899); nothing serves DNS there and it reaches only propagate_dns networks.
 	BridgeTestDNSServer = "192.168.100.53"
 
+	// BridgeTaggedGateway is option 3 for clients sending TestVendorClass, as TestTaggedGateway is on the macvlan fixture (#1321).
+	BridgeTaggedGateway = "192.168.100.247"
+
 	// Dual-stack constants for the bridge fixture (#103), on a ULA prefix distinct from the macvlan fixture's.
 	BridgeAddrV6 = "fd00:6470:6864::1/64"
 	// 2^32 + 1 addresses, so a stable and a temporary draw collide in about 2.3e-10 of runs (#927).
@@ -111,6 +114,9 @@ func (f *Fixture) startBridge() error {
 		"--enable-ra",
 		"--dhcp-option=option6:dns-server,["+TestDNS6Server+"]",
 		"--dhcp-option=6,"+BridgeTestDNSServer,
+		"--dhcp-option=26,"+TestMTU,
+		"--dhcp-vendorclass=set:"+dnsmasqVCTag+","+TestVendorClass,
+		"--dhcp-option=tag:"+dnsmasqVCTag+",3,"+BridgeTaggedGateway,
 		"--dhcp-userclass=set:"+dnsmasqUCTag+","+TestUserClass,
 		"--dhcp-option=tag:"+dnsmasqUCTag+",3,"+BridgeUserClassGateway,
 		"--dhcp-rapid-commit",

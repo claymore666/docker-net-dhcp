@@ -621,3 +621,34 @@ func TestReadLog_EmptyKeaLogStaysEmpty(t *testing.T) {
 		t.Errorf("readLog = %q; the AppArmor hint's empty-log claim needs \"\" when Kea wrote nothing (#869)", got)
 	}
 }
+
+// kea263OfferLog is verbatim from hosted run 38188975976.
+const kea263OfferLog = `
+2026-10-12 00:43:59.088 INFO  [kea-dhcp4.leases/4054.140174910023360] DHCP4_LEASE_OFFER [hwtype=1 d2:6a:04:6b:cb:8d], cid=[00:43:01:95:2e:0d:f6:87:d6], tid=0x51fbddeb: lease 192.168.101.42 will be offered
+2026-10-12 00:43:59.088 INFO  [kea-dhcp4.packets/4054.140174910023360] DHCP4_PACKET_SEND [hwtype=1 d2:6a:04:6b:cb:8d], cid=[00:43:01:95:2e:0d:f6:87:d6], tid=0x51fbddeb: trying to send packet DHCPOFFER (type 2) from 192.168.101.1:67 to 255.255.255.255:68 on interface dh-itest-edhcp
+2026-10-12 00:43:59.091 INFO  [kea-dhcp4.leases/4054.140174901630656] DHCP4_LEASE_ALLOC [hwtype=1 d2:6a:04:6b:cb:8d], cid=[00:43:01:95:2e:0d:f6:87:d6], tid=0x51fbddeb: lease 192.168.101.42 has been allocated for 120 seconds
+2026-10-12 00:43:59.091 INFO  [kea-dhcp4.packets/4054.140174901630656] DHCP4_PACKET_SEND [hwtype=1 d2:6a:04:6b:cb:8d], cid=[00:43:01:95:2e:0d:f6:87:d6], tid=0x51fbddeb: trying to send packet DHCPACK (type 5) from 192.168.101.1:67 to 255.255.255.255:68 on interface dh-itest-edhcp
+`
+
+func TestCountOffersOf_NamesTheOfferedAddressOnEveryServerSpelling(t *testing.T) {
+	ef := newLogFixture(t, backendKea, kea263OfferLog)
+	if got := ef.CountLogLines("DHCPOFFER", "192.168.101.42"); got != 0 {
+		t.Errorf("CountLogLines(DHCPOFFER, addr) on kea 2.6.3 = %d, want 0: this is the miss CountOffersOf exists for", got)
+	}
+	cases := []struct {
+		name, log, addr string
+		want            int
+	}{
+		{"kea 2.6.3 offer", kea263OfferLog, "192.168.101.42", 1},
+		{"kea 2.6.3 other address", kea263OfferLog, "192.168.101.43", 0},
+		{"kea 2.4.1 advert", kea24ConflictLog, "192.168.101.42", 1},
+		{"kea 2.4.1 second advert", kea24ConflictLog, "192.168.101.43", 1},
+		{"dnsmasq offer", "Aug 20 11:04:07 dnsmasq-dhcp[1]: DHCPOFFER(dh-itest-mv) 192.168.99.34 1e:c1:60:88:5a:ef\n", "192.168.99.34", 1},
+		{"an ACK is not an offer", "Aug 20 11:04:08 dnsmasq-dhcp[1]: DHCPACK(dh-itest-mv) 192.168.99.34 1e:c1:60:88:5a:ef\n", "192.168.99.34", 0},
+	}
+	for _, c := range cases {
+		if got := countOffersOf(c.log, c.addr); got != c.want {
+			t.Errorf("%s: countOffersOf(%s) = %d, want %d", c.name, c.addr, got, c.want)
+		}
+	}
+}

@@ -468,7 +468,7 @@ func TestReleaseLease_AFailedV6WithdrawalSendsNothing(t *testing.T) {
 			m.netHandle = &netlink.Handle{}
 			m.ctrLink = &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: "eth0"}}
 
-			if got := m.releaseHeldLease(true); got != tc.wantOutcome {
+			if got, _ := m.releaseHeldLease(true); got != tc.wantOutcome {
 				t.Errorf("releaseHeldLease(v6) = %q, want %q", got, tc.wantOutcome)
 			}
 			if got := sender.callCount(); got != tc.wantCalls {
@@ -543,7 +543,7 @@ func TestReleaseLease_EveryAddressAndPrefixTheReleaseNamesLeavesTheLinkFirst(t *
 				t.Fatalf("Observed: %v", err)
 			}
 
-			if got := m.releaseHeldLease(true); got != tc.want {
+			if got, _ := m.releaseHeldLease(true); got != tc.want {
 				t.Errorf("releaseHeldLease(v6) = %q, want %q", got, tc.want)
 			}
 			if got := sender.callCount(); got != tc.wantCalls {
@@ -1149,6 +1149,16 @@ func TestReleaseLease_EveryReasonForNotSendingIsNamed(t *testing.T) {
 						"on a releasing network is a warning, and a stop that had nothing to "+
 						"hand back is not", v, e.Level, wantLevel)
 				}
+				if tc.want == releaseSendFailed {
+					cause := tc.sendErr
+					if cause == nil {
+						cause = tc.linkErr
+					}
+					if got, _ := e.Data[log.ErrorKey].(error); !errors.Is(got, cause) {
+						t.Errorf("the send_failed line's error field is %v, want the send's error %q",
+							e.Data[log.ErrorKey], cause)
+					}
+				}
 			}
 			if len(said) != 1 || said[0] != string(tc.want) {
 				t.Errorf("the log named outcomes %v, want exactly [%s]", said, tc.want)
@@ -1201,7 +1211,7 @@ func TestReleaseLease_OnlyAParentWithNoV4AddressReleasesOverTheLink(t *testing.T
 			}
 			held, _ := m.releasedAddr(tc.v6)
 
-			if got := releaseFromRecord(rec, opts, tc.v6, held, nil, m.logFields(tc.v6)); got != tc.want {
+			if got, _ := releaseFromRecord(rec, opts, tc.v6, held, nil, m.logFields(tc.v6)); got != tc.want {
 				t.Errorf("releaseFromRecord = %s, want %s", got, tc.want)
 			}
 			if got, want := sender.linkCount(), map[bool]int{true: 1}[tc.wantLink]; got != want {

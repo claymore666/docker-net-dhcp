@@ -7,6 +7,7 @@ package integration
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"regexp"
 	"strings"
@@ -146,6 +147,16 @@ var refusalCases = []refusalCase{
 		},
 	},
 	{
+		name:    "conflict_check=wait is refused on ipvlan and the message says why",
+		refused: createShape{mode: "ipvlan", opts: map[string]string{"conflict_check": "wait"}},
+		want:    []string{"conflict_check=wait cannot be set in mode=ipvlan", "ARP replies to its own probes", "async"},
+		controls: map[string]createShape{
+			"the same value is accepted on macvlan": {mode: "macvlan", opts: map[string]string{"conflict_check": "wait"}},
+			"ipvlan with async is accepted":         {mode: "ipvlan", opts: map[string]string{"conflict_check": "async"}},
+			"ipvlan with off is accepted":           {mode: "ipvlan", opts: map[string]string{"conflict_check": "off"}},
+		},
+	},
+	{
 		name:    "require_mac is refused on ipvlan and the message says why",
 		refused: createShape{mode: "ipvlan", opts: map[string]string{"require_mac": "true"}},
 		want:    []string{"require_mac cannot be set in mode=ipvlan", "share the parent's MAC"},
@@ -218,6 +229,46 @@ var refusalCases = []refusalCase{
 		want:    []string{"ipv6_mode=auto is not supported in mode=ipvlan", "RFC 4291 appendix A", "Use ipv6_mode=dhcp on ipvlan"},
 		controls: map[string]createShape{
 			"ipv6_mode=auto is accepted on macvlan": {mode: "macvlan", opts: map[string]string{"ipv6_mode": "auto"}},
+		},
+	},
+	{
+		name:    "ipv6_main_prefix is refused on ipvlan, where only ipv6_mode=dhcp is accepted (#1319)",
+		refused: createShape{mode: "ipvlan", opts: map[string]string{"ipv6_mode": "dhcp", "ipv6_main_prefix": harness.AdvertPrefixB}},
+		want:    []string{"ipv6_main_prefix needs an ipv6_mode that forms addresses", "ipv6_mode=dhcp"},
+		controls: map[string]createShape{
+			"ipv6_main_prefix is accepted with slaac on macvlan": {mode: "macvlan", opts: map[string]string{"ipv6_mode": "slaac", "ipv6_main_prefix": harness.AdvertPrefixB}},
+		},
+	},
+	{
+		name:    "ipv6_mode=slaac with ipv6_main_prefix is refused on ipvlan for the mode (#1319)",
+		refused: createShape{mode: "ipvlan", opts: map[string]string{"ipv6_mode": "slaac", "ipv6_main_prefix": harness.AdvertPrefixB}},
+		want:    []string{"ipv6_mode=slaac is not supported in mode=ipvlan", "Use ipv6_mode=dhcp on ipvlan"},
+		controls: map[string]createShape{
+			"ipv6_mode=slaac with ipv6_main_prefix is accepted on macvlan": {mode: "macvlan", opts: map[string]string{"ipv6_mode": "slaac", "ipv6_main_prefix": harness.AdvertPrefixB}},
+		},
+	},
+	{
+		name:    "ipv6_iid=stable-privacy is refused on ipvlan with ipv6_mode=dhcp (#1319)",
+		refused: createShape{mode: "ipvlan", opts: map[string]string{"ipv6_mode": "dhcp", "ipv6_iid": "stable-privacy"}},
+		want:    []string{"ipv6_iid=stable-privacy needs an ipv6_mode that forms addresses", "ipv6_mode=dhcp"},
+		controls: map[string]createShape{
+			"ipv6_iid=stable-privacy is accepted with slaac on macvlan": {mode: "macvlan", opts: map[string]string{"ipv6_mode": "slaac", "ipv6_iid": "stable-privacy"}},
+		},
+	},
+	{
+		name:    "ipv6_iid=stable-privacy does not lift the ipvlan refusal of slaac (#1319)",
+		refused: createShape{mode: "ipvlan", opts: map[string]string{"ipv6_mode": "slaac", "ipv6_iid": "stable-privacy"}},
+		want:    []string{"ipv6_mode=slaac is not supported in mode=ipvlan", "ipv6_iid=stable-privacy does not lift this"},
+		controls: map[string]createShape{
+			"ipv6_mode=slaac with ipv6_iid=stable-privacy is accepted on macvlan": {mode: "macvlan", opts: map[string]string{"ipv6_mode": "slaac", "ipv6_iid": "stable-privacy"}},
+		},
+	},
+	{
+		name:    "ipv6_auto_strict with ipv6_mode=auto is refused on ipvlan for the mode (#1319)",
+		refused: createShape{mode: "ipvlan", opts: map[string]string{"ipv6_mode": "auto", "ipv6_auto_strict": "true"}},
+		want:    []string{"ipv6_mode=auto is not supported in mode=ipvlan", "Use ipv6_mode=dhcp on ipvlan"},
+		controls: map[string]createShape{
+			"ipv6_auto_strict is accepted with auto on macvlan": {mode: "macvlan", opts: map[string]string{"ipv6_mode": "auto", "ipv6_auto_strict": "true"}},
 		},
 	},
 	{
@@ -333,7 +384,7 @@ func TestCreateRefusals_EachNamesTheOptionAndTheReasonAndLeavesNoNetwork(t *test
 			if len(c.controls) == 0 {
 				t.Fatal("a refusal row with no accepted neighbour passes against a plugin that refuses everything")
 			}
-			netName := "dh-itest-refuse-" + string(rune('a'+i))
+			netName := fmt.Sprintf("dh-itest-refuse-%02d", i)
 			if ids := networksNamed(t, ctx, cli, netName); len(ids) != 0 {
 				t.Fatalf("a network named %s already exists (%v), so the absence read after the refusal "+
 					"would prove nothing", netName, ids)
