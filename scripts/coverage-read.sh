@@ -78,9 +78,9 @@ key() { awk -F/ '{ if (NF>=2) print $(NF-1)"/"$NF; else print $0 }'; }
 # whole reading (`*** INCOMPLETE`, exit 2) at the release read, over the
 # one arm that exists to let a deliberate deletion through.
 {
-  grep -oE '(PASS|FAIL)  [^ ]+: [0-9.]+% ' "$TMP/log" \
+  grep -a -oE '(PASS|FAIL)  [^ ]+: [0-9.]+% ' "$TMP/log" \
     | sed -E 's/^(PASS|FAIL)  ([^ ]+): ([0-9.]+)% $/\1 \2 \3/'
-  grep -oE 'DROPPED  [^ ]+: deleted at head' "$TMP/log" \
+  grep -a -oE 'DROPPED  [^ ]+: deleted at head' "$TMP/log" \
     | sed -E 's/^DROPPED  ([^ ]+): .*$/DROPPED \1 -/'
 } | while read -r v pkg got; do echo "$v $(echo "$pkg" | key) $got"; done \
   | sort -u > "$TMP/read"
@@ -169,7 +169,7 @@ done < "$TMP/read"
 # ...)` left the user's gid in place and the marker test compared 1000
 # against 0. The refusal below never fired; the self-test's no-marker case
 # is what found it.
-STEP_MARKERS=$(grep -c '\[group\]' "$TMP/log")
+STEP_MARKERS=$(grep -a -c '\[group\]' "$TMP/log")
 if [ "$STEP_MARKERS" -eq 0 ]; then
     echo "*** CANNOT SCOPE the raw block: the log carries no ##[group] step markers, so the unit-only coverage block cannot be told from the ratchet step's own."
     rc=2
@@ -185,7 +185,7 @@ else
         rc=2
     fi
 fi
-grep -oE '[^[:space:]]+[[:blank:]]+coverage: [0-9.]+% of statements' "$TMP/step" 2>/dev/null \
+grep -a -oE '[^[:space:]]+[[:blank:]]+coverage: [0-9.]+% of statements' "$TMP/step" 2>/dev/null \
   | sed -E 's/^([^[:space:]]+)[[:blank:]]+coverage: ([0-9.]+)% of statements$/\1 \2/' \
   | while read -r pkg got; do echo "$(echo "$pkg" | key) $got"; done \
   | sort -u > "$TMP/raw"
