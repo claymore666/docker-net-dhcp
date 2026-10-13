@@ -166,22 +166,32 @@ so `docker plugin upgrade` from v2.5.0 asks for nothing new.
 
 ### Lab run
 
-The release candidate v2.6.0-rc1 ran once through the real-server lab
-(docker-net-dhcp-lab v0.2.0): Kea, ISC dhcpd, dnsmasq, udhcpd and Pi-hole
-as servers, Kea HA and ISC failover pairs, hosts on Debian 13, Ubuntu
-24.04 and Debian 11 with Docker 20.10, each cell upgrading from v2.5.0.
-Eleven of fourteen cells wrote verdicts: kea-relay stopped at its relay
-probe, a lab error, and chr and openwrt on a missing base image on the lab
-host. Every cell exited with a lab-side infrastructure error, so a BLOCKED
-row mostly means the cell lost its Docker host over ssh under load, and
-the D3, D4 and F scenario rows are missing because a defect in the lab's
-verdict writer aborted each shape at scenario D2b. Thirty-eight FAIL
-verdicts show `CreateEndpoint` hitting the daemon's client timeout under
-load; the link such a create leaves on the parent, which blocked the
-following shapes in one cell, is what #1339 above removes. The results
-page does not attribute the remaining FAIL rows; two cells rerun alone
-passed their first verdicts. The results page with every verdict is
-release v0.2.0 of claymore666/docker-net-dhcp-lab.
+The release candidate v2.6.0-rc2 ran once through the real-server lab
+(claymore666/docker-net-dhcp-lab, the development branch after v0.2.0;
+results page in its pull request #90): Kea, ISC dhcpd, dnsmasq, udhcpd,
+Pi-hole, OpenWrt and a Kea relay as servers, Kea HA and ISC failover
+pairs, hosts on Debian 13, Ubuntu 24.04 and Debian 11 with Docker 20.10,
+each cell upgrading from v2.5.0. Thirteen of fourteen cells wrote
+verdicts; the MikroTik CHR image did not build, a lab error. 3761 rows:
+1683 PASS, 1384 not applicable, 401 FAIL, 293 BLOCKED. A second pass
+reran the 35 rows that had timed out under load: 31 passed, two stayed
+FAIL, two did not run. The D3, D4 and F rows that were missing on rc1 are
+present.
+
+Plugin findings, each with an issue: an address of a prefix the router
+stopped advertising stays on the link (#1368, as on rc1); `ipv6_mode=auto`
+installs the SLAAC address with infinite lifetimes (#1369); the
+delegated-prefix route carries no `proto dhcp` (#1370); the DHCPv6 client
+sends a Confirm after a rapid-commit Reply (#1371). 151 FAIL rows in three
+cells are `device or resource busy` on the parent interface, each cluster
+starting after a shape change on that parent; one cell is a lab error and
+the other two could not be attributed from the evidence (#1372 asks the
+error to name the children the plugin knows on the parent). The remaining
+FAIL and BLOCKED rows are lab errors with issues on the lab repository: a
+relay VM without `sysctl`, OpenWrt's `ping` without root, Pi-hole's image
+pull and restart limit, an ISC failover judge that requires the renewal to
+reach the granting partner, and one dnsmasq shape whose network recreate
+failed.
 
 ### CI
 
