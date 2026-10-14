@@ -355,6 +355,8 @@ The whole procedure, including rebuilding the binaries yourself, is in
   the tracker.
 - **Governance & code of conduct:** [GOVERNANCE.md](GOVERNANCE.md),
   [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+- **Support:** if the project saves you time, you can chip in via
+  [PayPal](https://paypal.me/kamienc).
 
 ## Contributing
 
