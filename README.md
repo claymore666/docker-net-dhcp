@@ -7,6 +7,7 @@
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/claymore666/docker-net-dhcp/badge)](https://scorecard.dev/viewer/?uri=github.com/claymore666/docker-net-dhcp)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13229/badge)](https://www.bestpractices.dev/projects/13229)
 [![Docs](https://img.shields.io/badge/docs-claymore666.github.io-blue?logo=materialformkdocs&logoColor=white)](https://claymore666.github.io/docker-net-dhcp/)
+[![Sponsor](https://img.shields.io/badge/sponsor-PayPal-blue?logo=paypal)](https://paypal.me/kamienc)
 
 A Docker network plugin that leases every container's address from the
 DHCP server your LAN already runs, over `bridge`, `macvlan` or `ipvlan`,
@@ -355,6 +356,8 @@ The whole procedure, including rebuilding the binaries yourself, is in
   the tracker.
 - **Governance & code of conduct:** [GOVERNANCE.md](GOVERNANCE.md),
   [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+- **Support:** if the project saves you time, you can chip in via
+  [PayPal](https://paypal.me/kamienc).
 
 ## Contributing
 
