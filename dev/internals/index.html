@@ -1420,7 +1420,11 @@ nothing records that in <code>pkg/plugin/v6_absence_memory.go</code>, per networ
 in memory only. For <code>DHCPV6_ABSENCE_MEMORY</code> (ten minutes by default) the
 next endpoint skips the Solicit and forms its address from the advertised
 prefix at once; <code>dhcpv6_absence_remembered</code> counts each. A granted DHCPv6
-address, removing the network or a plugin restart clears the record.</p>
+address, removing the network or a plugin restart clears the record.
+The endpoint whose own one-shot fell back runs its persistent client in
+<code>slaac</code> as well, keyed on the formed lease its record holds
+(<code>pkg/plugin/ipv6_mode.go</code>, #1369), so it does not solicit the silent
+server a second time.</p>
 <h2 id="how-a-network-chooses-its-dhcp-server">How a network chooses its DHCP server<a class="headerlink" href="#how-a-network-chooses-its-dhcp-server" title="Permanent link">&para;</a></h2>
 <p><code>dhcp_servers</code> ranks the servers a network may lease from and
 <code>dhcp_deny_servers</code> names ones it must never lease from (#111, #669).
