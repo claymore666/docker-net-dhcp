@@ -38,7 +38,8 @@
 #   createParentAttachedNetwork 94.1 -> 93.6 (94.1),
 #   saveNetworkAndBind 50.0 -> 49.5 (50.0), runDHCPProbe 77.8 -> 75.8 (76.3),
 #   nftForwardPolicy 88.2 -> 87.7 (88.2).
-toolchain go1.27.2
+# #1383, 2026-10-21: toolchain line moved to go1.27.3 from coverage run 39634466610 (attempt 2); every floor above met, none moved.
+toolchain go1.27.3
 github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.CreateNetwork 99.5
 github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.DeleteNetwork 93.9
 github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.CreateEndpoint 99.5
