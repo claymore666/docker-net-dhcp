@@ -338,9 +338,18 @@ readable by group or other.
 
 ## Supported versions
 
-Only the latest released version is supported with security fixes.
-There is no backport policy — upgrades are cheap (`docker plugin
-install` of the new tag).
+Only the latest 2.x release receives security fixes. There is no
+backport policy: an upgrade is a `docker plugin install` of the new
+tag, and the steps are in
+[Install, upgrade, uninstall](docs/reference.md#install-upgrade-uninstall).
+
+The 1.x line is end of life since 2026-10-21. v1.9.0 is its last
+release, and no 1.x release follows, security fixes included. v1.2.0
+to v1.9.0 bundle an external DHCP client, version 10.3.2, that is
+affected by CVE-2026-56113, CVE-2026-56114, CVE-2026-56116 and
+CVE-2026-56117. 2.x bundles no external DHCP client. Details are in
+advisory
+[GHSA-pr5h-j465-3gpf](https://github.com/claymore666/docker-net-dhcp/security/advisories/GHSA-pr5h-j465-3gpf).
 
 ## Known accepted findings
 
