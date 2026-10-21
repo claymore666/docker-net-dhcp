@@ -73,7 +73,7 @@ func testSLAAC_AutoRemembersASilentServer(t *testing.T, at v6Attach) {
 	awaitPluginAppliedV6(t, ctx, w, first, v6SegmentPrefix(t), slaacAddrBudget(), v6InstalledSinceBaseline)
 	f.AssertExchange(60 * time.Second)
 
-	// The first endpoint's persistent client runs auto too and solicits once more; the count is read once it is done.
+	// The first endpoint's persistent client resumes in slaac and does not solicit (#1369); counted once quiet.
 	solicits := awaitSolicitsQuiet(t, f)
 
 	second, secondWall := startTimedOn(t, ctx, cli, netName, netName+"-ctr2")

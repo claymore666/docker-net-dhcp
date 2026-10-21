@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/claymore666/dhcp-golib/lease"
 	"github.com/claymore666/dhcp-golib/proto"
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
@@ -483,5 +484,39 @@ func TestDecodeOptsSet_EveryOptionIsReportedUnderItsFieldName(t *testing.T) {
 	if tagged == 0 {
 		t.Fatal("no field carries a mapstructure tag, so nothing here drives the " +
 			"tag-to-field-name normalisation")
+	}
+}
+
+func TestV6Wiring_AResumedFormedLeaseRunsTheAutoPersistentClientInSLAAC(t *testing.T) {
+	id6 := dhcp.Identity6{DUID: []byte{0, 3, 0, 1, 2, 66, 172, 17, 0, 2}, IAID: 1}
+	auto := DHCPNetworkOptions{Bridge: "br0", IPv6Mode: "auto"}
+	strict := DHCPNetworkOptions{Bridge: "br0", IPv6Mode: "auto", IPv6AutoStrict: true}
+	dhcpMode := DHCPNetworkOptions{Bridge: "br0", IPv6Mode: "dhcp"}
+	formed := &lease.Lease{SLAAC: true}
+	leased := &lease.Lease{}
+	for _, tc := range []struct {
+		name     string
+		opts     DHCPNetworkOptions
+		resume   *lease.Lease
+		want     proto.Mode6
+		fallback bool
+	}{
+		{"auto resuming a formed lease", auto, formed, proto.Mode6SLAAC, false},
+		{"auto resuming a DHCPv6 lease", auto, leased, proto.Mode6Auto, true},
+		{"auto with nothing to resume", auto, nil, proto.Mode6Auto, true},
+		{"strict auto resuming a formed lease", strict, formed, proto.Mode6Auto, true},
+		{"dhcp resuming a formed lease", dhcpMode, formed, proto.Mode6DHCP, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := dhcp.DHCPClientOptions{Resume: tc.resume}
+			if err := (&Plugin{}).v6Wiring(&base, tc.opts, id6, "rec-1", "", "endpoint-1", "net-1"); err != nil {
+				t.Fatalf("v6Wiring: %v", err)
+			}
+			if base.Mode6 != tc.want || (base.OnV6Fallback != nil) != tc.fallback {
+				t.Errorf("mode %v, fallback callback %v; want %v, %v. An auto persistent client resuming the address "+
+					"its one-shot formed re-solicits the silent server and leaves the engine's forever install in place",
+					base.Mode6, base.OnV6Fallback != nil, tc.want, tc.fallback)
+			}
+		})
 	}
 }

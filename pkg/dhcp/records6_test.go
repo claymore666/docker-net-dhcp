@@ -365,3 +365,33 @@ func TestRecords6_ReservedThenCreatedOn6KeepsTheIdentity(t *testing.T) {
 		t.Errorf("the fold rejected %v, want none", rb.Rejects)
 	}
 }
+
+// An auto endpoint's persistent client picks its mode from this flag, so the one-shot's formed lease must keep it (#1369).
+func TestRecords6_AOneShotFormedLeaseResumesAsSLAAC(t *testing.T) {
+	r, _ := testRecords(t)
+	const network = "net-1"
+	mac := []byte{0x02, 0x42, 0xac, 0x11, 0x00, 0x02}
+	id6 := testIdentity6(t, "02:42:ac:11:00:02")
+	now := time.Now()
+	formed := netip.MustParsePrefix("2001:db8:1:0:42:acff:fe11:2/64")
+	held := lease.Lease{
+		Addr:     formed,
+		Addrs:    []lease.Addr6{{Addr: formed, Preferred: now.Add(time.Hour), Valid: now.Add(2 * time.Hour)}},
+		Acquired: now,
+		Expire:   now.Add(2 * time.Hour),
+		SLAAC:    true,
+	}
+	if err := r.Created6("ep-v6", network, mac, id6.Bytes()); err != nil {
+		t.Fatalf("Created6: %v", err)
+	}
+	if err := r.Observed("ep-v6", lease.Event{Kind: lease.Acquired, Lease: held}, nil); err != nil {
+		t.Fatalf("Observed: %v", err)
+	}
+	_, res, _, ok := r.Resume6(network, mac, now.Add(time.Minute))
+	if !ok || res.Lease == nil {
+		t.Fatalf("the record of a created endpoint with a formed lease did not resume (ok=%v)", ok)
+	}
+	if !res.Lease.SLAAC {
+		t.Errorf("the resumed lease lost its SLAAC flag: %+v", res.Lease)
+	}
+}
