@@ -81,7 +81,7 @@ type dhcpManager struct {
 	lastIP   *netlink.Addr
 	lastIPv6 *netlink.Addr
 	// v6Installed is every IPv6 address put on the container link, a set since RFC 4862 section 5.5.3 forms one per
-	// autonomous prefix and a withdrawn prefix's address must go (#818).
+	// autonomous prefix and an address the lease stops holding must go (#818).
 	v6Installed map[string]*netlink.Addr
 	// seenV4 is the v4 client as its event goroutine last recorded it; the health entry renders its lease from here
 	// because the library marks a lease held before it emits the event (#1044).
@@ -800,7 +800,7 @@ func v6WantedAddrs(main *netlink.Addr, info dhcp.Info) ([]wantedV6Addr, error) {
 }
 
 // withdrawV6AddrsNotIn removes every installed address the lease no longer holds, as a set difference: an expired
-// valid lifetime (RFC 4862 section 5.5.4) or a withdrawn prefix can take one address while another stays, and an
+// valid lifetime (RFC 4862 section 5.5.4) or a Reply's zero valid lifetime can take one address while another stays, and an
 // unrouted address would still be picked as a source (#818, #819). Failures are logged, never fatal.
 //
 // EADDRNOTAVAIL counts as withdrawn: the installed valid_lft is floored to whole seconds, so the kernel drops the
