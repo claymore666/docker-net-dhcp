@@ -12,6 +12,7 @@ This is the successor of `devplayer0/docker-net-dhcp`, not a patched copy:
 !!! note "This documentation is the 2.x line's"
     These pages describe the 2.x build. The snippets install the current
     release. Pick a v1.x version from the selector for the 1.x manual.
+    The 1.x line is end of life and gets no further releases, security fixes included.
 
 ```bash
 sudo mkdir -p /var/lib/net-dhcp                      # once per host
