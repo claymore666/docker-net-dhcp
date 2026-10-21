@@ -350,7 +350,8 @@
 #     lowest reading of its variance band, and 1.27.2 moved it 0.1.
 # The toolchain line names the unit; the ratchet compares it first.
 #
-toolchain go1.27.2
+# #1383, 2026-10-21: toolchain line moved to go1.27.3 from coverage run 39634466610 (attempt 2); every floor above met, none moved.
+toolchain go1.27.3
 github.com/claymore666/docker-net-dhcp/v2/pkg/util 95.2
 github.com/claymore666/docker-net-dhcp/v2/pkg/plugin 92.2
 github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp 92.6
