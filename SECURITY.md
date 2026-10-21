@@ -345,9 +345,10 @@ tag, and the steps are in
 
 The 1.x line is end of life since 2026-10-21. v1.9.0 is its last
 release, and no 1.x release follows, security fixes included. v1.2.0
-to v1.9.0 ship `dhcpcd` 10.3.2, which is affected by CVE-2026-56113,
-CVE-2026-56114, CVE-2026-56116 and CVE-2026-56117. 2.x contains no
-`dhcpcd`. Details are in advisory
+to v1.9.0 bundle an external DHCP client, version 10.3.2, that is
+affected by CVE-2026-56113, CVE-2026-56114, CVE-2026-56116 and
+CVE-2026-56117. 2.x bundles no external DHCP client. Details are in
+advisory
 [GHSA-pr5h-j465-3gpf](https://github.com/claymore666/docker-net-dhcp/security/advisories/GHSA-pr5h-j465-3gpf).
 
 ## Known accepted findings
