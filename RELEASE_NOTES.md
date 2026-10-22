@@ -8,7 +8,7 @@ The notes below go back to the first release of this project.
 
 [predecessor]: https://github.com/devplayer0/docker-net-dhcp
 
-## v2.6.1 (unreleased)
+## v2.6.1
 
 An `ipv6_mode=auto` endpoint that fell back to the advertised prefix
 gets that prefix's lifetimes at once and stops soliciting the silent
