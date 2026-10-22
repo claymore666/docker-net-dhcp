@@ -1205,6 +1205,14 @@ DHCP server your LAN already runs, over <code>bridge</code>, <code>macvlan</code
 for IPv4 and IPv6. One <code>docker network create</code>, then <code>networks: [lan-dhcp]</code>
 in any Compose file. No static addresses, no sidecars, no plumbing per
 container.</p>
+<p>The problem it solves: with plain macvlan or static addressing, a
+container can come back from an update or a restart with a different
+address, or two containers can end up on one address. This plugin leases
+each address from the LAN's DHCP server and, in <code>bridge</code> and <code>macvlan</code>
+mode, keeps one identity per container across restarts and upgrades, so
+the router's lease table and its reservations stay true.</p>
+<p>Every release is run against real DHCP servers (Kea, ISC dhcpd, dnsmasq)
+in a separate lab (<a href="testing/#real-server-lab">real-server lab</a>).</p>
 <p>This is the successor of <code>devplayer0/docker-net-dhcp</code>, not a patched copy:
 2.x has its own DHCP engine and its own lifecycle code.</p>
 <div class="admonition note">

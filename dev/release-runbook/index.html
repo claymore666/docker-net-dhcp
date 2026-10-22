@@ -1364,9 +1364,11 @@ deferred.</p>
    <a href="https://github.com/claymore666/docker-net-dhcp/settings/secrets/actions">https://github.com/claymore666/docker-net-dhcp/settings/secrets/actions</a>:
    - <code>DOCKERHUB_USERNAME</code> = <code>claymore666</code>
    - <code>DOCKERHUB_TOKEN</code> = the token from step 2.</p>
-<p>Symptom if scope is wrong: image push works, but the <strong>Sync Docker Hub
-description from README</strong> step ends with <code>401 Unauthorized</code> calling
-<code>PATCH /v2/repositories/...</code>. Regenerate the token with the broader
+<p>Symptom if scope is wrong: image push works, the <strong>Sync Docker Hub
+description from README</strong> steps log <code>Forbidden</code> after <code>Sending PATCH
+request</code> yet show green, and <strong>verify-hub-description</strong> goes red because
+the Hub text differs from <code>README.md</code>. Every release from v1.7.0-rc2 to
+v2.6.0-rc1 ran in that state (#1324). Regenerate the token with the broader
 scope, then re-run the sync <strong>from an rc tag</strong> and never from the
 release tag:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>gh<span class="w"> </span>workflow<span class="w"> </span>run<span class="w"> </span>release.yml<span class="w"> </span>-f<span class="w"> </span><span class="nv">tag</span><span class="o">=</span>vX.Y.Z-rcN<span class="w"> </span>--ref<span class="w"> </span>main
@@ -1516,6 +1518,7 @@ to run.</p>
 <strong>release-arm64</strong> / <strong>verify-install-arm64</strong>, since #776
 <strong>verify-install-hub</strong> / <strong>verify-install-hub-arm64</strong>, since #972
 <strong>verify-install-hub-alias</strong> / <strong>verify-install-hub-alias-arm64</strong>,
+since #1324 <strong>verify-hub-description</strong>,
 since #736 <strong>promote-latest</strong>, which an rc now reaches, and
 <strong>github-release</strong>, which publishes an rc as a draft (#469). The last
 step of promote-latest, <em>Assert a pre-release did not move :latest</em>, is
@@ -2217,7 +2220,14 @@ step saw before anything was touched; it runs only on an rc, and it
 is the one that proves the rc contract from outside.
     - <strong>github-release</strong>: does <strong>not</strong> wait for <code>promote-latest</code>; it
 needs the same eight jobs. Promotion and the Releases page are
-siblings, so a refused promotion does not suppress the release.</p>
+siblings, so a refused promotion does not suppress the release.
+    - <strong>verify-hub-description</strong>: since #1324 reads both Docker Hub
+descriptions back from the Hub API and compares them byte for
+byte with the tag's <code>README.md</code> and the workflow's short
+description. The two sync steps keep <code>continue-on-error</code>, so this
+job is where a failed sync goes red; nothing waits on it, so it
+blocks no publish. Without Hub credentials it records
+<code>⚠️ Docker Hub descriptions not verified</code> in the summary.</p>
 </li>
 </ul>
 </li>
@@ -2484,14 +2494,14 @@ siblings, so a refused promotion does not suppress the release.</p>
 <td>Regenerate at hub.docker.com, update <code>DOCKERHUB_TOKEN</code> repo secret</td>
 </tr>
 <tr>
-<td><code>Sync Docker Hub description from README</code> step ends <code>401</code></td>
+<td><code>verify-hub-description</code> red; the sync steps log <code>Forbidden</code> but show green</td>
 <td>Token scope is image-push only and lacks admin</td>
-<td>Regenerate token with broader scope (see prerequisites)</td>
+<td>Regenerate token with broader scope (see prerequisites), then dispatch an rc tag</td>
 </tr>
 <tr>
-<td>Hub page README is stale after a release</td>
-<td>Description-sync step skipped (no Hub creds) or 401'd</td>
-<td>Check the workflow run; either set creds or fix the token</td>
+<td><code>verify-hub-description</code> red; the sync steps log no error</td>
+<td>The Hub stored a different text, or the README passed 25000 bytes</td>
+<td>Read the job's <code>::error</code> line: it names the first differing byte or the size</td>
 </tr>
 <tr>
 <td>Tag push succeeded but no Hub publish</td>
