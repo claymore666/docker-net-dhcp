@@ -112,10 +112,12 @@ The plugin refuses these with a message that names the reason.
 
 ## Planned
 
-v2.6.0 adds networks created with `--ipv4=false` ([#1135]), an IPv6 pool
-from a typed IPv6 `--subnet` in the IPAM shape ([#1132]),
-`release_lease` from a parent with no IPv4 address ([#1288]) and the CI
-consolidation ([#733]). Nothing is planned beyond it yet. The full list,
+v2.6.1 fixes the IPv6 address lifetimes of an `ipv6_mode=auto` endpoint
+that fell back to the advertised prefix ([#1369]) and the Docker Hub
+description, which the release runs did not update ([#1324]). v2.7.0 is
+planned: option and mode test coverage from the lab option review, and
+bug fixes ([milestone](https://github.com/claymore666/docker-net-dhcp/milestone/42)).
+The full list,
 with what this project will not do, is on the [roadmap](roadmap.md).
 
 ## How to check any of this
@@ -141,6 +143,8 @@ with what this project will not do, is on the [roadmap](roadmap.md).
 [#214]: https://github.com/claymore666/docker-net-dhcp/issues/214
 [#733]: https://github.com/claymore666/docker-net-dhcp/issues/733
 [#1288]: https://github.com/claymore666/docker-net-dhcp/issues/1288
+[#1324]: https://github.com/claymore666/docker-net-dhcp/issues/1324
+[#1369]: https://github.com/claymore666/docker-net-dhcp/issues/1369
 [#1135]: https://github.com/claymore666/docker-net-dhcp/issues/1135
 [#1027]: https://github.com/claymore666/docker-net-dhcp/issues/1027
 

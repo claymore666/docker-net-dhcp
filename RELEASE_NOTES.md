@@ -90,6 +90,11 @@ so `docker plugin upgrade` from v2.6.0 asks for nothing new.
 - `SECURITY.md` and the docs index state that the 1.x line is end of
   life: v1.9.0 was its last release, and security fixes go to the latest
   2.x release only (#1381).
+- The repository page shows a Sponsor button, and the README has a
+  support line with the same link (#1376).
+- The first screen of the README and the docs index states the problem
+  the plugin solves and that every release is run against real DHCP
+  servers in the lab (#1324).
 
 ## v2.6.0
 
