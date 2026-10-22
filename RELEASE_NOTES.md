@@ -8,7 +8,7 @@ The notes below go back to the first release of this project.
 
 [predecessor]: https://github.com/devplayer0/docker-net-dhcp
 
-## v2.6.1 (unreleased)
+## v2.6.1
 
 An `ipv6_mode=auto` endpoint that fell back to the advertised prefix
 gets that prefix's lifetimes at once and stops soliciting the silent
@@ -84,12 +84,25 @@ so `docker plugin upgrade` from v2.6.0 asks for nothing new.
   as `unreachable` with `proto dhcp`, which it already did. iproute2's
   `ip -6 route` shows the protocol; BusyBox `ip`, as in Alpine images,
   prints no protocol for any route (#1370).
-- Every Go pin in the workflows, the plugin and runner images and the
-  integration installer is 1.27.3, and the coverage floor files name
-  go1.27.3 with no floor moved (#1383).
+- The Go version keys under `.github/workflows`, the plugin image's
+  builder, the Go download in the runner image and the default in the
+  integration installer move to 1.27.3, and the coverage floor files
+  name go1.27.3 with no floor moved. `go.mod` stays at `go 1.27.0`, and
+  the runner image's seeded builder stays at `golang:1.26-alpine`
+  (#1383).
 - `SECURITY.md` and the docs index state that the 1.x line is end of
   life: v1.9.0 was its last release, and security fixes go to the latest
   2.x release only (#1381).
+- The repository page shows a Sponsor button, and the README has a
+  support line with the same link (#1376).
+- The first screen of the README and the docs index states the problem
+  the plugin solves and that every release is run against real DHCP
+  servers in the lab (#1324).
+- The testing guide reports the v2.6.0-rc2 lab run and its limits, where
+  it still reported the v2.5.0 run as the latest (#1388).
+- The README, the docs index and the internals page name the integration
+  lane's engine as 29.9.2, read from the lane's engine drift check; they
+  said 29.9.0 (#1388).
 
 ## v2.6.0
 

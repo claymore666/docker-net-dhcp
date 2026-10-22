@@ -16,6 +16,8 @@ below decide what is in a release; this page follows them.
 | v2.4.0 | released | The rest of IPv6, and the DHCP options the client does not read yet | [milestone 34](https://github.com/claymore666/docker-net-dhcp/milestone/34) |
 | v2.5.0 | released | CI consolidation and code debt, and DHCPv6 prefix delegation | [milestone 35](https://github.com/claymore666/docker-net-dhcp/milestone/35) |
 | v2.6.0 | released | Networks without an IPv4 pool, an IPv6 pool in the IPAM shape, and the CI consolidation | [milestone 39](https://github.com/claymore666/docker-net-dhcp/milestone/39) |
+| v2.6.1 | released | IPv6 address lifetimes and removal conditions, and the Docker Hub description check | [milestone 41](https://github.com/claymore666/docker-net-dhcp/milestone/41) |
+| v2.7.0 | planned | Option and mode test coverage from the lab option review, and bug fixes | [milestone 42](https://github.com/claymore666/docker-net-dhcp/milestone/42) |
 
 ### v2.3.0, released
 
@@ -130,6 +132,25 @@ below decide what is in a release; this page follows them.
   holds no IPv4 address
 - [#733], the CI consolidation: one preflight and one suite runner for
   the four integration lanes
+
+### v2.6.1, released
+
+- [#1369], an `ipv6_mode=auto` endpoint that fell back to the advertised
+  prefix gets that prefix's lifetimes at once and no longer solicits the
+  silent DHCPv6 server again
+- [#1368], the reference names when the plugin removes an IPv6 address;
+  it does not remove one because the router stopped advertising the prefix
+- [#1371], the reference says why a DHCPv6 server logs a Confirm after the
+  Reply that granted the lease
+- [#1370], a test pins `proto dhcp` on the delegated-prefix route
+- [#1324], each release run reads both Docker Hub descriptions back after
+  the sync and goes red when either differs
+
+### v2.7.0, planned
+
+Option and mode test coverage from the lab option review, and bug fixes
+found in the 2026-10 hunt. The list is the
+[milestone](https://github.com/claymore666/docker-net-dhcp/milestone/42).
 
 ## The release line
 
@@ -407,6 +428,11 @@ project does, that review is where it gets corrected.
 [#1177]: https://github.com/claymore666/docker-net-dhcp/issues/1177
 [#1203]: https://github.com/claymore666/docker-net-dhcp/issues/1203
 [#1288]: https://github.com/claymore666/docker-net-dhcp/issues/1288
+[#1324]: https://github.com/claymore666/docker-net-dhcp/issues/1324
+[#1368]: https://github.com/claymore666/docker-net-dhcp/issues/1368
+[#1369]: https://github.com/claymore666/docker-net-dhcp/issues/1369
+[#1370]: https://github.com/claymore666/docker-net-dhcp/issues/1370
+[#1371]: https://github.com/claymore666/docker-net-dhcp/issues/1371
 [moby/moby#52866]: https://github.com/moby/moby/pull/52866
 [moby/moby#52870]: https://github.com/moby/moby/issues/52870
 [moby/moby#52871]: https://github.com/moby/moby/pull/52871
