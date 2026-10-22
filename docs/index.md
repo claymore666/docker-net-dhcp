@@ -6,6 +6,16 @@ for IPv4 and IPv6. One `docker network create`, then `networks: [lan-dhcp]`
 in any Compose file. No static addresses, no sidecars, no plumbing per
 container.
 
+The problem it solves: with plain macvlan or static addressing, a
+container can come back from an update or a restart with a different
+address, or two containers can end up on one address. This plugin leases
+each address from the LAN's DHCP server and, in `bridge` and `macvlan`
+mode, keeps one identity per container across restarts and upgrades, so
+the router's lease table and its reservations stay true.
+
+Every release is run against real DHCP servers (Kea, ISC dhcpd, dnsmasq)
+in a separate lab ([real-server lab](testing.md#real-server-lab)).
+
 This is the successor of `devplayer0/docker-net-dhcp`, not a patched copy:
 2.x has its own DHCP engine and its own lifecycle code.
 
