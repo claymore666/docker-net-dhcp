@@ -133,9 +133,11 @@ directory, with the evidence tarball attached to the lab release it ran on.
   servers, 2 hosts and 5 network shapes
   ([results page](https://github.com/claymore666/docker-net-dhcp-lab/blob/ba9203aafbdd2691f08bc2e497ab2be48a3fff33/results/v0.1.0-plugin-v2.5.0.md),
   [evidence on the lab release](https://github.com/claymore666/docker-net-dhcp-lab/releases/tag/v0.1.0)).
-- Proves: the release candidate passes the everyday container journeys on
-  every shape against stock DHCP servers on three distributions, with the
-  evidence published.
+- Proves: what the plugin does in each journey on each network shape
+  against stock DHCP servers, judged against the server's lease table,
+  with the evidence published. The rc2 run did not pass every everyday
+  journey: its FAIL and BLOCKED rows include everyday-journey rows that
+  the results page does not yet attribute to the lab or to the plugin.
 - Limits: a FAIL or BLOCKED row is not a plugin finding until the results
   page says so; the rc2 run had 401 FAIL and 293 BLOCKED rows, most of
   them defects of the lab itself. The fixed-MAC reboot on `ipvlan` is not

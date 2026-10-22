@@ -84,9 +84,12 @@ so `docker plugin upgrade` from v2.6.0 asks for nothing new.
   as `unreachable` with `proto dhcp`, which it already did. iproute2's
   `ip -6 route` shows the protocol; BusyBox `ip`, as in Alpine images,
   prints no protocol for any route (#1370).
-- Every Go pin in the workflows, the plugin and runner images and the
-  integration installer is 1.27.3, and the coverage floor files name
-  go1.27.3 with no floor moved (#1383).
+- The Go version keys under `.github/workflows`, the plugin image's
+  builder, the Go download in the runner image and the default in the
+  integration installer move to 1.27.3, and the coverage floor files
+  name go1.27.3 with no floor moved. `go.mod` stays at `go 1.27.0`, and
+  the runner image's seeded builder stays at `golang:1.26-alpine`
+  (#1383).
 - `SECURITY.md` and the docs index state that the 1.x line is end of
   life: v1.9.0 was its last release, and security fixes go to the latest
   2.x release only (#1381).
