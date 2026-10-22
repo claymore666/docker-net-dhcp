@@ -8,6 +8,102 @@ The notes below go back to the first release of this project.
 
 [predecessor]: https://github.com/devplayer0/docker-net-dhcp
 
+## v2.6.1
+
+An `ipv6_mode=auto` endpoint that fell back to the advertised prefix
+gets that prefix's lifetimes at once and stops soliciting the silent
+DHCPv6 server, and the plugin image is built with Go 1.27.3 for a
+`crypto/x509` advisory. The reference now names when the plugin removes
+an IPv6 address, and each release run reads the Docker Hub descriptions
+back.
+
+### Upgrade notes
+
+**The privilege prompt does not change.** No field `docker plugin upgrade`
+prompts on has moved since v2.0.0. The manifest is the same as v2.6.0's,
+so `docker plugin upgrade` from v2.6.0 asks for nothing new.
+
+<!-- manifest-delta: begin baseline=v2.6.0 -->
+
+| field | v2.6.0 | v2.6.1 | prompted |
+| --- | --- | --- | --- |
+| `linux.capabilities` | `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | no change |
+| `network.type` | `host` | `host` | no change |
+| `ipchost` | `false` | `false` | no change |
+| `pidhost` | `true` | `true` | no change |
+| `mounts` | `/var/run/docker.sock:bind`, `/var/lib/net-dhcp:rbind,rw`, `/var/run/docker:rbind,ro` | `/var/run/docker.sock:bind`, `/var/lib/net-dhcp:rbind,rw`, `/var/run/docker:rbind,ro` | no change |
+| `propagatedmount` | `(absent)` | `(absent)` | no change |
+| `linux.devices` | `(absent)` | `(absent)` | no change |
+| `linux.allowalldevices` | `false` | `false` | no change |
+| `env` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `DHCPV6_ABSENCE_MEMORY`, `STATE_DIR`, `METRICS_ADDR`, `DOCKER_HOST` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `DHCPV6_ABSENCE_MEMORY`, `STATE_DIR`, `METRICS_ADDR`, `DOCKER_HOST` | no change |
+
+<!-- manifest-delta: end -->
+
+### Fixed
+
+- On an `ipv6_mode=auto` network whose DHCPv6 server does not answer, an
+  endpoint that fell back to the advertised prefix kept its address with
+  infinite lifetimes (`valid_lft forever preferred_lft forever`) until
+  its long-running client fell back a second time, and that client
+  solicited the silent server again on the next Router Advertisement
+  with the managed flag set. The client now resumes the formed address
+  in `slaac` mode, sends no Solicit, and installs the advertised
+  lifetimes once duplicate address detection confirms the address. An
+  endpoint holding a DHCPv6 lease and `ipv6_auto_strict` keep their
+  behaviour (#1369).
+- The reference and the `ipv6_addresses_withdrawn` help text said an
+  address whose prefix the router stopped advertising is removed. The
+  plugin does not remove an address for that alone (RFC 4861 section
+  6.3.4), and the text now names what does: a formed address goes when
+  its valid lifetime runs out (RFC 4862 section 5.5.4); a Prefix
+  Information option with a valid lifetime of 0 cuts the remaining
+  lifetime to two hours when more than two hours are left and is
+  otherwise ignored (RFC 4862 section 5.5.3 e); a DHCPv6 address goes
+  when a Reply names it with a valid lifetime of 0 or when its valid
+  lifetime runs out (RFC 9915 section 18.2.10.1). Nothing changes in use
+  (#1368).
+- The reference said a Rapid Commit lease takes two messages. A DHCPv6
+  server also logs one Confirm and its Reply when the container starts,
+  with or without `rapid_commit`: the long-running client takes over the
+  lease granted at container creation (RFC 8415 section 18.2.12). A
+  binding that holds a delegated prefix (`ipv6_pd`) resumes with a
+  Rebind. The `rapid_commit` row and the Rapid Commit row now say so;
+  nothing changes in use (#1371).
+- The plugin image is built with Go 1.27.3 (v2.6.0: 1.27.2), which fixes
+  the standard-library `crypto/x509` advisory GO-2026-6809 (#1383).
+- The Docker Hub descriptions of `net-dhcp` and its `docker-net-dhcp`
+  alias were not updated by the release runs since v1.7.0: Docker Hub
+  refused each write and the run reported the step as passed. A new
+  release job reads both descriptions back after the sync and fails when
+  either differs from the tagged README or the short description; a run
+  without Docker Hub credentials records them as not verified (#1324).
+
+### CI
+
+- A unit test pins that the plugin installs the delegated-prefix route
+  as `unreachable` with `proto dhcp`, which it already did. iproute2's
+  `ip -6 route` shows the protocol; BusyBox `ip`, as in Alpine images,
+  prints no protocol for any route (#1370).
+- The Go version keys under `.github/workflows`, the plugin image's
+  builder, the Go download in the runner image and the default in the
+  integration installer move to 1.27.3, and the coverage floor files
+  name go1.27.3 with no floor moved. `go.mod` stays at `go 1.27.0`, and
+  the runner image's seeded builder stays at `golang:1.26-alpine`
+  (#1383).
+- `SECURITY.md` and the docs index state that the 1.x line is end of
+  life: v1.9.0 was its last release, and security fixes go to the latest
+  2.x release only (#1381).
+- The repository page shows a Sponsor button, and the README has a
+  support line with the same link (#1376).
+- The first screen of the README and the docs index states the problem
+  the plugin solves and that every release is run against real DHCP
+  servers in the lab (#1324).
+- The testing guide reports the v2.6.0-rc2 lab run and its limits, where
+  it still reported the v2.5.0 run as the latest (#1388).
+- The README, the docs index and the internals page name the integration
+  lane's engine as 29.9.2, read from the lane's engine drift check; they
+  said 29.9.0 (#1388).
+
 ## v2.6.0
 
 A network created with `--ipv4=false` runs no DHCPv4, and an IPAM-mode
@@ -23,8 +119,6 @@ and the first real-server lab run against rc1 are fixed before the final.
 prompts on has moved since v2.0.0. The manifest is the same as v2.5.0's,
 so `docker plugin upgrade` from v2.5.0 asks for nothing new.
 
-<!-- manifest-delta: begin baseline=v2.5.0 -->
-
 | field | v2.5.0 | v2.6.0 | prompted |
 | --- | --- | --- | --- |
 | `linux.capabilities` | `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | no change |
@@ -36,8 +130,6 @@ so `docker plugin upgrade` from v2.5.0 asks for nothing new.
 | `linux.devices` | `(absent)` | `(absent)` | no change |
 | `linux.allowalldevices` | `false` | `false` | no change |
 | `env` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `DHCPV6_ABSENCE_MEMORY`, `STATE_DIR`, `METRICS_ADDR`, `DOCKER_HOST` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `DHCPV6_ABSENCE_MEMORY`, `STATE_DIR`, `METRICS_ADDR`, `DOCKER_HOST` | no change |
-
-<!-- manifest-delta: end -->
 
 | What changed | What it does to you |
 | --- | --- |

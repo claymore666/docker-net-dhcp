@@ -7,6 +7,7 @@
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/claymore666/docker-net-dhcp/badge)](https://scorecard.dev/viewer/?uri=github.com/claymore666/docker-net-dhcp)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13229/badge)](https://www.bestpractices.dev/projects/13229)
 [![Docs](https://img.shields.io/badge/docs-claymore666.github.io-blue?logo=materialformkdocs&logoColor=white)](https://claymore666.github.io/docker-net-dhcp/)
+[![Sponsor](https://img.shields.io/badge/sponsor-PayPal-blue?logo=paypal)](https://paypal.me/kamienc)
 
 A Docker network plugin that leases every container's address from the
 DHCP server your LAN already runs, over `bridge`, `macvlan` or `ipvlan`,
@@ -14,13 +15,23 @@ for IPv4 and IPv6. One `docker network create`, then `networks: [lan-dhcp]`
 in any Compose file. No static addresses, no sidecars, no plumbing per
 container.
 
+The problem it solves: with plain macvlan or static addressing, a
+container can come back from an update or a restart with a different
+address, or two containers can end up on one address. This plugin leases
+each address from the LAN's DHCP server and, in `bridge` and `macvlan`
+mode, keeps one identity per container across restarts and upgrades, so
+the router's lease table and its reservations stay true.
+
+Every release is run against real DHCP servers (Kea, ISC dhcpd, dnsmasq)
+in a separate lab ([real-server lab](docs/testing.md#real-server-lab)).
+
 This is the successor of `devplayer0/docker-net-dhcp`, not a patched copy:
 2.x has its own DHCP engine and its own lifecycle code.
 
 ```bash
 sudo mkdir -p /var/lib/net-dhcp                      # once per host
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.6.0   # -arm64 on arm64
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.6.0 \
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.6.1   # -arm64 on arm64
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.6.1 \
   --ipam-driver null -o mode=macvlan -o parent=eth0 lan-dhcp
 docker run --rm -ti --network lan-dhcp alpine ip address show
 ```
@@ -105,10 +116,12 @@ Where the plugin refuses, the message names the reason.
 
 ## Planned
 
-v2.6.0 adds networks created with `--ipv4=false` ([#1135]), an IPv6 pool
-from a typed IPv6 `--subnet` in the IPAM shape ([#1132]),
-`release_lease` from a parent with no IPv4 address ([#1288]) and the CI
-consolidation ([#733]). Nothing is planned beyond it yet. The full list,
+v2.6.1 fixes the IPv6 address lifetimes of an `ipv6_mode=auto` endpoint
+that fell back to the advertised prefix ([#1369]) and the Docker Hub
+description, which the release runs did not update ([#1324]). v2.7.0 is
+planned: option and mode test coverage from the lab option review, and
+bug fixes ([milestone](https://github.com/claymore666/docker-net-dhcp/milestone/42)).
+The full list,
 with what this project will not do, is on the [roadmap](docs/roadmap.md).
 
 ## How to check any of this
@@ -119,11 +132,10 @@ with what this project will not do, is on the [roadmap](docs/roadmap.md).
 - Tests assert on the wire and on the server: packet captures and the
   DHCP server's lease log, not the plugin's own counters
   ([how this plugin is tested](docs/testing.md)).
-- A separate lab runs each release against real DHCP servers (Kea, ISC
-  dhcpd, dnsmasq) installed the way their users install them, on their
-  own VMs, one isolated cell per server; every scenario is judged
-  against the server's own lease table, and the evidence of each run is
-  published ([the lab](docs/testing.md#real-server-lab),
+- The real-server lab installs each server the way its users install
+  it, on its own VMs, one isolated cell per server; every scenario is
+  judged against the server's own lease table, and the evidence of each
+  run is published ([the lab](docs/testing.md#real-server-lab),
   [docker-net-dhcp-lab](https://github.com/claymore666/docker-net-dhcp-lab)).
 - Every pull request carries a public review verdict, and every release
   ships signatures, SLSA provenance and an SBOM
@@ -139,6 +151,8 @@ with what this project will not do, is on the [roadmap](docs/roadmap.md).
 [#214]: https://github.com/claymore666/docker-net-dhcp/issues/214
 [#733]: https://github.com/claymore666/docker-net-dhcp/issues/733
 [#1288]: https://github.com/claymore666/docker-net-dhcp/issues/1288
+[#1324]: https://github.com/claymore666/docker-net-dhcp/issues/1324
+[#1369]: https://github.com/claymore666/docker-net-dhcp/issues/1369
 [#1135]: https://github.com/claymore666/docker-net-dhcp/issues/1135
 [#1027]: https://github.com/claymore666/docker-net-dhcp/issues/1027
 
@@ -158,7 +172,7 @@ with what this project will not do, is on the [roadmap](docs/roadmap.md).
   because it is unmeasured: on a cgroup v2 host it cannot start a
   container at all, so nothing there tests this plugin.
   Every change is also tested against the engine the integration suite
-  runs on, **29.9.0** today, read from the engine drift check in that
+  runs on, **29.9.2** today, read from the engine drift check in that
   run's `Prepare the lane` step.
 - **Plugin interface `docker.networkdriver/1.0`**, which is what the
   plugin manifest declares. The plugin negotiates the Docker API version
@@ -215,16 +229,16 @@ with what this project will not do, is on the [roadmap](docs/roadmap.md).
 sudo mkdir -p /var/lib/net-dhcp
 
 # amd64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.6.0
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.6.1
 # arm64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.6.0-arm64
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.6.1-arm64
 ```
 
 One network, created once. `macvlan` needs only a host NIC; `bridge`
 wants a bridge you bring yourself ([bridge mode](docs/bridge-mode.md)):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.6.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.6.1 \
   --ipam-driver null -o mode=macvlan -o parent=eth0 lan-dhcp
 
 docker run --rm -ti --network lan-dhcp alpine ip address show
@@ -237,8 +251,8 @@ goes into Docker's own address management, which makes `--ip` and
 Compose's `ipv4_address` work.
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.6.0 \
-  --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.6.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.6.1 \
+  --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.6.1 \
   -o mode=macvlan -o parent=eth0 lan-dhcp
 ```
 
@@ -355,6 +369,8 @@ The whole procedure, including rebuilding the binaries yourself, is in
   the tracker.
 - **Governance & code of conduct:** [GOVERNANCE.md](GOVERNANCE.md),
   [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+- **Support:** if the project saves you time, you can chip in via
+  [PayPal](https://paypal.me/kamienc).
 
 ## Contributing
 

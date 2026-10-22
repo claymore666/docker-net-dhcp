@@ -209,31 +209,7 @@ func testSLAAC_AnAdvertisedPrefixReachesTheContainer(t *testing.T, at v6Attach) 
 	t.Logf("formed address inside the container: %q", flags.Line)
 	assertHealthyFormedAddress(t, addr, flags)
 
-	// The fixture advertises 1800 seconds in both fields (pinned in harness/v6signature_test.go) and the kernel counts down
-	// from its install, so the check is an interval whose upper bound catches infinity or an invented lifetime (#818).
-	const advertised = 1800
-	if flags.Valid.Forever || flags.Preferred.Forever {
-		t.Errorf("the address carries an infinite lifetime (valid=%s preferred=%s) on a "+
-			"segment advertising %ds for both. An address the router can stop advertising "+
-			"and the kernel will never remove is the renumbering defect #819 is about: %q",
-			flags.Valid, flags.Preferred, advertised, flags.Line)
-	} else {
-		if flags.Valid.Seconds <= 0 || flags.Valid.Seconds > advertised {
-			t.Errorf("valid_lft = %ds, want between 1 and %d: the advertised valid lifetime "+
-				"counting down. Line: %q", flags.Valid.Seconds, advertised, flags.Line)
-		}
-		if flags.Preferred.Seconds <= 0 || flags.Preferred.Seconds > advertised {
-			t.Errorf("preferred_lft = %ds, want between 1 and %d. A zero here on a freshly "+
-				"advertised prefix would mean the address was installed deprecated (RFC "+
-				"4862 section 5.5.4) on a segment that deprecated nothing. Line: %q",
-				flags.Preferred.Seconds, advertised, flags.Line)
-		}
-		if flags.Preferred.Seconds > flags.Valid.Seconds {
-			t.Errorf("preferred_lft %ds is past valid_lft %ds, which RFC 4862 section 5.5.3 "+
-				"says makes the option unusable: %q",
-				flags.Preferred.Seconds, flags.Valid.Seconds, flags.Line)
-		}
-	}
+	assertAdvertisedLifetimes(t, flags)
 
 	// Docker reports one address per endpoint, and operators copy it from `docker inspect` into firewall rules.
 	if got := inspectV6(t, ctx, cli, id, netName); got != addr {
@@ -358,6 +334,34 @@ func testSLAAC_ADeprecatedPrefixArrivesDeprecated(t *testing.T, at v6Attach) {
 	}
 }
 
+// assertAdvertisedLifetimes checks the kernel's countdown on a formed address against the fixture's 1800 s (#818).
+func assertAdvertisedLifetimes(t *testing.T, flags harness.V6AddrFlags) {
+	t.Helper()
+	const advertised = 1800
+	if flags.Valid.Forever || flags.Preferred.Forever {
+		t.Errorf("the address carries an infinite lifetime (valid=%s preferred=%s) on a "+
+			"segment advertising %ds for both. An address the router can stop advertising "+
+			"and the kernel will never remove is the renumbering defect #819 is about: %q",
+			flags.Valid, flags.Preferred, advertised, flags.Line)
+	} else {
+		if flags.Valid.Seconds <= 0 || flags.Valid.Seconds > advertised {
+			t.Errorf("valid_lft = %ds, want between 1 and %d: the advertised valid lifetime "+
+				"counting down. Line: %q", flags.Valid.Seconds, advertised, flags.Line)
+		}
+		if flags.Preferred.Seconds <= 0 || flags.Preferred.Seconds > advertised {
+			t.Errorf("preferred_lft = %ds, want between 1 and %d. A zero here on a freshly "+
+				"advertised prefix would mean the address was installed deprecated (RFC "+
+				"4862 section 5.5.4) on a segment that deprecated nothing. Line: %q",
+				flags.Preferred.Seconds, advertised, flags.Line)
+		}
+		if flags.Preferred.Seconds > flags.Valid.Seconds {
+			t.Errorf("preferred_lft %ds is past valid_lft %ds, which RFC 4862 section 5.5.3 "+
+				"says makes the option unusable: %q",
+				flags.Preferred.Seconds, flags.Valid.Seconds, flags.Line)
+		}
+	}
+}
+
 // No earlier fixture advertised the managed flag beside an autonomous prefix; harness.V6AutoFallback does (#817).
 
 // TestSLAAC_AutoFallsBackOntoTheAdvertisedPrefix checks that ipv6_mode=auto falls back to the advertised prefix when DHCPv6 is silent (#817).
@@ -398,9 +402,26 @@ func testSLAAC_AutoFallsBackOntoTheAdvertisedPrefix(t *testing.T, at v6Attach) {
 	}
 	assertAttachedAs(t, ctx, f, id, at)
 
+	oneShotSolicits := f.CountLogLines("DHCPSOLICIT")
+
 	addr, flags := awaitPluginAppliedV6(t, ctx, w, id, v6SegmentPrefix(t), slaacAddrBudget(), v6InstalledSinceBaseline)
 	t.Logf("address formed by the auto fallback: %q", flags.Line)
 	assertHealthyFormedAddress(t, addr, flags)
+	assertAdvertisedLifetimes(t, flags)
+
+	// A client that re-decides solicits on the first M=1 advertisement, which can land after the install above (#1369).
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if n := f.CountLogLines("DHCPSOLICIT") - oneShotSolicits; n > 0 {
+			t.Fatalf("the persistent client sent %d Solicit(s) after the one-shot had fallen back on this "+
+				"endpoint. It re-asks a server that already stayed silent and writes nothing until its own "+
+				"fallback fires, so the engine's forever install stays on the link that long (#1369)", n)
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 
 	before, after := w.End()
 	if n := after.DHCPv6AutoFallbacks - before.DHCPv6AutoFallbacks; n < 1 {

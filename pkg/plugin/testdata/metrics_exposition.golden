@@ -132,7 +132,7 @@ net_dhcp_dhcpv6_slaac_no_address_total 2899117
 # TYPE net_dhcp_ipv6_slaac_addresses_total counter
 net_dhcp_ipv6_slaac_addresses_total 3858638
 
-# HELP net_dhcp_ipv6_addresses_withdrawn_total IPv6 addresses removed from a container link because the lease stopped holding them: a valid lifetime that ran out, or a prefix the router stopped advertising. The other half of ipv6_slaac_addresses, and what makes a renumbering visible: an address arriving and an address leaving are two events, and counting only arrivals reads as a container collecting addresses forever. The audit ledger's withdrawn row names which address, when audit_log is on.
+# HELP net_dhcp_ipv6_addresses_withdrawn_total IPv6 addresses removed from a container link because the lease stopped holding them: an address formed from an advertised prefix whose valid lifetime ran out (RFC 4862 section 5.5.4), or a DHCPv6 address a Reply named with a valid lifetime of 0 or whose valid lifetime ran out (RFC 9915 section 18.2.10.1). A router that stops advertising a prefix moves nothing by that alone: the address goes when its valid lifetime runs out (RFC 4862 section 5.5.3 e). The other half of ipv6_slaac_addresses, and what makes a renumbering visible: an address arriving and an address leaving are two events, and counting only arrivals reads as a container collecting addresses forever. The audit ledger's withdrawn row names which address, when audit_log is on.
 # TYPE net_dhcp_ipv6_addresses_withdrawn_total counter
 net_dhcp_ipv6_addresses_withdrawn_total 7112696
 

@@ -183,7 +183,7 @@ jobs:
       # release PRs and manual dispatch, not per feature PR.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.27.2'
+          go-version: '1.27.3'
 
       # The ref is COVER_PLUGIN_REF, not the :integration tag the other
       # lanes use: cleanup-orphans re-enables a plugin a panicked recovery

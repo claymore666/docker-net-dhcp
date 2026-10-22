@@ -400,6 +400,10 @@ in memory only. For `DHCPV6_ABSENCE_MEMORY` (ten minutes by default) the
 next endpoint skips the Solicit and forms its address from the advertised
 prefix at once; `dhcpv6_absence_remembered` counts each. A granted DHCPv6
 address, removing the network or a plugin restart clears the record.
+The endpoint whose own one-shot fell back runs its persistent client in
+`slaac` as well, keyed on the formed lease its record holds
+(`pkg/plugin/ipv6_mode.go`, #1369), so it does not solicit the silent
+server a second time.
 
 ## How a network chooses its DHCP server
 
@@ -1161,7 +1165,7 @@ container and checks the interface the engine actually created. There is
 no version threshold to hit. The upstream fix (moby/moby#52866,
 stopping the remote-driver proxy from dropping `DstName`) merged to moby
 master on 2026-08-26, is milestoned for engine 29.8.0, and that engine
-was released on 2026-09-03. The lane's engine is 29.9.0, read from the
+was released on 2026-09-03. The lane's engine is 29.9.2, read from the
 engine drift check in the run's `Prepare the lane` step, so the probe now succeeds there and
 the dependent tests run. They still skip on any box whose engine is
 older, and a skip there is expected and is not a signal that the run

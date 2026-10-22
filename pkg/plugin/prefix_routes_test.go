@@ -628,6 +628,32 @@ func TestHandleEvent_ABindingEndingWhileBoundLeavesTheContainer(t *testing.T) {
 	}
 }
 
+// BusyBox ip prints no protocol, so only the kernel's own dump can show the aggregate is proto dhcp (#1370).
+func TestHandleEvent_TheKernelHoldsTheAggregateAsProtoDHCP(t *testing.T) {
+	if !inOwnNetns(t) {
+		return
+	}
+	const pfx = "fd00:98:0:1::/64"
+	l := newRenumberLink(t, 0, "", "")
+	m := &dhcpManager{netHandle: l.h, ctrLink: l.link}
+	m.opts.IPv6PD = 64
+	info := dhcp.Info{IP: "fd00:98::10/128", LeaseSeconds: 3600, PreferredSeconds: 1800,
+		DelegatedPrefixes: []dhcp.V6Addr{{IP: pfx, ValidSeconds: 3600, PreferredSeconds: 1800}}}
+	m.handleEvent(dhcp.Event{Type: "bound", Data: info}, true)
+	routes, err := util.DumpResult(l.h.RouteListFiltered(netlink.FAMILY_V6, &netlink.Route{Table: unix.RT_TABLE_UNSPEC},
+		netlink.RT_FILTER_TABLE))
+	if err != nil {
+		t.Fatalf("RouteList: %v", err)
+	}
+	at := slices.DeleteFunc(routes, func(r netlink.Route) bool { return r.Dst == nil || r.Dst.String() != pfx })
+	if len(at) != 1 {
+		t.Fatalf("the kernel holds %d routes at %s, want the one aggregate: %+v", len(at), pfx, at)
+	}
+	if r := at[0]; r.Type != unix.RTN_UNREACHABLE || r.Protocol != unix.RTPROT_DHCP {
+		t.Errorf("the kernel holds %s as type %d proto %v, want unreachable proto dhcp", pfx, r.Type, r.Protocol)
+	}
+}
+
 func kernelV6Bindings(t *testing.T, l renumberLink) []string {
 	t.Helper()
 	out := l.addrs(t, netlink.FAMILY_V6)
