@@ -804,6 +804,28 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#v261-released" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        v2.6.1, released
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#v270-planned" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        v2.7.0, planned
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -1128,6 +1150,28 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#v261-released" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        v2.6.1, released
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#v270-planned" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        v2.7.0, planned
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -1282,6 +1326,18 @@ below decide what is in a release; this page follows them.</p>
 <td>Networks without an IPv4 pool, an IPv6 pool in the IPAM shape, and the CI consolidation</td>
 <td><a href="https://github.com/claymore666/docker-net-dhcp/milestone/39">milestone 39</a></td>
 </tr>
+<tr>
+<td>v2.6.1</td>
+<td>released</td>
+<td>IPv6 address lifetimes and removal conditions, and the Docker Hub description check</td>
+<td><a href="https://github.com/claymore666/docker-net-dhcp/milestone/41">milestone 41</a></td>
+</tr>
+<tr>
+<td>v2.7.0</td>
+<td>planned</td>
+<td>Option and mode test coverage from the lab option review, and bug fixes</td>
+<td><a href="https://github.com/claymore666/docker-net-dhcp/milestone/42">milestone 42</a></td>
+</tr>
 </tbody>
 </table>
 <h3 id="v230-released">v2.3.0, released<a class="headerlink" href="#v230-released" title="Permanent link">&para;</a></h3>
@@ -1398,6 +1454,23 @@ below decide what is in a release; this page follows them.</p>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/733">#733</a>, the CI consolidation: one preflight and one suite runner for
   the four integration lanes</li>
 </ul>
+<h3 id="v261-released">v2.6.1, released<a class="headerlink" href="#v261-released" title="Permanent link">&para;</a></h3>
+<ul>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1369">#1369</a>, an <code>ipv6_mode=auto</code> endpoint that fell back to the advertised
+  prefix gets that prefix's lifetimes at once and no longer solicits the
+  silent DHCPv6 server again</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1368">#1368</a>, the reference names when the plugin removes an IPv6 address;
+  it does not remove one because the router stopped advertising the prefix</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1371">#1371</a>, the reference says why a DHCPv6 server logs a Confirm after the
+  Reply that granted the lease</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1370">#1370</a>, a test pins <code>proto dhcp</code> on the delegated-prefix route</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1324">#1324</a>, each release run reads both Docker Hub descriptions back after
+  the sync and goes red when either differs</li>
+</ul>
+<h3 id="v270-planned">v2.7.0, planned<a class="headerlink" href="#v270-planned" title="Permanent link">&para;</a></h3>
+<p>Option and mode test coverage from the lab option review, and bug fixes
+found in the 2026-10 hunt. The list is the
+<a href="https://github.com/claymore666/docker-net-dhcp/milestone/42">milestone</a>.</p>
 <h2 id="the-release-line">The release line<a class="headerlink" href="#the-release-line" title="Permanent link">&para;</a></h2>
 <pre class="mermaid"><code>flowchart LR
     v20["v2.0&lt;br/&gt;the project's own&lt;br/&gt;DHCP engine"]
