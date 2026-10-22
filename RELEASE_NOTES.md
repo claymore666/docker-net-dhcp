@@ -95,6 +95,8 @@ so `docker plugin upgrade` from v2.6.0 asks for nothing new.
 - The first screen of the README and the docs index states the problem
   the plugin solves and that every release is run against real DHCP
   servers in the lab (#1324).
+- The testing guide reports the v2.6.0-rc2 lab run and its limits, where
+  it still reported the v2.5.0 run as the latest (#1388).
 
 ## v2.6.0
 
