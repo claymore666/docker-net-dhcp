@@ -97,6 +97,9 @@ so `docker plugin upgrade` from v2.6.0 asks for nothing new.
   servers in the lab (#1324).
 - The testing guide reports the v2.6.0-rc2 lab run and its limits, where
   it still reported the v2.5.0 run as the latest (#1388).
+- The README, the docs index and the internals page name the integration
+  lane's engine as 29.9.2, read from the lane's engine drift check; they
+  said 29.9.0 (#1388).
 
 ## v2.6.0
 

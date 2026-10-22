@@ -1165,7 +1165,7 @@ container and checks the interface the engine actually created. There is
 no version threshold to hit. The upstream fix (moby/moby#52866,
 stopping the remote-driver proxy from dropping `DstName`) merged to moby
 master on 2026-08-26, is milestoned for engine 29.8.0, and that engine
-was released on 2026-09-03. The lane's engine is 29.9.0, read from the
+was released on 2026-09-03. The lane's engine is 29.9.2, read from the
 engine drift check in the run's `Prepare the lane` step, so the probe now succeeds there and
 the dependent tests run. They still skip on any box whose engine is
 older, and a skip there is expected and is not a signal that the run
