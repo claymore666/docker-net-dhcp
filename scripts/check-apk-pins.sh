@@ -25,6 +25,11 @@
 # Usage:
 #   bash scripts/check-apk-pins.sh                # human-readable report
 #   bash scripts/check-apk-pins.sh --strict       # exit 1 if any pin is behind
+#   bash scripts/check-apk-pins.sh --list-pins    # print the parsed pins only
+#
+# A pin the index holds an OLDER version of (stale index or mirror lag) is
+# reported as such and is not drift; "behind" means available is newer than
+# pinned by apk's version ordering (#1398).
 #
 # Requires: docker, awk, sed.
 
@@ -34,7 +39,11 @@ set -euo pipefail
 
 DOCKERFILE="${DOCKERFILE:-Dockerfile}"
 STRICT=0
-if [[ "${1:-}" == "--strict" ]]; then STRICT=1; fi
+LIST_PINS=0
+case "${1:-}" in
+    --strict) STRICT=1 ;;
+    --list-pins) LIST_PINS=1 ;;
+esac
 
 # Pull the alpine base off the runtime FROM (the second FROM, after the
 # builder). Greedy match would also catch the golang stage; tail -1 keeps
@@ -45,17 +54,37 @@ if [[ -z "$ALPINE_REF" ]]; then
     exit 2
 fi
 
-# Pinned packages: lines like `        pkg=ver-rN \` inside the apk block.
+# Pinned packages: the `name=version` tokens of each `apk add` command,
+# up to the first shell operator or the end of its continued lines. The
+# RUN that holds the list goes on with `&& for ...` and shell assignments
+# of its own; reading to the end of the continuation took the trailing
+# `&&` of the last pin and a `p="$(...)"` line as pins (#1398).
 mapfile -t PINS < <(awk '
-    /apk add/ { in_apk = 1; next }
-    in_apk && /=/ {
+    /^[[:space:]]*#/ { next }
+    {
         line = $0
-        sub(/^[[:space:]]+/, "", line)
-        sub(/[[:space:]]*\\$/, "", line)
-        if (line ~ /=/) print line
+        if (!in_apk) {
+            if (!match(line, /apk add([[:space:]]|$)/)) next
+            line = substr(line, RSTART + RLENGTH)
+            in_apk = 1
+        }
+        n = split(line, tok, /[[:space:]]+/)
+        for (k = 1; k <= n; k++) {
+            t = tok[k]
+            if (t == "" || t == "\\" || t ~ /^-/) continue
+            if (t ~ /^[A-Za-z0-9][A-Za-z0-9._+-]*=[0-9][A-Za-z0-9._+~-]*$/) { print t; continue }
+            if (t ~ /^[A-Za-z0-9][A-Za-z0-9._+-]*$/) continue
+            in_apk = 0
+            break
+        }
+        if (in_apk && line !~ /\\[[:space:]]*$/) in_apk = 0
     }
-    in_apk && !/\\$/ { in_apk = 0 }
 ' "$DOCKERFILE")
+
+if [[ $LIST_PINS -eq 1 ]]; then
+    printf '%s\n' "${PINS[@]}"
+    exit 0
+fi
 
 if [[ "${#PINS[@]}" -eq 0 ]]; then
     echo "no apk pins found in $DOCKERFILE — nothing to check" >&2
@@ -69,9 +98,13 @@ echo
 # `apk policy` lists installed/available versions; we grep for the head
 # of the indexed candidate. Cleaner than parsing the apk index by hand.
 #
+# Third column: `apk version -t PINNED AVAILABLE` (`<`, `=` or `>`), so the
+# ordering is apk's own and not a second implementation here (#1398). A
+# missing third column counts as "not older", the conservative reading.
+#
 # Test seam (#169): when APK_AVAIL_FILE is set, read pre-canned
-# `name<TAB>version` lines from it instead of querying the registry, so
-# the parse/compare logic is exercisable by scripts/test-check-apk-pins.sh
+# `name<TAB>version<TAB>cmp` lines from it instead of querying the registry,
+# so the parse/compare logic is exercisable by scripts/test-check-apk-pins.sh
 # without docker or network.
 if [[ -n "${APK_AVAIL_FILE:-}" ]]; then
     LATEST=$(cat "$APK_AVAIL_FILE")
@@ -80,14 +113,18 @@ else
         apk update -q >/dev/null
         for p in "$@"; do
             name="${p%%=*}"
-            printf "%s\t" "$name"
-            apk policy "$name" 2>/dev/null | awk "/^[[:space:]]+[0-9]/ {print \$1; exit}"
+            avail=$(apk policy "$name" 2>/dev/null | awk "/^[[:space:]]+[0-9]/ {print \$1; exit}")
+            avail="${avail%:}"
+            cmp=""
+            [ -z "$avail" ] || cmp=$(apk version -t "${p#*=}" "$avail")
+            printf "%s\t%s\t%s\n" "$name" "$avail" "$cmp"
         done
     ' -- "${PINS[@]}")
 fi
 
 drift=0
-while IFS=$'\t' read -r name avail; do
+while IFS=$'\t' read -r name avail cmp; do
+    [[ -n "$name" ]] || continue
     # `apk policy` prints the candidate version with a trailing colon
     # (e.g. `1.36.1-r31:`); strip it so a current pin compares equal
     # instead of being falsely flagged as drifted (#169).
@@ -103,6 +140,8 @@ while IFS=$'\t' read -r name avail; do
     fi
     if [[ "$pinned" == "$avail" ]]; then
         printf "  %-20s pinned=%-15s OK\n" "$name" "$pinned"
+    elif [[ "$cmp" == ">" ]]; then
+        printf "  %-20s pinned=%-15s available=%s  (index older than pin, not drift)\n" "$name" "$pinned" "$avail"
     else
         printf "  %-20s pinned=%-15s available=%s  ← upgrade candidate\n" "$name" "$pinned" "$avail"
         drift=1

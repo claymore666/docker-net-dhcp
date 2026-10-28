@@ -66,6 +66,55 @@ check "missing-from-index flagged, --strict exits 1" 1 "--strict" \
 $'dhcpcd\t\niproute2\t6.9.0-r0:\n' \
 "not found in index"
 
+# --- #1398: the pin parser reads the apk add list and nothing else -----
+# Runtime-stage shape of the real Dockerfile: the list's last pin carries
+# a trailing `&&`, and the same RUN goes on with a shell assignment.
+RT="$TMP/Dockerfile.runtime"
+cat > "$RT" <<'EOF'
+FROM alpine:3.20
+RUN apk add --no-cache \
+        iproute2=7.0.0-r0 \
+        zlib=1.3.2-r1 && \
+    n=3 \
+    for c in dhcpcd udhcpc; do \
+        p="$(command -v "$c" 2>/dev/null || true)"; \
+        [ -n "$p" ] || continue; \
+    done && \
+    if [ "$(readlink -f "$p")" = /bin/busybox ]; then \
+        x=y; \
+    fi
+RUN apk add --no-cache musl=1.2.6-r3
+ENV N=3
+RUN apk add --no-cache \
+        musl-utils=1.2.6-r3 \
+        ARG=abc
+RUN apkish=1.0-r0 sh
+EOF
+pins=$(DOCKERFILE="$RT" bash "$CHECK" --list-pins 2>&1)
+want=$'iproute2=7.0.0-r0\nzlib=1.3.2-r1\nmusl=1.2.6-r3\nmusl-utils=1.2.6-r3'
+if [ "$pins" = "$want" ]; then
+    echo "PASS: pins are exactly the name=version tokens of the apk add lists"
+else
+    echo "FAIL: parsed pins differ (trailing && / shell assignment read as pins)"
+    printf '    got:\n%s\n' "$pins" | sed 's/^/    /'
+    failures=$((failures + 1))
+fi
+
+DF_SAVE="$DF"; DF="$RT"
+check "trailing && and shell assignments do not drift a current list" 0 "--strict" \
+$'iproute2\t7.0.0-r0:\t=\nzlib\t1.3.2-r1:\t=\nmusl\t1.2.6-r3:\t=\nmusl-utils\t1.2.6-r3:\t=\n' \
+"All apk pins current."
+DF="$DF_SAVE"
+
+# apk version -t PINNED AVAILABLE: `>` means the pin is newer than the index.
+check "available older than the pin is reported, not drift, --strict exits 0" 0 "--strict" \
+$'dhcpcd\t10.0.5-r0:\t>\niproute2\t6.9.0-r0:\t=\n' \
+"index older than pin"
+
+check "available newer than the pin still fails --strict" 1 "--strict" \
+$'dhcpcd\t10.0.6-r2:\t<\niproute2\t6.9.0-r0:\t=\n' \
+"upgrade candidate"
+
 # No FROM alpine: => usage error (exit 2).
 cat > "$TMP/Dockerfile.noalpine" <<'EOF'
 FROM golang:1.26-alpine AS builder
