@@ -90,9 +90,12 @@ FROM alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4c
 # zlib is pinned for the same reason: the base digest ships 1.3.2-r0,
 # which the scanner reports as CVE-2026-85091 (#1353).
 #
+# musl and musl-utils likewise: the base digest ships 1.2.6-r2, which the
+# scanner reports as CVE-2026-107891 (#1395).
+#
 # Clears: when the base digest above moves to an Alpine that already
-# ships OpenSSL 3.5.9-r0 and zlib 1.3.2-r1 or later, these three lines
-# are redundant and should go.
+# ships OpenSSL 3.5.9-r0, zlib 1.3.2-r1 and musl 1.2.6-r3 or later,
+# these five lines are redundant and should go.
 #
 # NO SECOND DHCP CLIENT (2.0). 1.x shipped dhcpcd and drove it as a child
 # process; 2.0 leases in-process through the library, so a client that
@@ -124,6 +127,8 @@ RUN mkdir -p /run/docker/plugins /var/lib/net-dhcp && \
         iproute2=7.0.0-r0 \
         libcrypto3=3.5.9-r0 \
         libssl3=3.5.9-r0 \
+        musl=1.2.6-r3 \
+        musl-utils=1.2.6-r3 \
         zlib=1.3.2-r1 && \
     for c in dhcpcd udhcpc udhcpc6 dhclient dhcpcd6; do \
         p="$(command -v "$c" 2>/dev/null || true)"; \
