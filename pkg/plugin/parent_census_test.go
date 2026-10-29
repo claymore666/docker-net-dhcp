@@ -167,13 +167,18 @@ func TestExplainChildLinkAdd_EBUSYNamesAnEndpointBetweenLeaveAndDeleteEndpoint(t
 	close(m.startedCh)
 	p.persistentDHCP["aaaaaaaaaaaa1111"] = m
 	p.endpointFingerprints["aaaaaaaaaaaa1111"] = endpointFingerprint{}
-	other := censusManager("bbbbbbbbbbbb2222", "nnnnnnnnnnnn2222", ModeIPvlan, "eth1", time.Now())
-	other.startErr = errors.New("start failed")
-	close(other.startedCh)
-	p.persistentDHCP["bbbbbbbbbbbb2222"] = other
-	p.endpointFingerprints["bbbbbbbbbbbb2222"] = endpointFingerprint{}
+	for _, o := range []struct{ id, mode, parent string }{
+		{"bbbbbbbbbbbb2222", ModeIPvlan, "eth1"},
+		{"cccccccccccc3333", ModeBridge, "eth0"},
+	} {
+		other := censusManager(o.id, "nnnnnnnnnnnn2222", o.mode, o.parent, time.Now())
+		other.startErr = errors.New("start failed")
+		close(other.startedCh)
+		p.persistentDHCP[o.id] = other
+		p.endpointFingerprints[o.id] = endpointFingerprint{}
+	}
 
-	for _, id := range []string{"aaaaaaaaaaaa1111", "bbbbbbbbbbbb2222"} {
+	for _, id := range []string{"aaaaaaaaaaaa1111", "bbbbbbbbbbbb2222", "cccccccccccc3333"} {
 		_ = p.Leave(context.Background(), LeaveRequest{NetworkID: "n", EndpointID: id})
 	}
 	if len(p.persistentDHCP) != 0 {
@@ -183,7 +188,15 @@ func TestExplainChildLinkAdd_EBUSYNamesAnEndpointBetweenLeaveAndDeleteEndpoint(t
 	msg := p.explainChildLinkAdd(unix.EBUSY, ModeMacvlan, "eth0", censusParentIdx).Error()
 	mustContainAll(t, msg, "holds 1 child on \"eth0\"",
 		"endpoint aaaaaaaaaaaa (network nnnnnnnnnnnn, ipvlan, left its container ", " ago, age 1m")
-	mustContainNone(t, msg, "bbbbbbbbbbbb")
+	mustContainNone(t, msg, "bbbbbbbbbbbb", "cccccccccccc")
+
+	rejoined := censusManager("aaaaaaaaaaaa1111", "nnnnnnnnnnnn1111", ModeIPvlan, "eth0", time.Now())
+	rejoined.ctrID = "c0c0c0c0c0c01111"
+	p.persistentDHCP["aaaaaaaaaaaa1111"] = rejoined
+	msg = p.explainChildLinkAdd(unix.EBUSY, ModeMacvlan, "eth0", censusParentIdx).Error()
+	mustContainAll(t, msg, "holds 1 child on \"eth0\"", "ipvlan, container c0c0c0c0c0c0, age ")
+	mustContainNone(t, msg, "left its container")
+	delete(p.persistentDHCP, "aaaaaaaaaaaa1111")
 
 	_, _ = p.takeEndpoint("aaaaaaaaaaaa1111")
 	mustContainAll(t, p.explainChildLinkAdd(unix.EBUSY, ModeMacvlan, "eth0", censusParentIdx).Error(),
