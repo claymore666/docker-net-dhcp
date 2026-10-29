@@ -196,7 +196,7 @@ func withWireCHAddr(rec lease.Record, opts DHCPNetworkOptions) lease.Record {
 	if err != nil || len(parent.Attrs().HardwareAddr) == 0 {
 		return rec
 	}
-	rec.CHAddr = append([]byte(nil), parent.Attrs().HardwareAddr...)
+	rec.CHAddr = parent.Attrs().HardwareAddr
 	return rec
 }
 

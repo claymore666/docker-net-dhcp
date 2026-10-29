@@ -120,6 +120,10 @@ func TestApplyEndpointClientID_PrecedenceEndpointThenNetworkThenDerived(t *testi
 			if got := resolveClientID(opts, "ep-a", mac); !bytes.Equal(got, tc.want) {
 				t.Errorf("the exchange sends %q, want %q", got, tc.want)
 			}
+			hint, _ := p.takeJoinHint("ep-a")
+			if want, _ := tc.options["client_id"].(string); hint.ClientID != want {
+				t.Errorf("the Join hint carries %q, want %q", hint.ClientID, want)
+			}
 		})
 	}
 }
@@ -286,6 +290,25 @@ func TestRecoverOneEndpoint_RestoresTheClientIDClaim(t *testing.T) {
 }
 
 // parentWithMAC stubs the ipvlan parent with a hardware address and, when addr is set, one IPv4 address.
+func TestRecoverOneEndpoint_ANetworkClientIDStaysShared(t *testing.T) {
+	mac, _ := net.ParseMAC(cidMAC)
+	p := cidPlugin(t, cidBridge("netwide"))
+	if p.recordCreated(cidNetwork, mac, dhcp.ClientIdentity([]byte("netwide"))) == "" {
+		t.Fatal("recordCreated wrote no record")
+	}
+	p.docker = &lockedDocker{}
+	if _, err := p.recoverOneEndpoint(context.Background(), "ctr-holder", cidNetwork, cidHolderEP, cidMAC,
+		"192.168.99.113/24", "", cidBridge("netwide")); err != nil {
+		t.Fatalf("recoverOneEndpoint: %v", err)
+	}
+	if c := p.clientIDClaims[cidHolderEP]; c.id != "netwide" || c.perEndpoint {
+		t.Fatalf("recovered claim = %+v, want the network's netwide, not per endpoint", c)
+	}
+	if err := cidCreate(p, "ep-second", nil); !reachedBridge(err) {
+		t.Errorf("a second endpoint sharing the bridge network's client_id was refused: %v", err)
+	}
+}
+
 func parentWithMAC(t *testing.T, name string, hw net.HardwareAddr, addr string) {
 	t.Helper()
 	link := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: name, Index: 9, HardwareAddr: hw}}
