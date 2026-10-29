@@ -12,8 +12,9 @@ The notes below go back to the first release of this project.
 
 An `ipv6_mode=auto` endpoint that fell back to the advertised prefix
 gets that prefix's lifetimes at once and stops soliciting the silent
-DHCPv6 server, and the plugin image is built with Go 1.27.3 for a
-`crypto/x509` advisory. The reference now names when the plugin removes
+DHCPv6 server. The plugin image is built with Go 1.27.3 for a
+`crypto/x509` advisory and runs on Alpine 3.24.3 with musl 1.2.6-r3 for
+CVE-2026-107891. The reference now names when the plugin removes
 an IPv6 address, and each release run reads the Docker Hub descriptions
 back.
 
@@ -71,6 +72,10 @@ so `docker plugin upgrade` from v2.6.0 asks for nothing new.
   nothing changes in use (#1371).
 - The plugin image is built with Go 1.27.3 (v2.6.0: 1.27.2), which fixes
   the standard-library `crypto/x509` advisory GO-2026-6809 (#1383).
+- The plugin image pins `musl` and `musl-utils` 1.2.6-r3. The image
+  scan reported CVE-2026-107891 against the 1.2.6-r2 that the v2.6.0
+  base shipped (#1395, PR #1396). The image runs on `alpine:3.24.3`
+  (v2.6.0: 3.24.2) (PR #1397).
 - The Docker Hub descriptions of `net-dhcp` and its `docker-net-dhcp`
   alias were not updated by the release runs since v1.7.0: Docker Hub
   refused each write and the run reported the step as passed. A new
@@ -103,6 +108,11 @@ so `docker plugin upgrade` from v2.6.0 asks for nothing new.
 - The README, the docs index and the internals page name the integration
   lane's engine as 29.9.2, read from the lane's engine drift check; they
   said 29.9.0 (#1388).
+- Dependency bumps: the `golang:1.27.3-alpine` builder digest and the CI
+  runner image's `debian:trixie-slim` digest (PR #1397);
+  `github/codeql-action` 4.39.1, `actions/setup-python` 7.1.0 and
+  `ossf/scorecard-action` 2.5.0 (PR #1394); `certifi` 2026.10.19 for the
+  docs site build (PR #1392).
 
 ## v2.6.0
 
