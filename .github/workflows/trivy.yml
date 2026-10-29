@@ -4,8 +4,9 @@ name: Trivy rootfs scan
 #
 #   - govulncheck (test workflow)  → Go module/stdlib vulns, reachable
 #                                     from our code; the blocking gate.
-#   - APK pin drift (apk-pin-check) → signals when a newer busybox-extras
-#                                     / iproute2 is available; not CVEs.
+#   - APK pin drift (apk-pin-check) → fails weekly when a newer version of
+#                                     a pinned apk package (iproute2) is
+#                                     available; not CVEs.
 #   - THIS workflow                → CVEs in the OS packages actually
 #                                     installed in the shipped rootfs
 #                                     (the pinned apk versions + the
@@ -15,8 +16,9 @@ name: Trivy rootfs scan
 #                                     with (or contradict) govulncheck's
 #                                     reachability-based verdicts.
 #
-# Informational, like apk-pin-check: it doesn't fail the run (exit-code
-# 0). The actionable artefact is the SARIF uploaded to Security → Code
+# Informational: it doesn't fail the run (exit-code 0), unlike
+# apk-pin-check, which runs with --strict and fails on drift. The
+# actionable artefact is the SARIF uploaded to Security → Code
 # scanning. Accepted-but-unfixed findings get a reviewed entry in
 # .trivyignore.yaml (justification + review date, never a bare ID) — the
 # same discipline as .github/vuln-allowlist.txt.

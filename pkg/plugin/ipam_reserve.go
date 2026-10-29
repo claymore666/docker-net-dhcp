@@ -475,7 +475,7 @@ func (p *Plugin) addIPAMReserveLinkFor(ctx context.Context, name, peer, mode str
 		}
 		if err := addChildLink(guard, link); err != nil {
 			guard.Unlock()
-			return nil, explainChildLinkAdd(err, mode, opts.linkParent(), parent.Attrs().Index)
+			return nil, p.explainChildLinkAdd(err, mode, opts.linkParent(), parent.Attrs().Index)
 		}
 		ipamReserveLinkIPv6(name, v6)
 		if err := nlLinkSetUp(link); err != nil {

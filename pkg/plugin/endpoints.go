@@ -94,6 +94,8 @@ type CreateEndpointRequest struct {
 
 	// replay marks reacquireEndpoint's rebuild of an endpoint Docker already created; JSON cannot set it (#1036).
 	replay bool
+	// clientID is the per-endpoint client_id a replay takes from the record, since it carries no Options (#219).
+	clientID string
 }
 
 // CreateEndpointResponse is sent as a response to a CreateEndpointRequest

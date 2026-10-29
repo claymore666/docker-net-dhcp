@@ -99,6 +99,7 @@ service's network attachment:
 | option | default |
 | ------ | ------- |
 | `ip` | from DHCP |
+| `client_id` | the network's `client_id`, else derived |
 | `com.docker.network.endpoint.ifname` | engine-assigned |
 
 **[Container-level flags](#driver-options-per-endpoint)** the plugin
@@ -172,10 +173,10 @@ for unattended):
 sudo mkdir -p /var/lib/net-dhcp
 
 # amd64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.6.1
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.7.0
 
 # arm64 (v1.7.0 onward). The architecture is in the tag, see below
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.6.1-arm64
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.7.0-arm64
 ```
 
 **If the directory is missing**, the install pulls the plugin, then
@@ -189,7 +190,7 @@ plugin that is already there:
 
 ```bash
 sudo mkdir -p /var/lib/net-dhcp
-docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v2.6.1
+docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v2.7.0
 ```
 
 On arm64 that second line takes the `-arm64` tag, like every other
@@ -531,7 +532,7 @@ You bring an existing Linux bridge that is L2-connected to the LAN
 (see [`bridge-mode.md`](bridge-mode.md) for the bridge setup itself):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.6.1 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.7.0 \
     --ipam-driver null \
     -o bridge=my-bridge \
     my-dhcp-net
@@ -551,7 +552,7 @@ NIC as it was: no master, promiscuity 0, still up.
 
 ```bash
 sudo iptables -I DOCKER-USER -i lan0 -o lan0 -j ACCEPT
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.6.1 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.7.0 \
     --ipam-driver null \
     -o bridge=lan0 -o parent=eth1 -o force_create=true \
     lan-dhcp
@@ -622,7 +623,7 @@ kernel-generated MACs as macvlan children of a host NIC
 [sub-modes](#macvlan-and-ipvlan-sub-modes)):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.6.1 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.7.0 \
     --ipam-driver null \
     -o mode=macvlan -o parent=eth0 \
     lan-dhcp
@@ -635,16 +636,19 @@ hypervisors that refuse multiple MACs per port (sticky-MAC port
 security, hostile vSwitches, some Wi-Fi APs). A reservation on the MAC
 matches nothing useful, since every child shows the parent's MAC. The
 client identifier (DHCP option 61) is built from the Docker endpoint ID,
-and Docker mints a new one at every `docker restart`, so a reservation on
-it holds only until the container restarts. ipvlan has no per-container
-reservation key that survives a restart unless the network sets
-`client_id`, which gives every container on it the same identity. To pin
-an address, use [`--ip`](#requesting-a-specific-address); for
-reservations on the server, use macvlan. See
+and Docker mints a new one at every `docker restart`, so by default a
+container gets a new address after a restart. Give each container its
+own [`client_id` driver option](#driver-options-per-endpoint) and it
+keeps its address across `docker restart` and a recreate, and a server
+reservation on that value holds ([#219](https://github.com/claymore666/docker-net-dhcp/issues/219)). The network-level
+`client_id` gives every container on the network the same identity, so
+a second ipvlan container with it is refused. To pin an address
+without a server reservation, use
+[`--ip`](#requesting-a-specific-address). See
 [DHCP identity](#dhcp-identity).
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.6.1 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.7.0 \
     --ipam-driver null \
     -o mode=ipvlan -o parent=eth0 \
     lan-dhcp
@@ -740,7 +744,7 @@ Docker's own `macvlan` driver uses, so their DHCP traffic and everything
 after it leaves the parent tagged:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.6.1 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.7.0 \
     --ipam-driver null \
     -o mode=macvlan -o parent=eth0 -o vlan=100 \
     lan-vlan100
@@ -825,8 +829,8 @@ also serves an IPAM driver of its own (#110), and the line names the
 plugin twice:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.6.1 \
-    --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.6.1 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.7.0 \
+    --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.7.0 \
     -o mode=macvlan -o parent=eth0 \
     lan-dhcp
 ```
@@ -1021,7 +1025,7 @@ value as an invalid duration.
 | `propagate_dns` | all | `false` | v0.9.0 | Write the DHCP-supplied DNS server list (option 6 / v6 option 23) into the container's `/etc/resolv.conf` on every bind/renew; a file that already holds the same bytes is not written, and a different one is overwritten in place without being emptied first (#1188). Overrides Docker's embedded resolver for this network; the `search` line uses option 119 with fallback to option 15 on v4, and DHCPv6 option 24 on v6 (v1.9.0+, #815). Since v2.2.0 (#821) the v6 list also carries RFC 8106 RDNSS and DNSSL from the Router Advertisement, with DHCPv6's own options taking precedence (RFC 8106 §5.3.1), and it is rewritten when a later advertisement changes it. A resolver at a link-local address is written with its interface as an RFC 4007 §11 scope zone, `nameserver fe80::1%eth0`; musl does not parse that form. An empty list is never written: the container keeps the resolvers it had. On a dual-stack network every write carries both families: the IPv4 resolvers first, then the IPv6 ones, and the IPv4 search domains followed by the IPv6 ones, each listed once; a family's update replaces only its own part (#1250). |
 | `propagate_mtu` | all | `false` | v0.9.0 | Apply DHCP option 26 (Interface MTU) to the container link on bind/renew. For jumbo-frame (9000) and VPN-reduced (~1450) networks. Since v1.8.0 an MTU outside `[576, 65535]` is refused and the link keeps the MTU it had, counted by `mtu_refused`. With [`mtu`](#driver-options-network-level) set, `mtu` governs the link MTU and this option cannot be combined with it. Nothing below this plugin holds the bottom of that range, so a server-supplied 68 used to be applied verbatim. **This option governs IPv4 only.** The MTU an IPv6 Router Advertisement carries (RFC 4861 §4.6.4) is applied whatever it says, because until v2.2.0 the container's kernel applied it on every IPv6 network and an option defaulting to `false` would have taken it away; it is applied to the link, so it bounds IPv4 as well, and the refusal range still holds. On a dual-stack network where both families supply an MTU, the link takes the **smaller** of the two: the larger is a promise the link cannot keep for the family that asked for the smaller one (#821). |
 | `mtu` | all | unset | v2.3.0 | Set the MTU of every container link this network creates: a decimal integer from 68 to 65535. When set it is the only source of the link MTU. DHCP option 26 and the MTU an IPv6 Router Advertisement carries are not applied, one info line per endpoint names both values, and `mtu_refused` does not count it. The plugin sets the link back to this value on every bind and renew. Refused at network creation: a value outside 68..65535, a value that is not a decimal integer, a value beside `propagate_mtu=true`, and a value above the MTU of the parent (macvlan, ipvlan) or of the bridge; the error names both values. Since v2.5.0 a value below 1280 is also refused when `ipv6_mode` is `dhcp`, `slaac` or `auto` (or `ipv6=true`): below 1280 the kernel removes every IPv6 address from the link, link-local included, and raising the MTU again restores only the link-local (RFC 8200 section 5, #1240). Networks created before v2.5.0 are not re-checked at a plugin restart. If the kernel refuses the value when a container starts, the endpoint fails with the kernel's error and leaves no link behind. In bridge mode both ends of the veth pair get the value, since ends that differ drop full-size frames without an error. **Bridge:** a bridge whose MTU was never changed follows its smallest port, so a container with a smaller mtu lowers the bridge's own host interface for as long as that container is attached, and it comes back when the container leaves; a bridge whose MTU was ever set to a value other than its current one holds it (measured 2026-09-24, kernel 6.12). The creation check reads the bridge's MTU at that moment, so while such a container is attached, a second network on that bridge with a larger mtu is refused. **ipvlan:** the child follows its parent's MTU, so a parent MTU change shows in the container until the next renew. **macvlan:** a parent lowered below the configured value clamps the child, and the re-apply is refused on every renew until the parent comes back, with one warning line each time. (#1037) |
-| `client_id` | all | per-endpoint id | v0.9.0 | Override DHCP option 61 (Client Identifier) for every endpoint on this network; sent as RFC 2132 opaque bytes (type `0x00`). The default per-endpoint id is what makes per-container reservations work, and a fixed `client_id` makes all containers look like one client to the server. At most 254 octets, since the type byte in front brings the option to its 255-octet limit; a longer value is refused at `docker network create` with the length and the bound (#1240). Pair with `vendor_class` for class-based policy. **The derived default differs by mode** (see below). **Since v2.2.2 a change to this option does not move an endpoint that already holds a lease:** the identifier an endpoint sends is the one stored with its lease record, so the new value applies to addresses taken after the change. See [Restart stability](#restart-stability-mac-and-ip). |
+| `client_id` | all | per-endpoint id | v0.9.0 | Override DHCP option 61 (Client Identifier) for every endpoint on this network; sent as RFC 2132 opaque bytes (type `0x00`). The default per-endpoint id is what makes per-container reservations work, and a fixed `client_id` makes all containers look like one client to the server. At most 254 octets, since the type byte in front brings the option to its 255-octet limit; a longer value is refused at `docker network create` with the length and the bound (#1240). The [`client_id` driver option](#driver-options-per-endpoint) overrides it for one container (v2.7.0+). Two containers sharing this network value: on `ipvlan` the second is refused when it starts, where it used to fail later with "address already in use"; on `bridge` and `macvlan` both start and the plugin logs a warning, because a server that matches clients by client identifier gives both one address. Pair with `vendor_class` for class-based policy. **The derived default differs by mode** (see below). **Since v2.2.2 a change to this option does not move an endpoint that already holds a lease:** the identifier an endpoint sends is the one stored with its lease record, so the new value applies to addresses taken after the change. See [Restart stability](#restart-stability-mac-and-ip). |
 | `vendor_class` | all | `docker-net-dhcp` | v0.9.0 | Override DHCP option 60 (Vendor Class Identifier), for DHCP servers running class-based policy (different gateway/option sets per class). At most 255 octets; a longer value is refused at `docker network create` with the length and the bound, where it used to time out every container (#1240). v4 only: the DHCPv6 client sends no vendor-class option. |
 | `user_class` | all | _(none)_ | v2.4.0 | Send DHCP option 77 (User Class, RFC 3004) with this value in every DISCOVER and REQUEST, for DHCP servers that give each class its own pool, gateway or lease time (dnsmasq `dhcp-userclass`, Kea client classes, ISC `user-class`). One class value of 1 to 254 octets, the same for every container on the network; a longer value is refused at `docker network create` with the length and the bound. Without the option nothing is sent. v4 only: the DHCPv6 client sends no user-class option, and the `validate_dhcp` probe does not send it. (#1120) |
 | `rapid_commit` | all | `false` | v2.4.0 | Put DHCPv4 option 80 (Rapid Commit, RFC 4039) in every DISCOVER and DHCPv6 option 14 (RFC 8415 section 18.2.1) in every Solicit. A server that supports it answers with the ACK or the Reply and the lease takes two messages instead of four; a server that does not answers OFFER or Advertise and the exchange continues unchanged. dnsmasq needs `dhcp-rapid-commit` for DHCPv4 and nothing for DHCPv6; Kea answers it for DHCPv6 only, with `rapid-commit` set on the subnet, and its DHCPv4 server does not implement RFC 4039 (Kea 2.6), so on a Kea DHCPv4 segment the exchange stays at four messages. A boolean (`true`, `false`, `1`, `0`); an empty value is unset, and a word that is not a boolean is refused at `docker network create`. `ipv6_mode=slaac` sends no Solicit, so the option changes nothing there, and the `validate_dhcp` probe does not send it. With or without the option, a DHCPv6 lease is taken at container creation and confirmed once by the persistent client when the container starts (RFC 8415 section 18.2.12), so the server logs one Confirm and its Reply after the Reply that granted the lease; a binding that holds a delegated prefix (`ipv6_pd`) resumes with a Rebind instead, since a Confirm carries no IA_PD. (#1031, #926, #1371) |
@@ -1302,7 +1306,32 @@ Passed per container via `docker network connect --driver-opt`, or as
 | option | description |
 | ------ | ----------- |
 | `ip` | Request a specific IPv4 address (bare IP, no CIDR; the netmask comes from DHCP). Equivalent to `docker run --ip`; setting both to different values is an error. The key is matched without regard to case (`IP` and `Ip` work); two spellings with different values are refused. An empty value (Compose `ip: "${IP}"` with `IP` unset) counts as not set. The address is *requested* from the DHCP server (DHCPREQUEST for it); the server still has final say. |
+| `client_id` | (v2.7.0+) DHCP option 61 (Client Identifier) for this container only, in every mode. It takes precedence over the network's `client_id` and over the derived default, and is sent as RFC 2132 opaque bytes (type `0x00`), at most 254 octets like the network option. A server files the lease under the client identifier when one is sent (RFC 2131 section 4.2), so the container gets the same IPv4 address back after `docker restart` and after `docker rm` + `run` with the same value, in `ipvlan` too ([#219](https://github.com/claymore666/docker-net-dhcp/issues/219)). A second running container on the same network with the same value is refused when it starts, before any DHCP packet, with an error that names the container holding the value. The option is refused on a network that names this plugin as its IPAM driver, because there the address is leased before the endpoint exists. IPv4 only: the DHCPv6 DUID does not change. |
 | `com.docker.network.endpoint.ifname` | (v1.0.0+) Request a specific interface name inside the container (Compose `interface_name`, engine 28+; or this key under `driver_opts`, any engine). The plugin validates the name (≤15 bytes, kernel charset; invalid names fail the attach with a clear error) and returns it in its Join response. **Engine support:** moby's remote-driver layer discarded the returned name (`drivers/remote/driver.go` passed an empty `DstName`) until [moby/moby#52866](https://github.com/moby/moby/pull/52866), merged to moby master on 2026-08-26 and milestoned for engine **29.8.0**, which was released on 2026-09-03. Before that the name was applied for built-in drivers only, and an interface from a *plugin* driver kept the driver's prefix and an index in attach order. **Measured** (v2.1.0, #670), one engine line at a time in a nested daemon: 28.5.2 and 29.7.2 ignore the requested name, 29.8.0 applies it. Those are the lines that were measured, not every build of them: a vendor engine below 29.8.0 carrying the change applies the name, and the plugin still reports it as ignored, because the plugin compares versions and does not probe the behaviour. The plugin side is ready and the rename activates by itself on the first engine that applies the returned name, with no change on this side. Where the version says the name will not be applied, the plugin says so in its log at `CreateEndpoint`, naming the engine and the version that would apply the name, and counts [`ifname_unsupported`](#pluginhealth). |
+
+A per-container `client_id`, with `docker run` and with Compose:
+
+```bash
+docker run -d --network name=lan-dhcp,driver-opt=client_id=web nginx
+```
+
+```yaml
+services:
+  web:
+    image: nginx
+    networks:
+      lan-dhcp:
+        driver_opts:
+          client_id: web
+networks:
+  lan-dhcp:
+    external: true
+```
+
+Every replica of a service gets the same `driver_opts`, so a service with
+a fixed `client_id` runs one replica: the second one (`--scale web=2`,
+`deploy.replicas: 2`) is refused because the first holds the value. Give
+each container that needs a stable address its own service.
 
 The plugin puts the IPv6 address Docker hands it at endpoint creation
 (Interface.AddressIPv6) into the Solicit as the requested IA Address, the
@@ -1459,8 +1488,9 @@ everything).
   the parent's, so a reservation would either match nothing or match the
   parent and hand one address to every container on the network. The
   plugin writes no tombstone for `ipvlan` at all, for the same reason.
-  See [DHCP identity](#dhcp-identity) for what `ipvlan` uses instead and
-  why it does not survive a restart (#219).
+  See [DHCP identity](#dhcp-identity) for what `ipvlan` uses instead,
+  why it does not survive a restart, and the per-container `client_id`
+  driver option that makes it survive one (#219).
 
 In **IPAM mode** (#110) the address is Docker's published value rather
 than something only the plugin knows, so its stability is stated
@@ -1658,6 +1688,7 @@ in every mode:
   |---|---|---|
   | `bridge`, `macvlan` | the endpoint MAC | **yes** |
   | `ipvlan` | eight bytes from the Docker endpoint ID | no |
+  | any, with the `client_id` driver option | that value | **yes** |
 
   In `bridge` and `macvlan` the MAC is unique per endpoint and the
   plugin preserves it across a restart, so the server recognises the
@@ -1676,15 +1707,20 @@ in every mode:
   `ipvlan` is the exception: its L2 slaves all inherit the parent's MAC,
   so a MAC-derived id could not tell containers apart. Those keep the
   endpoint-derived id, which is unique but **not** stable across a
-  restart, because Docker mints a fresh endpoint ID each time (#219).
+  restart, because Docker mints a fresh endpoint ID each time. The
+  per-container `client_id` driver option gives an ipvlan container an
+  identity that is stable (#219).
 
-  No mode survives `docker rm` + `run`. A recreate builds a new sandbox
-  with a new MAC and a new endpoint ID, so there is no identity to carry;
-  that needs a per-container identity the driver API doesn't currently
-  expose (#218).
+  By default no mode survives `docker rm` + `run`. A recreate builds a
+  new sandbox with a new MAC and a new endpoint ID, so there is no
+  identity to carry (#218). The `client_id` driver option is that
+  identity for IPv4: the recreated container sends the same value, and a
+  server that files leases by client identifier gives it the same address.
 
-  Override with `client_id`, though a fixed value makes every container
-  look like one client.
+  Override per container with the
+  [`client_id` driver option](#driver-options-per-endpoint), or per
+  network with `client_id`, though a network value makes every
+  container look like one client.
 
 #### Options captured from the server
 
@@ -2376,7 +2412,7 @@ socket also gives, so a permission problem looks exactly like a dead
 endpoint:
 
 ```bash
-PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v2.6.1)
+PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v2.7.0)
 sudo curl -s --unix-socket /run/docker/plugins/$PLUGIN_ID/net-dhcp.sock \
     http://localhost/Plugin.Health | jq .
 ```
@@ -2594,7 +2630,7 @@ quietly go missing from your dashboards.
 On the plugin socket, always:
 
 ```bash
-PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v2.6.1)
+PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v2.7.0)
 sudo curl -s --unix-socket /run/docker/plugins/$PLUGIN_ID/net-dhcp.sock \
     http://localhost/metrics
 ```
@@ -2603,7 +2639,7 @@ Prometheus cannot scrape a UNIX socket, so for an actual scrape target
 set `METRICS_ADDR`:
 
 ```bash
-PLUGIN=ghcr.io/claymore666/docker-net-dhcp:v2.6.1
+PLUGIN=ghcr.io/claymore666/docker-net-dhcp:v2.7.0
 docker plugin disable "$PLUGIN"
 docker plugin set "$PLUGIN" METRICS_ADDR=127.0.0.1:9099
 docker plugin enable "$PLUGIN"
@@ -2763,7 +2799,7 @@ Raise verbosity with a disable, a set, and an enable, in that order,
 because `docker plugin set` is refused while the plugin is running:
 
 ```bash
-PLUGIN=ghcr.io/claymore666/docker-net-dhcp:v2.6.1
+PLUGIN=ghcr.io/claymore666/docker-net-dhcp:v2.7.0
 docker plugin disable "$PLUGIN"
 docker plugin set "$PLUGIN" LOG_LEVEL=trace
 docker plugin enable "$PLUGIN"
@@ -2846,7 +2882,7 @@ Compose-managed alternative (network lifecycle tied to the project):
 ```yaml
 networks:
   lan:
-    driver: ghcr.io/claymore666/docker-net-dhcp:v2.6.1
+    driver: ghcr.io/claymore666/docker-net-dhcp:v2.7.0
     driver_opts:
       mode: macvlan
       parent: eth0

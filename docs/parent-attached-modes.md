@@ -39,7 +39,7 @@ substitute yours, and `ip -brief link` lists them):
 # On arm64 use the -arm64 tag. A network stores this exact reference
 # as its driver, so it must name the plugin you installed.
 docker network create \
-    --driver=ghcr.io/claymore666/docker-net-dhcp:v2.6.1 \
+    --driver=ghcr.io/claymore666/docker-net-dhcp:v2.7.0 \
     --ipam-driver=null \
     -o mode=macvlan \
     -o parent=eth0 \
@@ -166,7 +166,12 @@ and removes itself.
   identity" below for what the plugin sends.)
 - **ipvlan-specific:** only one of macvlan or ipvlan can be active on
   a given parent NIC at a time. The kernel rejects mixing them with
-  `EBUSY`. Use one mode per parent.
+  `EBUSY`. Use one mode per parent. When the host shows no child of the
+  other kind on the parent, the error (v2.7.0+) lists what the plugin
+  holds there: each endpoint with its network, kind, container and age,
+  then the count of other children in the host namespace. A holder the
+  plugin has no endpoint for, such as another driver's, shows as "this
+  plugin holds no child" (#1372).
 - Docker's default IPAM is never the allocator: the LAN's DHCP server
   is the address source of truth. Pass `--ipam-driver=null`, or, from
   v2.1.0, this plugin's own IPAM driver

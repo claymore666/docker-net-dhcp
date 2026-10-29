@@ -68,7 +68,7 @@ func (p *Plugin) runDHCPProbe(ctx context.Context, opts DHCPNetworkOptions, pol 
 
 	if err := addChildLink(guard, probeLink); err != nil {
 		return fmt.Errorf("validate_dhcp: %w",
-			explainChildLinkAdd(err, mode, parent, parentLink.Attrs().Index))
+			p.explainChildLinkAdd(err, mode, parent, parentLink.Attrs().Index))
 	}
 	defer func() {
 		if err := nlLinkDel(probeLink); err != nil {

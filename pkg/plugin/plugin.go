@@ -417,6 +417,8 @@ type joinHint struct {
 	Ifname string
 	// RecordID is CreateEndpoint's durable lease record; empty means Join DISCOVERs (#899).
 	RecordID string
+	// ClientID is the per-endpoint client_id, for a Join whose endpoint has no record to resume the identity from (#219).
+	ClientID string
 }
 
 // Options carries the plugin's runtime knobs from config.json's environment variables, zero meaning the default.
@@ -460,8 +462,10 @@ type Plugin struct {
 	// endpointFingerprints keeps each endpoint's MAC and IPv4 for DeleteEndpoint's tombstone, after Leave took the
 	// manager (#46).
 	endpointFingerprints map[string]endpointFingerprint
-	// creatingEndpoints holds the endpoint IDs of CreateEndpoint calls in flight, which the link reclaim spares (#1339).
+	// creatingEndpoints maps in-flight CreateEndpoint IDs to a pendingEndpoint, spared by the link reclaim (#1339, #1372).
 	creatingEndpoints sync.Map
+	// clientIDClaims holds each endpoint's explicit option-61 id from CreateEndpoint to DeleteEndpoint, under mu (#219).
+	clientIDClaims map[string]clientIDClaim
 
 	// handBackMu guards handingBack, the held records a deferred release has taken, and runningOnHeld; a leaf lock
 	// (#1237).
@@ -988,6 +992,7 @@ type endpointFingerprint struct {
 	RecordKey net.HardwareAddr
 	// LeftUnmanaged: Leave found no running client, so DeleteEndpoint makes the on_stop release (#1342).
 	LeftUnmanaged bool
+	left          *leftChild
 }
 
 // dhcpHostname is a hostname with its trust bit, one value because safeHostname's "" means both refused and absent,
@@ -1383,6 +1388,7 @@ func (p *Plugin) recoverOneEndpoint(ctx context.Context, containerID, networkID,
 		p.recoveryAlreadyManaged.Add(1)
 		return false, nil
 	}
+	p.reclaimClientID(networkID, endpointID, mac, opts)
 
 	// Recovery records the fingerprint, or DeleteEndpoint lays no tombstone and the next `docker restart` loses the
 	// address (#721); after the compare-and-set, so a winning Join's fingerprint stands. Ifname stays empty, as Docker
@@ -1510,6 +1516,11 @@ func (p *Plugin) reacquireEndpoint(ctx context.Context, r JoinRequest, opts DHCP
 		EndpointID: r.EndpointID,
 		Interface:  &EndpointInterface{MacAddress: macAddr},
 		replay:     true,
+	}
+	if mac, err := recoveredMAC(opts, macAddr); err == nil {
+		if id, own := p.recordedClientID(r.NetworkID, r.EndpointID, mac, opts); own {
+			fakeReq.clientID = id
+		}
 	}
 	if _, err := p.CreateEndpoint(ctx, fakeReq); err != nil {
 		return fmt.Errorf("CreateEndpoint replay failed: %w", err)

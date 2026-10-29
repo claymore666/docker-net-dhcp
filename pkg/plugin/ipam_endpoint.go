@@ -260,7 +260,7 @@ func (p *Plugin) addIPAMEndpointLink(ctx context.Context, endpointID, mode strin
 		err = addChildLink(guard, link)
 		guard.Unlock()
 		if err != nil {
-			return nil, explainChildLinkAdd(err, mode, opts.linkParent(), parent.Attrs().Index)
+			return nil, p.explainChildLinkAdd(err, mode, opts.linkParent(), parent.Attrs().Index)
 		}
 		remove := func() {
 			if err := nlLinkDel(link); err != nil {

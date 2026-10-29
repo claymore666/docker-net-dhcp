@@ -26,8 +26,8 @@ This is the successor of `devplayer0/docker-net-dhcp`, not a patched copy:
 
 ```bash
 sudo mkdir -p /var/lib/net-dhcp                      # once per host
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.6.1   # -arm64 on arm64
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.6.1 \
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.7.0   # -arm64 on arm64
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.7.0 \
   --ipam-driver null -o mode=macvlan -o parent=eth0 lan-dhcp
 docker run --rm -ti --network lan-dhcp alpine ip address show
 ```
@@ -57,8 +57,10 @@ and what each item is for is in [SECURITY.md](https://github.com/claymore666/doc
   router keeps matching.
 - **ipvlan gets its own client id.** ipvlan containers share the parent's
   MAC, so each one gets its own DHCP client id (option 61) and its own
-  DUID ([#895]). That identity is new on every restart, so an ipvlan
-  container does not keep its address across `docker restart` ([#219]).
+  DUID ([#895]). That identity is new on every restart, so by default an
+  ipvlan container does not keep its address across `docker restart`.
+  The `client_id` driver option gives a container its own client id that
+  keeps the address across a restart and a recreate ([#219]).
 - **VLANs, sub-modes, MTU.** `-o vlan=` puts a macvlan or ipvlan network
   on a tagged VLAN off the parent ([#902]); `-o macvlan_mode=` and
   `-o ipvlan_mode=` pick the kernel mode of each link ([#905]); `-o mtu=`
@@ -221,16 +223,16 @@ with what this project will not do, is on the [roadmap](roadmap.md).
 sudo mkdir -p /var/lib/net-dhcp
 
 # amd64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.6.1
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.7.0
 # arm64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.6.1-arm64
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.7.0-arm64
 ```
 
 One network, created once. `macvlan` needs only a host NIC; `bridge`
 wants a bridge you bring yourself ([Bridge mode](bridge-mode.md)):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.6.1 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.7.0 \
   --ipam-driver null -o mode=macvlan -o parent=eth0 lan-dhcp
 
 docker run --rm -ti --network lan-dhcp alpine ip address show
@@ -243,8 +245,8 @@ goes into Docker's own address management, which makes `--ip` and
 Compose's `ipv4_address` work.
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.6.1 \
-  --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.6.1 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.7.0 \
+  --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.7.0 \
   -o mode=macvlan -o parent=eth0 lan-dhcp
 ```
 

@@ -8,6 +8,110 @@ The notes below go back to the first release of this project.
 
 [predecessor]: https://github.com/devplayer0/docker-net-dhcp
 
+## v2.7.0
+
+A container can carry its own DHCP client identifier with the
+`client_id` driver option, which lets ipvlan containers keep their
+address across `docker restart` and a recreate. The error for a macvlan
+or ipvlan child the kernel refuses with EBUSY now names the children the
+plugin holds on that parent. The plugin image drops five apk pins that
+Alpine 3.24.3 makes redundant.
+
+### Upgrade notes
+
+**The privilege prompt does not change.** No field `docker plugin upgrade`
+prompts on has moved since v2.0.0. The manifest is the same as v2.6.1's,
+so `docker plugin upgrade` from v2.6.1 asks for nothing new.
+
+<!-- manifest-delta: begin baseline=v2.6.1 -->
+
+| field | v2.6.1 | v2.7.0 | prompted |
+| --- | --- | --- | --- |
+| `linux.capabilities` | `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | no change |
+| `network.type` | `host` | `host` | no change |
+| `ipchost` | `false` | `false` | no change |
+| `pidhost` | `true` | `true` | no change |
+| `mounts` | `/var/run/docker.sock:bind`, `/var/lib/net-dhcp:rbind,rw`, `/var/run/docker:rbind,ro` | `/var/run/docker.sock:bind`, `/var/lib/net-dhcp:rbind,rw`, `/var/run/docker:rbind,ro` | no change |
+| `propagatedmount` | `(absent)` | `(absent)` | no change |
+| `linux.devices` | `(absent)` | `(absent)` | no change |
+| `linux.allowalldevices` | `false` | `false` | no change |
+| `env` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `DHCPV6_ABSENCE_MEMORY`, `STATE_DIR`, `METRICS_ADDR`, `DOCKER_HOST` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `DHCPV6_ABSENCE_MEMORY`, `STATE_DIR`, `METRICS_ADDR`, `DOCKER_HOST` | no change |
+
+<!-- manifest-delta: end -->
+
+| What changed | What it does to you |
+| --- | --- |
+| On an ipvlan network that sets `client_id`, a second container is refused when it is created, with an error naming the container that holds the id (#219) | Before, the second container took a lease and then failed with "address already in use". A compose file that relied on a network `client_id` for several ipvlan containers needs the `client_id` driver option on each container instead |
+| On a bridge or macvlan network that sets `client_id`, a second container logs a warning naming the other container and still starts (#219) | Nothing is refused. A log alert on the warning text is the only effect |
+| In every mode, a second container whose effective `client_id` equals a live one's is refused when either of the two set it with the driver option (#219) | A container cannot take over the id of another container on the same network, or of a network-wide `client_id` that another container sends |
+| An ipvlan IPv4 DHCPRELEASE (`release_lease`) carries the parent link's MAC as `chaddr`, the MAC the request carried, in place of a synthetic key (#219) | ISC dhcpd, which answered the old release "(not found)", can match it. Kea and dnsmasq matched by client id and are unchanged. IPv6 releases are unchanged |
+| The macvlan and ipvlan EBUSY error from the kernel gains a second sentence about the children the plugin holds on the parent (#1372) | A check that matches the whole old text needs updating. The other-kind, unreadable-table and passthru messages are unchanged |
+
+### New
+
+- A `client_id` driver option sets DHCP option 61 for one container:
+  `docker run --network name=lan-dhcp,driver-opt=client_id=web`, or
+  `driver_opts: {client_id: web}` under the network in a Compose service.
+  It works in bridge, macvlan and ipvlan and takes precedence over the
+  network's `client_id` and over the derived default. The value is sent
+  as RFC 2132 opaque bytes (type `0x00`), at most 254 octets, like the
+  network option. It is what ipvlan containers need to keep an address:
+  ipvlan containers share one MAC, so a server tells them apart only by
+  the identity the plugin derived, which changes with every
+  `docker restart`. With the option the container sends the same value
+  after `docker restart` and after `docker rm` and `docker run`, so a
+  server that files leases by client identifier gives it the same
+  address, and a reservation on the value holds. A second live endpoint
+  on the same network with the same value is refused at
+  CreateEndpoint, before any DHCP packet; the claim is released when
+  the container goes and is restored from the lease records when the
+  plugin restarts. The option needs a network created with
+  `--ipam-driver null` and is refused on a network that uses this plugin
+  as IPAM driver, where the address is leased before the endpoint
+  exists. Every replica of a Compose service
+  gets the same `driver_opts`, so a service with a fixed `client_id`
+  runs one replica (#219, PR #1404).
+- When the kernel refuses a macvlan or ipvlan child with EBUSY and the
+  host's link table shows no child of the other kind on the parent, the
+  error and a Warn log line now list what the plugin holds on that
+  parent: its macvlan and ipvlan endpoints, which sit in container
+  namespaces the host's link table cannot see; endpoints between Leave
+  and DeleteEndpoint, whose child can still sit in the dying sandbox;
+  and host-namespace children of an endpoint the plugin still knows.
+  Each entry shows the endpoint, network, kind, container and age, or
+  "recovered by the plugin restart" for a manager rebuilt after a
+  restart. The list is sorted and capped at five, then "and N more", and
+  the line counts the other children on the parent, with how many carry
+  an endpoint tag the plugin no longer holds. A holder the plugin has no
+  endpoint for, in another driver's namespace or a leaked one, reads as
+  "holds no child". The path makes no Docker daemon call (#1372, PR
+  #1405).
+
+### Fixed
+
+- A shared network `client_id` on ipvlan, where the second container
+  took the first one's lease and then failed with "address already in
+  use", is refused at CreateEndpoint (#219, PR #1404).
+- An ipvlan DHCPRELEASE carried the record's synthetic hardware address,
+  which ISC dhcpd did not match (#219, PR #1404).
+
+### CI
+
+- The plugin image no longer pins `libcrypto3`, `libssl3`, `zlib`,
+  `musl` and `musl-utils`. The base `alpine:3.24.3` ships the versions
+  the pins named (OpenSSL 3.5.9-r0, zlib 1.3.2-r1, musl 1.2.6-r3), the
+  built image reports the same versions, and the image scan finds no
+  vulnerability. The `iproute2` pin stays. The comments in the APK pin
+  drift and Trivy workflows describe what the workflows do (#1406, PR
+  #1407).
+- An integration test runs the `client_id` option on the ipvlan fixture:
+  the server files the lease under the option's value, the address is
+  the same after `docker restart` and after a recreate, a second value
+  gets a second address, and a duplicate is refused naming its holder
+  (#219). A second one makes a macvlan container start fail on a parent
+  occupied by an ipvlan container, and the error must name the
+  occupant's endpoint and network (#1372).
+
 ## v2.6.1
 
 An `ipv6_mode=auto` endpoint that fell back to the advertised prefix
@@ -24,8 +128,6 @@ back.
 prompts on has moved since v2.0.0. The manifest is the same as v2.6.0's,
 so `docker plugin upgrade` from v2.6.0 asks for nothing new.
 
-<!-- manifest-delta: begin baseline=v2.6.0 -->
-
 | field | v2.6.0 | v2.6.1 | prompted |
 | --- | --- | --- | --- |
 | `linux.capabilities` | `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | no change |
@@ -37,8 +139,6 @@ so `docker plugin upgrade` from v2.6.0 asks for nothing new.
 | `linux.devices` | `(absent)` | `(absent)` | no change |
 | `linux.allowalldevices` | `false` | `false` | no change |
 | `env` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `DHCPV6_ABSENCE_MEMORY`, `STATE_DIR`, `METRICS_ADDR`, `DOCKER_HOST` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `DHCPV6_ABSENCE_MEMORY`, `STATE_DIR`, `METRICS_ADDR`, `DOCKER_HOST` | no change |
-
-<!-- manifest-delta: end -->
 
 ### Fixed
 

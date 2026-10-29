@@ -1029,7 +1029,7 @@ var endpointCallStart = time.Now
 // CreateEndpoint builds the host-side link, runs a one-shot DHCP acquisition and stashes the result for Join. A failed
 // create gets no Join or DeleteEndpoint, so the hint is dropped here, where every path returns (#1183).
 func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (CreateEndpointResponse, error) {
-	p.creatingEndpoints.Store(r.EndpointID, struct{}{})
+	p.creatingEndpoints.Store(r.EndpointID, pendingEndpoint{network: r.NetworkID, since: time.Now()})
 	defer p.creatingEndpoints.Delete(r.EndpointID)
 	// The daemon sends no Join or DeleteEndpoint for a call it stopped waiting for, so a link made for it would stay
 	// on the parent and refuse every ipvlan child there (#1339).
@@ -1046,6 +1046,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	}
 	if err != nil {
 		p.takeJoinHint(r.EndpointID)
+		p.releaseClientIDClaim(r.EndpointID)
 	}
 	return res, err
 }
@@ -1088,6 +1089,12 @@ func (p *Plugin) createEndpoint(ctx context.Context, r CreateEndpointRequest) (_
 	// Before the IPAM split, the ifname hint and a tombstone's MAC, so a refusal leaves nothing behind (#1036).
 	binding := ipamBindingOf(r.NetworkID)
 	if err := refuseWithoutUserMAC(opts, r); err != nil {
+		if binding != nil {
+			p.ipamDropRefusedReservation(r, binding)
+		}
+		return res, err
+	}
+	if err := p.applyEndpointClientID(ctx, r, &opts, binding != nil); err != nil {
 		if binding != nil {
 			p.ipamDropRefusedReservation(r, binding)
 		}
@@ -1412,6 +1419,7 @@ func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) er
 	p.v6AbsenceServed.Delete(r.EndpointID)
 	// Only Join reads the hint, and a container that never started gets none (#1183).
 	p.takeJoinHint(r.EndpointID)
+	p.releaseClientIDClaim(r.EndpointID)
 	// netMode, not netOptions: teardown must not be blocked by a stored name it never reads (#727).
 	mode, modeKnown, err := p.netMode(ctx, r.NetworkID)
 	if err != nil {
@@ -1868,6 +1876,9 @@ func (p *Plugin) noteSlowAttach(r JoinRequest, elapsed time.Duration) bool {
 // newJoinManager builds the persistent manager from the finished Join answer, marking each family whose gateway the
 // engine will install (#1084).
 func (p *Plugin) newJoinManager(r JoinRequest, opts DHCPNetworkOptions, hint joinHint, res JoinResponse) *dhcpManager {
+	if hint.ClientID != "" {
+		opts.ClientID = hint.ClientID
+	}
 	m := newDHCPManager(p.docker, r, opts).withPlugin(p)
 	m.setLastIP(false, hint.IPv4)
 	m.setLastIP(true, hint.IPv6)
@@ -2161,6 +2172,7 @@ func (p *Plugin) Leave(ctx context.Context, r LeaveRequest) error {
 		p.markEndpointLeftUnmanaged(r.EndpointID)
 		return util.ErrNoSandbox
 	}
+	p.markEndpointLeft(r.EndpointID, manager)
 
 	stopErr := manager.StopForLeave()
 

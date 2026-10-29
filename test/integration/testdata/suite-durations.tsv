@@ -654,6 +654,9 @@
 #              (#1346): TestReleaseLease_OnRemoveHoldsTheAddressThenHandsItBack (100.00)
 #              without its 20 s held probe, on the bridge fixture, plus one held
 #              socket. Its lane replaces it.
+#   one row    TestEndpointClientID_IpvlanKeepsItsAddressAndRefusesADuplicate is INFERRED at 40.00
+#              (#219): four ipvlan starts as in TestClientID_OverrideReachesTheServerOnBridgeAndIpvlan
+#              (22.47 for two), one restart and one refused start. Its lane replaces it.
 TestAdvertDNS_ReachesTheResolverAndDHCPv6ComesFirst	75.00
 TestAdvertRoutes_BecomeContainerRoutesUnlessSkipRoutes	150.00
 TestAuditLog_DefaultOff	12.63
@@ -706,6 +709,8 @@ TestDUID_PersistsAcrossPluginRestart	17.79
 TestDUID_PersistsAcrossPluginRestart_IPAM	17.79
 TestDisplacedClient_TheInterfaceNeverCarriesTwoClients	30.00
 TestDockerAPI_OnlySafeMethodsReachTheDaemon	11.41
+TestEBUSYCensus_NamesTheOtherKindsEndpointOnTheParent	15.00
+TestEndpointClientID_IpvlanKeepsItsAddressAndRefusesADuplicate	40.00
 TestEngineIdentity_HealthMatchesTheDaemonsOwnAnswer	0.05
 TestErrors_DriverOptIPMalformed	0.40
 TestErrors_NetworkCreateValidation	0.04
