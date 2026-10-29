@@ -2846,7 +2846,7 @@ value as an invalid duration.</p>
 <td>all</td>
 <td><code>false</code></td>
 <td>upstream; all modes since v0.9.0</td>
-<td>Don't copy non-default static routes from the parent (bridge or NIC) into containers, <strong>and</strong> don't apply DHCP-supplied classless static routes (option 121, see below), <strong>and</strong> (v2.2.0+, #821) don't apply the routes an IPv6 Router Advertisement asks for. v0.9.0 extended parent route-copying from bridge-only to all modes (#102); set <code>true</code> to restore the old macvlan/ipvlan no-copy behaviour. Neither default gateway is affected either way.</td>
+<td>Don't copy non-default static routes from the parent (bridge or NIC) into containers, <strong>and</strong> don't apply DHCP-supplied classless static routes (option 121, see below), <strong>and</strong> (v2.2.0+, #821) don't apply the routes an IPv6 Router Advertisement asks for. v0.9.0 extended parent route-copying from bridge-only to all modes (#102); set <code>true</code> to restore the old macvlan/ipvlan no-copy behaviour. Neither default gateway is affected either way. Since v2.7.0 that includes the on-link route of a SLAAC prefix: with <code>true</code> such a prefix is reached through the router, where before the kernel's own route kept it on-link (<a href="https://github.com/claymore666/docker-net-dhcp/issues/1412">#1412</a>).</td>
 </tr>
 <tr>
 <td><code>propagate_dns</code></td>
@@ -3826,7 +3826,13 @@ router is one <code>docker network create</code> line and not a contradiction.</
   #1088): one advertisement need not carry every prefix of the link, so
   an advertisement that leaves a prefix out keeps its route, and the
   route goes when an advertisement gives the prefix a Valid Lifetime of
-  0 (RFC 4861 §6.3.4). A prefix whose lifetime runs out with no such
+  0 (RFC 4861 §6.3.4). An address formed from an advertisement
+  (<code>ipv6_mode=slaac</code>, or <code>auto</code> after its fallback) is installed with
+  <code>noprefixroute</code>, so its prefix is on-link only when the advertisement
+  sets the on-link flag, and with <code>skip_routes=true</code> it is not on-link
+  at all (v2.7.0+, <a href="https://github.com/claymore666/docker-net-dhcp/issues/1412">#1412</a>).
+  Before v2.7.0 the kernel added its own route for that prefix, which
+  stayed up to two hours after a Valid Lifetime of 0. A prefix whose lifetime runs out with no such
   advertisement keeps its route until the container restarts. Before
   v2.2.3 the on-link prefixes were set once, when the container started,
   and a lease that finished before the first advertisement got none.
