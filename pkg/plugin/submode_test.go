@@ -348,7 +348,7 @@ func TestRetryPassthruAdd(t *testing.T) {
 }
 
 func TestExplainChildLinkAdd_EINVALOnMacvlanNamesPassthru(t *testing.T) {
-	err := explainChildLinkAdd(unix.EINVAL, ModeMacvlan, "eth0", 7)
+	err := (&Plugin{}).explainChildLinkAdd(unix.EINVAL, ModeMacvlan, "eth0", 7)
 	if !errors.Is(err, unix.EINVAL) {
 		t.Errorf("the explanation lost the kernel's error: %v", err)
 	}
@@ -357,7 +357,7 @@ func TestExplainChildLinkAdd_EINVALOnMacvlanNamesPassthru(t *testing.T) {
 			t.Errorf("the explanation %q does not name %q", err, want)
 		}
 	}
-	if msg := explainChildLinkAdd(unix.EINVAL, ModeIPvlan, "eth0", 7).Error(); strings.Contains(msg, "passthru") {
+	if msg := (&Plugin{}).explainChildLinkAdd(unix.EINVAL, ModeIPvlan, "eth0", 7).Error(); strings.Contains(msg, "passthru") {
 		t.Errorf("an ipvlan EINVAL was explained as passthru: %s", msg)
 	}
 }

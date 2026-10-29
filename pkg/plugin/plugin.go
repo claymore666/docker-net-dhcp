@@ -462,7 +462,7 @@ type Plugin struct {
 	// endpointFingerprints keeps each endpoint's MAC and IPv4 for DeleteEndpoint's tombstone, after Leave took the
 	// manager (#46).
 	endpointFingerprints map[string]endpointFingerprint
-	// creatingEndpoints holds the endpoint IDs of CreateEndpoint calls in flight, which the link reclaim spares (#1339).
+	// creatingEndpoints maps in-flight CreateEndpoint IDs to a pendingEndpoint, spared by the link reclaim (#1339, #1372).
 	creatingEndpoints sync.Map
 	// clientIDClaims holds each endpoint's explicit option-61 id from CreateEndpoint to DeleteEndpoint, under mu (#219).
 	clientIDClaims map[string]clientIDClaim
@@ -992,6 +992,7 @@ type endpointFingerprint struct {
 	RecordKey net.HardwareAddr
 	// LeftUnmanaged: Leave found no running client, so DeleteEndpoint makes the on_stop release (#1342).
 	LeftUnmanaged bool
+	left          *leftChild
 }
 
 // dhcpHostname is a hostname with its trust bit, one value because safeHostname's "" means both refused and absent,
