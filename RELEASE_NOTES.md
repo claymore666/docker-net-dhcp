@@ -108,6 +108,12 @@ so `docker plugin upgrade` from v2.6.0 asks for nothing new.
 - The README, the docs index and the internals page name the integration
   lane's engine as 29.9.2, read from the lane's engine drift check; they
   said 29.9.0 (#1388).
+- The weekly APK pin drift check (`scripts/check-apk-pins.sh --strict`)
+  was red on its 2026-10-25 run. It read text after the `apk add` pin
+  list as pins and compared each pin with the version installed in the
+  base image, not the newest version the package index offers. It now
+  reads only the pins, orders versions with apk's own comparison, and
+  fails when a pin is behind the index or not in it (#1398, PR #1399).
 - Dependency bumps: the `golang:1.27.3-alpine` builder digest and the CI
   runner image's `debian:trixie-slim` digest (PR #1397);
   `github/codeql-action` 4.39.1, `actions/setup-python` 7.1.0 and
