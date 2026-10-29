@@ -83,7 +83,9 @@ func TestExplainChildLinkAdd_EBUSYTellsALeftoverFromAForeignChildAndFromAHeldOne
 	p.creatingEndpoints.Store("dddddddddddd4444", pendingEndpoint{network: "nnnnnnnnnnnn4444", since: time.Now().Add(-3 * time.Second)})
 	p.creatingEndpoints.Store("eeeeeeeeeeee5555", pendingEndpoint{network: "nnnnnnnnnnnn5555", since: time.Now()})
 	p.joinHints["ffffffffffff6666"] = joinHint{}
+	p.persistentDHCP["777777777777cccc"] = censusManager("777777777777cccc", "nnnnnnnnnnnn7777", ModeMacvlan, "eth0", time.Time{})
 	withLinkList(t, []netlink.Link{
+		censusChild(subLinkName("777777777777cccc"), ModeMacvlan, endpointAliasPrefix+"777777777777cccc", censusParentIdx),
 		censusChild(subLinkName("dddddddddddd4444"), ModeMacvlan, endpointAliasPrefix+"dddddddddddd4444", censusParentIdx),
 		censusChild(subLinkName("eeeeeeeeeeee5555"), ModeMacvlan, "", censusParentIdx),
 		censusChild(subLinkName("ffffffffffff6666"), ModeMacvlan, endpointAliasPrefix+"ffffffffffff6666", censusParentIdx),
@@ -94,12 +96,13 @@ func TestExplainChildLinkAdd_EBUSYTellsALeftoverFromAForeignChildAndFromAHeldOne
 
 	msg := p.explainChildLinkAdd(unix.EBUSY, ModeMacvlan, "eth0", censusParentIdx).Error()
 	mustContainAll(t, msg,
-		"holds 3 children",
+		"holds 4 children",
+		"endpoint 777777777777 (network nnnnnnnnnnnn, macvlan, sandbox 5a5a5a5a5a5a)",
 		"endpoint dddddddddddd (network nnnnnnnnnnnn, macvlan, host link dh-dddddddddddd, age 3s)",
 		"endpoint eeeeeeeeeeee (network nnnnnnnnnnnn, macvlan, host link dh-eeeeeeeeeeee",
 		"endpoint ffffffffffff (macvlan, host link dh-ffffffffffff)",
 		"2 other children on it in the host namespace, 1 of them tagged by this plugin for an endpoint it no longer holds")
-	mustContainNone(t, msg, "999999999999", "mv-foreign", "888888888888")
+	mustContainNone(t, msg, "999999999999", "mv-foreign", "888888888888", "host link dh-777777777777")
 }
 
 func TestExplainChildLinkAdd_EBUSYListIsSortedAndCapped(t *testing.T) {
