@@ -1250,8 +1250,10 @@ and what each item is for is in <a href="https://github.com/claymore666/docker-n
   router keeps matching.</li>
 <li><strong>ipvlan gets its own client id.</strong> ipvlan containers share the parent's
   MAC, so each one gets its own DHCP client id (option 61) and its own
-  DUID (<a href="https://github.com/claymore666/docker-net-dhcp/issues/895">#895</a>). That identity is new on every restart, so an ipvlan
-  container does not keep its address across <code>docker restart</code> (<a href="https://github.com/claymore666/docker-net-dhcp/issues/219">#219</a>).</li>
+  DUID (<a href="https://github.com/claymore666/docker-net-dhcp/issues/895">#895</a>). That identity is new on every restart, so by default an
+  ipvlan container does not keep its address across <code>docker restart</code>.
+  The <code>client_id</code> driver option gives a container its own client id that
+  keeps the address across a restart and a recreate (<a href="https://github.com/claymore666/docker-net-dhcp/issues/219">#219</a>).</li>
 <li><strong>VLANs, sub-modes, MTU.</strong> <code>-o vlan=</code> puts a macvlan or ipvlan network
   on a tagged VLAN off the parent (<a href="https://github.com/claymore666/docker-net-dhcp/issues/902">#902</a>); <code>-o macvlan_mode=</code> and
   <code>-o ipvlan_mode=</code> pick the kernel mode of each link (<a href="https://github.com/claymore666/docker-net-dhcp/issues/905">#905</a>); <code>-o mtu=</code>
