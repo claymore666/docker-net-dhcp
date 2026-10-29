@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -189,6 +190,9 @@ func TestExplainChildLinkAdd_EBUSYNamesAnEndpointBetweenLeaveAndDeleteEndpoint(t
 	mustContainAll(t, msg, "holds 1 child on \"eth0\"",
 		"endpoint aaaaaaaaaaaa (network nnnnnnnnnnnn, ipvlan, left its container ", " ago, age 1m")
 	mustContainNone(t, msg, "bbbbbbbbbbbb", "cccccccccccc")
+	if !regexp.MustCompile(`left its container \d+s ago`).MatchString(msg) {
+		t.Errorf("the time since Leave is not seconds, so it is not measured from the Leave: %s", msg)
+	}
 
 	rejoined := censusManager("aaaaaaaaaaaa1111", "nnnnnnnnnnnn1111", ModeIPvlan, "eth0", time.Now())
 	rejoined.ctrID = "c0c0c0c0c0c01111"
