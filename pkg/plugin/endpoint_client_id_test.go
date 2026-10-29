@@ -270,6 +270,24 @@ func TestReacquireEndpoint_CarriesTheRecordedClientID(t *testing.T) {
 	}
 }
 
+func TestReacquireEndpoint_ANetworkClientIDStaysShared(t *testing.T) {
+	mac, _ := net.ParseMAC(cidMAC)
+	p := cidPlugin(t, cidBridge("netwide"))
+	if p.recordCreated(cidNetwork, mac, dhcp.ClientIdentity([]byte("netwide"))) == "" {
+		t.Fatal("recordCreated wrote no record")
+	}
+	p.claimClientID(cidHolderEP, clientIDClaim{networkID: cidNetwork, id: "netwide"}, false)
+
+	err := p.reacquireEndpoint(context.Background(), JoinRequest{NetworkID: cidNetwork, EndpointID: "ep-replay"},
+		cidBridge("netwide"))
+	if !reachedBridge(err) {
+		t.Fatalf("the replay of an endpoint sharing the bridge network's client_id: %v", err)
+	}
+	if err := cidCreate(p, "ep-sibling", nil); !reachedBridge(err) {
+		t.Errorf("a sibling sharing the bridge network's client_id was refused after the replay: %v", err)
+	}
+}
+
 func TestRecoverOneEndpoint_RestoresTheClientIDClaim(t *testing.T) {
 	mac, _ := net.ParseMAC(cidMAC)
 	p := cidPlugin(t, cidBridge(""))

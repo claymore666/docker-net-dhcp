@@ -1328,6 +1328,11 @@ networks:
     external: true
 ```
 
+Every replica of a service gets the same `driver_opts`, so a service with
+a fixed `client_id` runs one replica: the second one (`--scale web=2`,
+`deploy.replicas: 2`) is refused because the first holds the value. Give
+each container that needs a stable address its own service.
+
 The plugin puts the IPv6 address Docker hands it at endpoint creation
 (Interface.AddressIPv6) into the Solicit as the requested IA Address, the
 DHCPv6 equivalent of option 50 and, like option 50, a request the server
