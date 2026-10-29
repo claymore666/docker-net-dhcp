@@ -134,7 +134,7 @@ func (p *Plugin) explainChildLinkAdd(err error, mode, parent string, parentIndex
 	// The holder is out of the host's link table; the census tells this plugin's endpoints from the rest (#1372).
 	c := p.census(parent, parentIndex, links)
 	text := c.String(parent)
-	c.log(parent, mode, text)
+	c.warn(parent, mode, text)
 	return fmt.Errorf("failed to create %v link on %q: %w — the parent would not "+
 		"accept another child; if a %v network is being torn down on the same "+
 		"parent, retry once it has finished. %v", mode, parent, err, otherChildMode(mode), text)

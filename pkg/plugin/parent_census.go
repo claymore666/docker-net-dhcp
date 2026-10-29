@@ -23,7 +23,6 @@ type pendingEndpoint struct {
 // censusListCap bounds the children an EBUSY error lists, since the daemon shows the whole text to the user.
 const censusListCap = 5
 
-// heldChild is one child the plugin holds on a parent: where its link is and what it serves.
 type heldChild struct {
 	endpoint, network, kind string
 	where                   string
@@ -44,9 +43,7 @@ func (c heldChild) String() string {
 
 // parentCensus is what the plugin can attribute among a parent's children when the kernel refuses another one.
 type parentCensus struct {
-	held []heldChild
-	// unheld counts the host-namespace children on the parent the plugin holds no endpoint for, and unheldTagged
-	// those of them still wearing this plugin's endpoint tag, a leftover rather than a foreign link.
+	held                 []heldChild
 	unheld, unheldTagged int
 }
 
@@ -154,8 +151,8 @@ func childNoun(n int) string {
 	return "children"
 }
 
-// logCensus records the census beside the error, so the plugin's log tells a leftover from a foreign holder (#1372).
-func (c parentCensus) log(parent, mode, text string) {
+// warn logs the census beside the error, so the plugin's log tells a leftover from a foreign holder (#1372).
+func (c parentCensus) warn(parent, mode, text string) {
 	log.WithFields(log.Fields{
 		"parent":        parent,
 		"mode":          mode,

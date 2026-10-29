@@ -462,8 +462,7 @@ type Plugin struct {
 	// endpointFingerprints keeps each endpoint's MAC and IPv4 for DeleteEndpoint's tombstone, after Leave took the
 	// manager (#46).
 	endpointFingerprints map[string]endpointFingerprint
-	// creatingEndpoints maps the endpoint IDs of CreateEndpoint calls in flight to a pendingEndpoint; the link reclaim
-	// spares them (#1339) and the EBUSY census names their network (#1372).
+	// creatingEndpoints maps in-flight CreateEndpoint IDs to a pendingEndpoint, spared by the link reclaim (#1339, #1372).
 	creatingEndpoints sync.Map
 	// clientIDClaims holds each endpoint's explicit option-61 id from CreateEndpoint to DeleteEndpoint, under mu (#219).
 	clientIDClaims map[string]clientIDClaim
