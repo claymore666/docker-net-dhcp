@@ -161,6 +161,9 @@ func (m *dhcpManager) releaseHeldLease(v6 bool) (releaseOutcome, error) {
 // resolved is the sweep's shared probe answers for the link path, nil outside a sweep (#1288).
 func releaseFromRecord(rec lease.Record, opts DHCPNetworkOptions, v6 bool, held netip.Addr,
 	resolved *runtime.LinkResolveCache, fields log.Fields) (releaseOutcome, error) {
+	if !v6 {
+		rec = withWireCHAddr(rec, opts)
+	}
 	src, iface, err := hostSourceFor(opts, v6, held)
 	if !v6 && errors.Is(err, errParentHasNoAddress) {
 		return releaseOnLink(rec, opts.hostLink(), resolved, fields)
@@ -181,6 +184,21 @@ func releaseFromRecord(rec lease.Record, opts DHCPNetworkOptions, v6 bool, held 
 }
 
 var rtSendRelease = runtime.SendRelease
+
+// withWireCHAddr gives an ipvlan record the parent's MAC, which its request carried, in place of the synthetic record
+// key: ISC dhcpd answered such a release "(not found)" while Kea and dnsmasq matched it by client id (measured
+// 2026-10-28, #219). A failed parent lookup keeps the record's.
+func withWireCHAddr(rec lease.Record, opts DHCPNetworkOptions) lease.Record {
+	if opts.effectiveMode() != ModeIPvlan {
+		return rec
+	}
+	parent, err := nlLinkByName(opts.linkParent())
+	if err != nil || len(parent.Attrs().HardwareAddr) == 0 {
+		return rec
+	}
+	rec.CHAddr = append([]byte(nil), parent.Attrs().HardwareAddr...)
+	return rec
+}
 
 // releaseOnLink sends a v4 release from the leased address over a parent with no host IPv4, e.g. a macvlan one (#1288).
 func releaseOnLink(rec lease.Record, iface string, resolved *runtime.LinkResolveCache, fields log.Fields) (releaseOutcome, error) {
