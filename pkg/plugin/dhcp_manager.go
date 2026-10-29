@@ -174,6 +174,9 @@ type dhcpManager struct {
 	ctrIDMu sync.Mutex
 	ctrID   string
 
+	// started is when the Join or the restart recovery made this manager, the age an EBUSY census reports (#1372).
+	started time.Time
+
 	// startedCh closes when Start finishes, so Stop can wait out a Start that Join's goroutine is still running.
 	startedCh chan struct{}
 	startErr  error
@@ -211,6 +214,7 @@ func newDHCPManager(docker dockerClient, r JoinRequest, opts DHCPNetworkOptions)
 
 		stopChan:  make(chan struct{}),
 		startedCh: make(chan struct{}),
+		started:   time.Now(),
 	}
 }
 
@@ -406,6 +410,15 @@ func auditSource(info dhcp.Info) string {
 		return "slaac"
 	}
 	return ""
+}
+
+// cachedContainerID returns the container ID a ledger lookup already found, without a daemon call or a wait.
+func (m *dhcpManager) cachedContainerID() string {
+	if !m.ctrIDMu.TryLock() {
+		return ""
+	}
+	defer m.ctrIDMu.Unlock()
+	return m.ctrID
 }
 
 // containerID returns the endpoint's container ID for ledger entries, empty while it is not known. Only a real ID is

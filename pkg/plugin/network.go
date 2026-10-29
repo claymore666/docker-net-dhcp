@@ -1029,7 +1029,7 @@ var endpointCallStart = time.Now
 // CreateEndpoint builds the host-side link, runs a one-shot DHCP acquisition and stashes the result for Join. A failed
 // create gets no Join or DeleteEndpoint, so the hint is dropped here, where every path returns (#1183).
 func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (CreateEndpointResponse, error) {
-	p.creatingEndpoints.Store(r.EndpointID, struct{}{})
+	p.creatingEndpoints.Store(r.EndpointID, pendingEndpoint{network: r.NetworkID, since: time.Now()})
 	defer p.creatingEndpoints.Delete(r.EndpointID)
 	// The daemon sends no Join or DeleteEndpoint for a call it stopped waiting for, so a link made for it would stay
 	// on the parent and refuse every ipvlan child there (#1339).

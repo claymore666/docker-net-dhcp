@@ -73,7 +73,7 @@ func TestExplainChildLinkAdd_NamesTheConflictingKind(t *testing.T) {
 				childOn(t, tc.occupant, parentIdx),
 			}, nil)
 
-			err := explainChildLinkAdd(unix.EBUSY, tc.wantMode, "eth0", parentIdx)
+			err := (&Plugin{}).explainChildLinkAdd(unix.EBUSY, tc.wantMode, "eth0", parentIdx)
 			if err == nil {
 				t.Fatal("explainChildLinkAdd returned nil for an EBUSY")
 			}
@@ -95,7 +95,7 @@ func TestExplainChildLinkAdd_NamesTheConflictingKind(t *testing.T) {
 func TestExplainChildLinkAdd_UnseenBlockerDoesNotInvent(t *testing.T) {
 	withLinkList(t, nil, nil)
 
-	err := explainChildLinkAdd(unix.EBUSY, ModeIPvlan, "eth0", 7)
+	err := (&Plugin{}).explainChildLinkAdd(unix.EBUSY, ModeIPvlan, "eth0", 7)
 	if !errors.Is(err, unix.EBUSY) {
 		t.Fatalf("error no longer wraps EBUSY: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestExplainChildLinkAdd_IgnoresChildrenOfOtherParents(t *testing.T) {
 		childOn(t, ModeMacvlan, 99),
 	}, nil)
 
-	if msg := explainChildLinkAdd(unix.EBUSY, ModeIPvlan, "eth0", 7).Error(); strings.Contains(msg, "not both") {
+	if msg := (&Plugin{}).explainChildLinkAdd(unix.EBUSY, ModeIPvlan, "eth0", 7).Error(); strings.Contains(msg, "not both") {
 		t.Errorf("a macvlan child of a different parent was reported as the conflict: %s", msg)
 	}
 }
@@ -117,7 +117,7 @@ func TestExplainChildLinkAdd_IgnoresChildrenOfOtherParents(t *testing.T) {
 func TestExplainChildLinkAdd_NonBusyIsUnchanged(t *testing.T) {
 	boom := errors.New("boom")
 
-	err := explainChildLinkAdd(boom, ModeMacvlan, "eth0", 7)
+	err := (&Plugin{}).explainChildLinkAdd(boom, ModeMacvlan, "eth0", 7)
 	if !errors.Is(err, boom) {
 		t.Fatalf("original error lost: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestNewProbeLink_MatchesTheNetworkMode(t *testing.T) {
 func TestExplainChildLinkAdd_UnreadableLinkTableIsNotAnEmptyParent(t *testing.T) {
 	withLinkList(t, nil, errors.New("netlink: operation not permitted"))
 
-	err := explainChildLinkAdd(unix.EBUSY, ModeIPvlan, "eth0", 7)
+	err := (&Plugin{}).explainChildLinkAdd(unix.EBUSY, ModeIPvlan, "eth0", 7)
 	if !errors.Is(err, unix.EBUSY) {
 		t.Fatalf("error no longer wraps EBUSY: %v", err)
 	}
@@ -197,7 +197,8 @@ func TestChildLinkKind_DumpInterruptedStillUsesTheResults(t *testing.T) {
 	const parentIdx = 7
 	withLinkList(t, []netlink.Link{childOn(t, ModeMacvlan, parentIdx)}, netlink.ErrDumpInterrupted)
 
-	kind, known := childLinkKind(parentIdx)
+	links, known := hostLinks()
+	kind := childLinkKind(links, parentIdx)
 	if !known {
 		t.Fatal("ErrDumpInterrupted was treated as a failed scan, but netlink v1.3.1 " +
 			"returns it alongside a usable result set (#802)")
@@ -211,7 +212,8 @@ func TestChildLinkKind_DumpInterruptedStillUsesTheResults(t *testing.T) {
 func TestChildLinkKind_EmptyParentIsKnown(t *testing.T) {
 	withLinkList(t, nil, nil)
 
-	kind, known := childLinkKind(7)
+	links, known := hostLinks()
+	kind := childLinkKind(links, 7)
 	if !known {
 		t.Error("a successful dump over a parent with no children reported that it could not tell")
 	}

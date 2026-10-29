@@ -1,0 +1,166 @@
+// Copyright the docker-net-dhcp contributors.
+// SPDX-License-Identifier: GPL-3.0-only
+
+package plugin
+
+import (
+	"fmt"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	log "github.com/sirupsen/logrus"
+	"github.com/vishvananda/netlink"
+)
+
+// pendingEndpoint is a CreateEndpoint call in flight: its network and when it started.
+type pendingEndpoint struct {
+	network string
+	since   time.Time
+}
+
+// censusListCap bounds the children an EBUSY error lists, since the daemon shows the whole text to the user.
+const censusListCap = 5
+
+// heldChild is one child the plugin holds on a parent: where its link is and what it serves.
+type heldChild struct {
+	endpoint, network, kind string
+	where                   string
+	since                   time.Time
+}
+
+func (c heldChild) String() string {
+	var parts []string
+	if c.network != "" {
+		parts = append(parts, "network "+shortID(c.network))
+	}
+	parts = append(parts, c.kind, c.where)
+	if !c.since.IsZero() {
+		parts = append(parts, "age "+time.Since(c.since).Round(time.Second).String())
+	}
+	return fmt.Sprintf("endpoint %v (%v)", shortID(c.endpoint), strings.Join(parts, ", "))
+}
+
+// parentCensus is what the plugin can attribute among a parent's children when the kernel refuses another one.
+type parentCensus struct {
+	held []heldChild
+	// unheld counts the host-namespace children on the parent the plugin holds no endpoint for, and unheldTagged
+	// those of them still wearing this plugin's endpoint tag, a leftover rather than a foreign link.
+	unheld, unheldTagged int
+}
+
+// census attributes parent's children: the plugin's endpoints on it, whose links sit in containers out of the host's
+// link table, and the host-namespace children in links. It calls no daemon, since an EBUSY answers inside the daemon's
+// ContainerStart (#406), and it reads no container ID while holding mu (#1189 holds ctrIDMu across a lookup).
+func (p *Plugin) census(parent string, parentIndex int, links []netlink.Link) parentCensus {
+	held := map[string]heldChild{}
+	pending := map[string]pendingEndpoint{}
+	p.creatingEndpoints.Range(func(k, v any) bool {
+		id, _ := k.(string)
+		pe, _ := v.(pendingEndpoint)
+		pending[id] = pe
+		return true
+	})
+
+	var managers []*dhcpManager
+	p.mu.Lock()
+	for _, m := range p.persistentDHCP {
+		managers = append(managers, m)
+	}
+	p.mu.Unlock()
+	for _, m := range managers {
+		kind := m.opts.effectiveMode()
+		if m.opts.linkParent() != parent || (kind != ModeMacvlan && kind != ModeIPvlan) {
+			continue
+		}
+		where := "in a container"
+		if id := m.cachedContainerID(); id != "" {
+			where = "container " + shortID(id)
+		} else if m.joinReq.SandboxKey != "" {
+			where = "sandbox " + shortID(filepath.Base(m.joinReq.SandboxKey))
+		}
+		held[m.joinReq.EndpointID] = heldChild{
+			endpoint: m.joinReq.EndpointID, network: m.joinReq.NetworkID, kind: kind, where: where, since: m.started,
+		}
+	}
+
+	// The IPAM endpoint path leaves its child untagged, so a name match on an in-flight or managed endpoint counts.
+	byName := map[string]string{}
+	for id := range pending {
+		byName[subLinkName(id)] = id
+	}
+	for id := range held {
+		byName[subLinkName(id)] = id
+	}
+
+	var c parentCensus
+	for _, l := range links {
+		a := l.Attrs()
+		if a.ParentIndex != parentIndex {
+			continue
+		}
+		id, tagged := strings.CutPrefix(a.Alias, endpointAliasPrefix)
+		if !tagged {
+			id = byName[a.Name]
+		}
+		if id == "" || !p.endpointKnown(id) {
+			c.unheld++
+			if tagged {
+				c.unheldTagged++
+			}
+			continue
+		}
+		if _, ok := held[id]; ok {
+			continue
+		}
+		pe := pending[id]
+		held[id] = heldChild{endpoint: id, network: pe.network, kind: l.Type(), where: "host link " + a.Name, since: pe.since}
+	}
+
+	for _, h := range held {
+		c.held = append(c.held, h)
+	}
+	sort.Slice(c.held, func(i, j int) bool { return c.held[i].endpoint < c.held[j].endpoint })
+	return c
+}
+
+func (c parentCensus) String(parent string) string {
+	var b strings.Builder
+	if len(c.held) == 0 {
+		fmt.Fprintf(&b, "this plugin holds no child on %q", parent)
+	} else {
+		var listed []string
+		for i, h := range c.held {
+			if i == censusListCap {
+				listed = append(listed, fmt.Sprintf("and %d more", len(c.held)-censusListCap))
+				break
+			}
+			listed = append(listed, h.String())
+		}
+		fmt.Fprintf(&b, "this plugin holds %d %v on %q: %v", len(c.held), childNoun(len(c.held)), parent, strings.Join(listed, "; "))
+	}
+	fmt.Fprintf(&b, "; %d other %v on it in the host namespace", c.unheld, childNoun(c.unheld))
+	if c.unheldTagged > 0 {
+		fmt.Fprintf(&b, ", %d of them tagged by this plugin for an endpoint it no longer holds", c.unheldTagged)
+	}
+	return b.String()
+}
+
+func childNoun(n int) string {
+	if n == 1 {
+		return "child"
+	}
+	return "children"
+}
+
+// logCensus records the census beside the error, so the plugin's log tells a leftover from a foreign holder (#1372).
+func (c parentCensus) log(parent, mode, text string) {
+	log.WithFields(log.Fields{
+		"parent":        parent,
+		"mode":          mode,
+		"held":          len(c.held),
+		"unheld":        c.unheld,
+		"unheld_tagged": c.unheldTagged,
+	}).Warn("The parent refused a child with EBUSY: " + text)
+}

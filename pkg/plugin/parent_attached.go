@@ -101,7 +101,7 @@ func newChildLink(opts DHCPNetworkOptions, la netlink.LinkAttrs) (netlink.Link, 
 // explainChildLinkAdd names the kind in the way when the kernel refuses a child with EBUSY: macvlan and ipvlan both
 // claim the parent's single rx_handler, so the second kind is refused while same-kind children coexist (#486).
 // Not a retry, since two kinds on one NIC is permanent.
-func explainChildLinkAdd(err error, mode, parent string, parentIndex int) error {
+func (p *Plugin) explainChildLinkAdd(err error, mode, parent string, parentIndex int) error {
 	// A passthru child takes the parent alone, and the kernel refuses the next child EINVAL, measured on Linux 6.12;
 	// EINVAL has other causes, so the text names passthru as one (#905).
 	if mode == ModeMacvlan && errors.Is(err, unix.EINVAL) {
@@ -115,7 +115,7 @@ func explainChildLinkAdd(err error, mode, parent string, parentIndex int) error 
 		return fmt.Errorf("failed to create %v link: %w", mode, err)
 	}
 
-	occupant, known := childLinkKind(parentIndex)
+	links, known := hostLinks()
 	if !known {
 		// An unreadable link table is reported apart from a parent that carries neither kind (#802).
 		return fmt.Errorf("failed to create %v link on %q: %w — the parent would not "+
@@ -123,37 +123,43 @@ func explainChildLinkAdd(err error, mode, parent string, parentIndex int) error 
 			"already carries %v children is unknown; check with `ip -d link show` and "+
 			"retry", mode, parent, err, otherChildMode(mode))
 	}
-	if occupant == "" || occupant == mode {
-		return fmt.Errorf("failed to create %v link on %q: %w — the parent would not "+
-			"accept another child; if a %v network is being torn down on the same "+
-			"parent, retry once it has finished", mode, parent, err, otherChildMode(mode))
+	if occupant := childLinkKind(links, parentIndex); occupant != "" && occupant != mode {
+		return fmt.Errorf("failed to create %v link on %q: %w — %q already carries %v "+
+			"children, and a parent interface can be a macvlan port or an ipvlan port "+
+			"but not both. Put the %v network on a different parent interface, or move "+
+			"both networks to the same mode",
+			mode, parent, err, parent, occupant, mode)
 	}
 
-	return fmt.Errorf("failed to create %v link on %q: %w — %q already carries %v "+
-		"children, and a parent interface can be a macvlan port or an ipvlan port "+
-		"but not both. Put the %v network on a different parent interface, or move "+
-		"both networks to the same mode",
-		mode, parent, err, parent, occupant, mode)
+	// The holder is out of the host's link table; the census tells this plugin's endpoints from the rest (#1372).
+	c := p.census(parent, parentIndex, links)
+	text := c.String(parent)
+	c.log(parent, mode, text)
+	return fmt.Errorf("failed to create %v link on %q: %w — the parent would not "+
+		"accept another child; if a %v network is being torn down on the same "+
+		"parent, retry once it has finished. %v", mode, parent, err, otherChildMode(mode), text)
 }
 
-// childLinkKind reports the child kind on this parent and whether the link table could be read (#802).
-func childLinkKind(parentIndex int) (kind string, known bool) {
+// hostLinks dumps the host's link table and reports whether it could be read (#802).
+func hostLinks() ([]netlink.Link, bool) {
 	links, err := util.DumpResult(nlLinkList())
-	if err != nil {
-		return "", false
-	}
+	return links, err == nil
+}
+
+// childLinkKind reports the macvlan or ipvlan kind among links' children of parentIndex, empty for neither.
+func childLinkKind(links []netlink.Link, parentIndex int) string {
 	for _, l := range links {
 		if l.Attrs().ParentIndex != parentIndex {
 			continue
 		}
 		switch l.Type() {
 		case "macvlan":
-			return ModeMacvlan, true
+			return ModeMacvlan
 		case "ipvlan":
-			return ModeIPvlan, true
+			return ModeIPvlan
 		}
 	}
-	return "", true
+	return ""
 }
 
 func otherChildMode(mode string) string {
@@ -368,7 +374,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 	}
 	guard.Unlock()
 	if err != nil {
-		return res, explainChildLinkAdd(err, mode, opts.linkParent(), parent.Attrs().Index)
+		return res, p.explainChildLinkAdd(err, mode, opts.linkParent(), parent.Attrs().Index)
 	}
 
 	var (
