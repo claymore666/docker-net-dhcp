@@ -27,6 +27,34 @@ type heldChild struct {
 	endpoint, network, kind string
 	where                   string
 	since                   time.Time
+	recovered               bool
+}
+
+// leftChild is an endpoint Leave stopped managing, whose child can sit in a dying sandbox until DeleteEndpoint (#1372).
+type leftChild struct {
+	parent string
+	child  heldChild
+	at     time.Time
+}
+
+func managerChild(m *dhcpManager, kind string) heldChild {
+	return heldChild{endpoint: m.joinReq.EndpointID, network: m.joinReq.NetworkID, kind: kind, since: m.started,
+		recovered: m.recovered}
+}
+
+// markEndpointLeft keeps a leaving macvlan or ipvlan endpoint on its fingerprint for the census (#1372).
+func (p *Plugin) markEndpointLeft(endpointID string, m *dhcpManager) {
+	kind := m.opts.effectiveMode()
+	if kind != ModeMacvlan && kind != ModeIPvlan {
+		return
+	}
+	left := &leftChild{parent: m.opts.linkParent(), child: managerChild(m, kind), at: time.Now()}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if fp, ok := p.endpointFingerprints[endpointID]; ok {
+		fp.left = left
+		p.endpointFingerprints[endpointID] = fp
+	}
 }
 
 func (c heldChild) String() string {
@@ -35,8 +63,13 @@ func (c heldChild) String() string {
 		parts = append(parts, "network "+shortID(c.network))
 	}
 	parts = append(parts, c.kind, c.where)
-	if !c.since.IsZero() {
-		parts = append(parts, "age "+time.Since(c.since).Round(time.Second).String())
+	age := time.Since(c.since).Round(time.Second).String()
+	switch {
+	case c.since.IsZero():
+	case c.recovered:
+		parts = append(parts, "recovered by the plugin restart "+age+" ago")
+	default:
+		parts = append(parts, "age "+age)
 	}
 	return fmt.Sprintf("endpoint %v (%v)", shortID(c.endpoint), strings.Join(parts, ", "))
 }
@@ -61,9 +94,15 @@ func (p *Plugin) census(parent string, parentIndex int, links []netlink.Link) pa
 	})
 
 	var managers []*dhcpManager
+	leaving := map[string]leftChild{}
 	p.mu.Lock()
 	for _, m := range p.persistentDHCP {
 		managers = append(managers, m)
+	}
+	for id, fp := range p.endpointFingerprints {
+		if fp.left != nil && fp.left.parent == parent {
+			leaving[id] = *fp.left
+		}
 	}
 	p.mu.Unlock()
 	for _, m := range managers {
@@ -77,8 +116,14 @@ func (p *Plugin) census(parent string, parentIndex int, links []netlink.Link) pa
 		} else if m.joinReq.SandboxKey != "" {
 			where = "sandbox " + shortID(filepath.Base(m.joinReq.SandboxKey))
 		}
-		held[m.joinReq.EndpointID] = heldChild{
-			endpoint: m.joinReq.EndpointID, network: m.joinReq.NetworkID, kind: kind, where: where, since: m.started,
+		h := managerChild(m, kind)
+		h.where = where
+		held[m.joinReq.EndpointID] = h
+	}
+	for id, l := range leaving {
+		if _, ok := held[id]; !ok {
+			l.child.where = "left its container " + time.Since(l.at).Round(time.Second).String() + " ago"
+			held[id] = l.child
 		}
 	}
 

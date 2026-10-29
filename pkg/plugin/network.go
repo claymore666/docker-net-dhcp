@@ -2172,6 +2172,7 @@ func (p *Plugin) Leave(ctx context.Context, r LeaveRequest) error {
 		p.markEndpointLeftUnmanaged(r.EndpointID)
 		return util.ErrNoSandbox
 	}
+	p.markEndpointLeft(r.EndpointID, manager)
 
 	stopErr := manager.StopForLeave()
 

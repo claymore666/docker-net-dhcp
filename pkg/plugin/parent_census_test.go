@@ -4,6 +4,7 @@
 package plugin
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -156,4 +157,48 @@ func TestExplainChildLinkAdd_EBUSYDoesNotWaitOnAContainerLookup(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the EBUSY census waited on a container lookup in progress")
 	}
+}
+
+func TestExplainChildLinkAdd_EBUSYNamesAnEndpointBetweenLeaveAndDeleteEndpoint(t *testing.T) {
+	withLinkList(t, nil, nil)
+	p := newPluginForTest()
+	m := censusManager("aaaaaaaaaaaa1111", "nnnnnnnnnnnn1111", ModeIPvlan, "eth0", time.Now().Add(-time.Minute))
+	m.startErr = errors.New("start failed")
+	close(m.startedCh)
+	p.persistentDHCP["aaaaaaaaaaaa1111"] = m
+	p.endpointFingerprints["aaaaaaaaaaaa1111"] = endpointFingerprint{}
+	other := censusManager("bbbbbbbbbbbb2222", "nnnnnnnnnnnn2222", ModeIPvlan, "eth1", time.Now())
+	other.startErr = errors.New("start failed")
+	close(other.startedCh)
+	p.persistentDHCP["bbbbbbbbbbbb2222"] = other
+	p.endpointFingerprints["bbbbbbbbbbbb2222"] = endpointFingerprint{}
+
+	for _, id := range []string{"aaaaaaaaaaaa1111", "bbbbbbbbbbbb2222"} {
+		_ = p.Leave(context.Background(), LeaveRequest{NetworkID: "n", EndpointID: id})
+	}
+	if len(p.persistentDHCP) != 0 {
+		t.Fatalf("Leave left a manager registered: %v", p.persistentDHCP)
+	}
+
+	msg := p.explainChildLinkAdd(unix.EBUSY, ModeMacvlan, "eth0", censusParentIdx).Error()
+	mustContainAll(t, msg, "holds 1 child on \"eth0\"",
+		"endpoint aaaaaaaaaaaa (network nnnnnnnnnnnn, ipvlan, left its container ", " ago, age 1m")
+	mustContainNone(t, msg, "bbbbbbbbbbbb")
+
+	_, _ = p.takeEndpoint("aaaaaaaaaaaa1111")
+	mustContainAll(t, p.explainChildLinkAdd(unix.EBUSY, ModeMacvlan, "eth0", censusParentIdx).Error(),
+		"this plugin holds no child on \"eth0\"")
+}
+
+func TestExplainChildLinkAdd_EBUSYTellsARecoveredManagersAgeFromItsOwn(t *testing.T) {
+	withLinkList(t, nil, nil)
+	p := newPluginForTest()
+	m := censusManager("aaaaaaaaaaaa1111", "nnnnnnnnnnnn1111", ModeMacvlan, "eth0", time.Now().Add(-2*time.Minute))
+	m.recovered = true
+	p.persistentDHCP["aaaaaaaaaaaa1111"] = m
+
+	msg := p.explainChildLinkAdd(unix.EBUSY, ModeIPvlan, "eth0", censusParentIdx).Error()
+	mustContainAll(t, msg, "endpoint aaaaaaaaaaaa (network nnnnnnnnnnnn, macvlan, sandbox 5a5a5a5a5a5a, "+
+		"recovered by the plugin restart 2m")
+	mustContainNone(t, msg, "age ")
 }

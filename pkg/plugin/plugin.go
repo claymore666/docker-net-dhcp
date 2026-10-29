@@ -992,6 +992,7 @@ type endpointFingerprint struct {
 	RecordKey net.HardwareAddr
 	// LeftUnmanaged: Leave found no running client, so DeleteEndpoint makes the on_stop release (#1342).
 	LeftUnmanaged bool
+	left          *leftChild
 }
 
 // dhcpHostname is a hostname with its trust bit, one value because safeHostname's "" means both refused and absent,
