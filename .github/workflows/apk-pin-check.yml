@@ -1,10 +1,9 @@
 name: APK pin drift
 
-# Weekly check on the apk pins in the Dockerfile (dhcpcd, iproute2).
-# Surfaces an upgrade signal so a silent upstream change in the
-# DHCP-performing dhcpcd doesn't land in plugin builds without the
-# maintainer noticing (I-13 in the 2026-05-05 review). Note: dhcpcd
-# must stay on 10.x (11 removes the per-interface model #152 relies on).
+# Weekly check that every apk version pin in the Dockerfile (today:
+# iproute2) is still the newest version the pinned Alpine base's index
+# offers. A newer version fails the run, which is the notification: the
+# pin is bumped by hand after a build and an integration run.
 #
 # Runs on a Sunday-morning UTC schedule, plus on-demand via the
 # Actions tab.
@@ -18,11 +17,9 @@ name: APK pin drift
 # It required exactly that: remembering to look.
 #
 # A red weekly run stays red until the pin is bumped, which is the
-# intended behaviour and not noise: the pin being watched is dhcpcd, the
-# component that performs the whole DHCP exchange against an untrusted
-# LAN and is named in scope by SECURITY.md. This workflow gates nothing
-# and is not a required context, so a standing red here blocks no PR —
-# it only ensures the drift is visible without a ritual.
+# intended behaviour and not noise. This workflow gates nothing and is
+# not a required context, so a standing red here blocks no PR; it only
+# ensures the drift is visible without a ritual.
 
 on:
   schedule:
