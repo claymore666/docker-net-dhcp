@@ -72,10 +72,10 @@ so `docker plugin upgrade` from v2.6.0 asks for nothing new.
   nothing changes in use (#1371).
 - The plugin image is built with Go 1.27.3 (v2.6.0: 1.27.2), which fixes
   the standard-library `crypto/x509` advisory GO-2026-6809 (#1383).
-- The plugin image runs on `alpine:3.24.3` (v2.6.0: 3.24.2) and pins
-  `musl` and `musl-utils` 1.2.6-r3. The image scan reported
-  CVE-2026-107891 against the 1.2.6-r2 that the v2.6.0 base shipped
-  (#1395, PR #1397).
+- The plugin image pins `musl` and `musl-utils` 1.2.6-r3. The image
+  scan reported CVE-2026-107891 against the 1.2.6-r2 that the v2.6.0
+  base shipped (#1395, PR #1396). The image runs on `alpine:3.24.3`
+  (v2.6.0: 3.24.2) (PR #1397).
 - The Docker Hub descriptions of `net-dhcp` and its `docker-net-dhcp`
   alias were not updated by the release runs since v1.7.0: Docker Hub
   refused each write and the run reported the step as passed. A new
