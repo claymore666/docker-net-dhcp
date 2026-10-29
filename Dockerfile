@@ -74,28 +74,9 @@ FROM alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c
 # satisfy: no DHCP client is installed, and none can be resolved from
 # PATH.
 #
-# libcrypto3/libssl3 are pinned to a patched version of a library the
-# plugin does not use — it is Go, and links neither. The image is not
-# free of OpenSSL (apk-tools, busybox's ssl_client and OpenSSL's engine
-# modules link it), but none of those is on a path the plugin invokes,
-# which is why this is hygiene and not an incident. They are pinned
-# because the base digest above ships 3.5.7-r0, whose unfixed CVEs the
-# scanner reports against every release; carrying known findings makes a
-# real one harder to see.
-#
 # Exact pins rather than `apk upgrade`: a version that has been
 # superseded fails the build loudly instead of drifting silently between
 # builds of the same Dockerfile.
-#
-# zlib is pinned for the same reason: the base digest ships 1.3.2-r0,
-# which the scanner reports as CVE-2026-85091 (#1353).
-#
-# musl and musl-utils likewise: the base digest ships 1.2.6-r2, which the
-# scanner reports as CVE-2026-107891 (#1395).
-#
-# Clears: when the base digest above moves to an Alpine that already
-# ships OpenSSL 3.5.9-r0, zlib 1.3.2-r1 and musl 1.2.6-r3 or later,
-# these five lines are redundant and should go.
 #
 # NO SECOND DHCP CLIENT (2.0). 1.x shipped dhcpcd and drove it as a child
 # process; 2.0 leases in-process through the library, so a client that
@@ -124,12 +105,7 @@ FROM alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c
 # that no non-test file in this repository imports os/exec.
 RUN mkdir -p /run/docker/plugins /var/lib/net-dhcp && \
     apk add --no-cache \
-        iproute2=7.0.0-r0 \
-        libcrypto3=3.5.9-r0 \
-        libssl3=3.5.9-r0 \
-        musl=1.2.6-r3 \
-        musl-utils=1.2.6-r3 \
-        zlib=1.3.2-r1 && \
+        iproute2=7.0.0-r0 && \
     for c in dhcpcd udhcpc udhcpc6 dhclient dhcpcd6; do \
         p="$(command -v "$c" 2>/dev/null || true)"; \
         [ -n "$p" ] || continue; \
