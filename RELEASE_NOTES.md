@@ -14,8 +14,9 @@ A container can carry its own DHCP client identifier with the
 `client_id` driver option, which lets ipvlan containers keep their
 address across `docker restart` and a recreate. The error for a macvlan
 or ipvlan child the kernel refuses with EBUSY now names the children the
-plugin holds on that parent. The plugin image drops five apk pins that
-Alpine 3.24.3 makes redundant.
+plugin holds on that parent. A SLAAC address no longer leaves the
+kernel's own prefix route behind after the router withdraws its prefix.
+The plugin image drops five apk pins that Alpine 3.24.3 makes redundant.
 
 ### Upgrade notes
 
@@ -46,6 +47,7 @@ so `docker plugin upgrade` from v2.6.1 asks for nothing new.
 | In every mode, a second container whose effective `client_id` equals a live one's is refused when either of the two set it with the driver option (#219) | A container cannot take over the id of another container on the same network, or of a network-wide `client_id` that another container sends |
 | An ipvlan IPv4 DHCPRELEASE (`release_lease`) carries the parent link's MAC as `chaddr`, the MAC the request carried, in place of a synthetic key (#219) | ISC dhcpd, which answered the old release "(not found)", can match it. Kea and dnsmasq matched by client id and are unchanged. IPv6 releases are unchanged |
 | The macvlan and ipvlan EBUSY error from the kernel gains a second sentence about the children the plugin holds on the parent (#1372) | A check that matches the whole old text needs updating. The other-kind, unreadable-table and passthru messages are unchanged |
+| An address formed from a Router Advertisement (`ipv6_mode=slaac`, or `auto` after its fallback) is installed without the kernel's prefix route; the prefix is on-link only through the route the plugin installs from the advertisement's on-link flag (#1412) | On a network with `skip_routes=true`, a SLAAC prefix is no longer on-link: traffic to other hosts in that prefix goes through the router, where before the kernel's own route reached them directly. A network without `skip_routes` sees the same routes, minus the kernel route that stayed up to two hours after the router gave the prefix a valid lifetime of 0. Addresses granted by a DHCPv6 server are unchanged |
 
 ### New
 
@@ -94,6 +96,17 @@ so `docker plugin upgrade` from v2.6.1 asks for nothing new.
   use", is refused at CreateEndpoint (#219, PR #1404).
 - An ipvlan DHCPRELEASE carried the record's synthetic hardware address,
   which ISC dhcpd did not match (#219, PR #1404).
+- After a Router Advertisement gave a SLAAC prefix a valid lifetime of
+  0, the plugin removed its own on-link route but the kernel's prefix
+  route for the address stayed, for up to two hours (the address is kept
+  under RFC 4862 section 5.5.3 e). An address formed from an
+  advertisement is now installed with `IFA_F_NOPREFIXROUTE`, so the
+  prefix is on-link only through the plugin's route. An address
+  installed with finite lifetimes by an earlier version keeps its kernel
+  route until its old expiry after a plugin restart. When a re-formed
+  address shares the prefix with the Docker engine's address and that one
+  is removed, the kernel route can stay; that needs a duplicate
+  interface identifier and is not handled (#1412, PR #1413).
 
 ### CI
 
