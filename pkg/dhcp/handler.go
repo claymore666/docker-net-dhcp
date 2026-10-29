@@ -106,8 +106,8 @@ type Info struct {
 	MainAddrFallback bool `json:",omitempty"`
 }
 
-// A SLAAC address carries the advertised prefix length and a granted one /128, by the library's rule; with the kernel's
-// RA processing off that length alone makes a formed prefix on-link (#818).
+// A SLAAC address carries the advertised prefix length and a granted one /128, by the library's rule; the plugin installs
+// a formed one with no prefix route, so its prefix is on-link only by the advertisement's L flag (#818, #1412).
 
 // V6Addr is one v6 lease address with its RFC 9915 section 7.1 lifetimes in seconds, 0 meaning no deadline.
 type V6Addr struct {

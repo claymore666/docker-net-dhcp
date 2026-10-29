@@ -23,7 +23,7 @@ func TestV6AddrAttrs_TurnsOffDuplicateAddressDetection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseAddr: %v", err)
 	}
-	v6AddrAttrs(addr, 3600, 1800, false)
+	v6AddrAttrs(addr, 3600, 1800, false, v6Granted)
 
 	if addr.Flags&unix.IFA_F_NODAD == 0 {
 		t.Error("IFA_F_NODAD is not set: the kernel re-runs a check the library already " +
@@ -43,12 +43,22 @@ func TestV6AddrAttrs_KeepsFlagsItDidNotSet(t *testing.T) {
 		t.Fatalf("ParseAddr: %v", err)
 	}
 	addr.Flags |= unix.IFA_F_NOPREFIXROUTE
-	v6AddrAttrs(addr, 0, 0, false)
+	v6AddrAttrs(addr, 0, 0, false, v6Granted)
 	if addr.Flags&unix.IFA_F_NOPREFIXROUTE == 0 {
 		t.Error("v6AddrAttrs cleared a flag it did not set")
 	}
 	if addr.Flags&unix.IFA_F_NODAD == 0 {
 		t.Error("IFA_F_NODAD is not set")
+	}
+}
+
+func TestV6AddrAttrs_OnlyAFormedAddressCarriesNoPrefixRoute(t *testing.T) {
+	for src, want := range map[v6AddrSource]bool{v6Formed: true, v6Granted: false} {
+		addr, _ := netlink.ParseAddr("2001:db8::5/64")
+		v6AddrAttrs(addr, 3600, 1800, false, src)
+		if got := addr.Flags&unix.IFA_F_NOPREFIXROUTE != 0; got != want {
+			t.Errorf("source %d: noprefixroute=%v, want %v", src, got, want)
+		}
 	}
 }
 
@@ -58,12 +68,12 @@ func TestV6AddrAttrs_InfiniteLeaseSendsNoLifetimes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseAddr: %v", err)
 	}
-	v6AddrAttrs(addr, 0, 0, false)
+	v6AddrAttrs(addr, 0, 0, false, v6Granted)
 	if addr.ValidLft != 0 || addr.PreferedLft != 0 {
 		t.Errorf("an infinite lease gave ValidLft=%d PreferedLft=%d, want both zero",
 			addr.ValidLft, addr.PreferedLft)
 	}
-	v6AddrAttrs(addr, 10, 5, false)
+	v6AddrAttrs(addr, 10, 5, false, v6Granted)
 	if addr.ValidLft == 0 || addr.PreferedLft == 0 {
 		t.Error("a finite lease produced no lifetimes")
 	}
@@ -77,7 +87,7 @@ func TestV6AddrAttrs_AnInfiniteValidLifetimeIsTranslatedNotSentAsZero(t *testing
 	if err != nil {
 		t.Fatalf("ParseAddr: %v", err)
 	}
-	v6AddrAttrs(addr, 0, 1800, false)
+	v6AddrAttrs(addr, 0, 1800, false, v6Granted)
 	if addr.ValidLft != infiniteLft {
 		t.Errorf("ValidLft = %d for an infinite valid lifetime beside a finite preferred "+
 			"one, want the kernel's own infinity %d. A zero here is sent as a valid "+
@@ -93,7 +103,7 @@ func TestV6AddrAttrs_AnInfiniteValidLifetimeIsTranslatedNotSentAsZero(t *testing
 	if err != nil {
 		t.Fatalf("ParseAddr: %v", err)
 	}
-	v6AddrAttrs(addr2, 0, 0, false)
+	v6AddrAttrs(addr2, 0, 0, false, v6Granted)
 	if addr2.ValidLft != 0 || addr2.PreferedLft != 0 {
 		t.Errorf("an infinite lease gave ValidLft=%d PreferedLft=%d, want both zero: a "+
 			"permanent address is the one shape that carries no lifetimes",
@@ -108,7 +118,7 @@ func TestV6AddrAttrs_ADeprecatedInfiniteAddressIsNotSentAsPermanent(t *testing.T
 	if err != nil {
 		t.Fatalf("ParseAddr: %v", err)
 	}
-	v6AddrAttrs(addr, 0, 0, true)
+	v6AddrAttrs(addr, 0, 0, true, v6Granted)
 	if addr.ValidLft != infiniteLft {
 		t.Errorf("ValidLft = %d for a deprecated address on a prefix advertised forever, "+
 			"want the kernel's own infinity %d. A zero here attaches no IFA_CACHEINFO at "+
@@ -125,7 +135,7 @@ func TestV6AddrAttrs_ADeprecatedInfiniteAddressIsNotSentAsPermanent(t *testing.T
 	if err != nil {
 		t.Fatalf("ParseAddr: %v", err)
 	}
-	v6AddrAttrs(keep, 0, 0, false)
+	v6AddrAttrs(keep, 0, 0, false, v6Granted)
 	if keep.ValidLft != 0 || keep.PreferedLft != 0 {
 		t.Errorf("an address advertised with no deadlines gave ValidLft=%d PreferedLft=%d, "+
 			"want both zero: widening the translation must not reach the permanent shape",
@@ -145,7 +155,7 @@ func TestV6AddrAttrs_PreferredNeverExceedsValid(t *testing.T) {
 		{LeaseSeconds: 3600, PreferredSeconds: 3600},
 		{},
 	} {
-		v6AddrAttrs(addr, info.LeaseSeconds, info.PreferredSeconds, info.IPDeprecated)
+		v6AddrAttrs(addr, info.LeaseSeconds, info.PreferredSeconds, info.IPDeprecated, v6Granted)
 		if addr.ValidLft != 0 && addr.PreferedLft > addr.ValidLft {
 			t.Errorf("%+v gave PreferedLft=%d above ValidLft=%d",
 				info, addr.PreferedLft, addr.ValidLft)
