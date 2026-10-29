@@ -397,7 +397,7 @@ func TestApplyAddressChange_AV6RenumberLeavesOnlyTheNewAddress(t *testing.T) {
 			m := &dhcpManager{netHandle: l.h, ctrLink: l.link}
 			for _, ip := range []string{"fd00:6470::61/64", "fd00:6470::10/64"} {
 				a, _ := netlink.ParseAddr(ip)
-				v6AddrAttrs(a, 0, 0, false)
+				v6AddrAttrs(a, 0, 0, false, v6Granted)
 				if err := m.applyAddressChange(true, a, dhcp.Info{IP: ip}); err != nil {
 					t.Fatalf("applyAddressChange %s: %v", ip, err)
 				}
@@ -419,6 +419,11 @@ var renumberKernelTests = []string{
 	"TestFirstLease_LeavesTheJoinGatewayToTheEngineInEitherOrder_IPv6",
 	"TestFirstLease_TheKernelRefusesTheEngineInstallOverAPluginRoute",
 	"TestHandleEvent_ABindingEndingWhileBoundLeavesTheContainer",
+	"TestSLAACPrefix_IsOnLinkOnlyByTheLFlagAndGoesWithValidLifetimeZero",
+	"TestDHCPv6Address_KeepsTheKernelRouteOfItsOwn",
+	"TestSLAACPrefix_SkipRoutesLeavesItOffLink",
+	"TestSLAACPrefix_TheDeprecatedRenewalOfAValidLifetimeZeroLeavesNoRoute",
+	"TestSLAACPrefix_AnInfiniteValidLifetimeAlsoLeavesNoKernelRoute",
 }
 
 func TestRenumberKernelTests_ARefusedLinkIsNeverAPass(t *testing.T) {

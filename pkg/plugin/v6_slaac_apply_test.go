@@ -293,6 +293,7 @@ func TestNoteMainPrefixFallback_CountsEndpointsAndNamesBothPrefixes(t *testing.T
 
 type fakeV6LinkAddrs struct {
 	replaced []string
+	flags    []int
 	deleted  []string
 	replErr  map[string]error
 	delErr   map[string]error
@@ -300,6 +301,7 @@ type fakeV6LinkAddrs struct {
 
 func (f *fakeV6LinkAddrs) AddrReplace(_ netlink.Link, a *netlink.Addr) error {
 	f.replaced = append(f.replaced, a.String())
+	f.flags = append(f.flags, a.Flags)
 	return f.replErr[a.String()]
 }
 
@@ -597,5 +599,36 @@ func TestHandleEvent_ABoundSLAACLeaseReachesTheLink(t *testing.T) {
 	if len(oh.replaced) != 0 || len(oh.deleted) != 0 {
 		t.Errorf("an information reply touched the link: replaced=%v deleted=%v",
 			oh.replaced, oh.deleted)
+	}
+}
+
+func TestHandleEvent_OnlyAFormedAddressIsInstalledWithoutAPrefixRoute(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		info dhcp.Info
+		want bool
+	}{
+		{"formed, every address", dhcp.Info{IP: "2001:db8:1::a/64", SLAAC: true, Addrs: []dhcp.V6Addr{
+			{IP: "2001:db8:1::a/64", ValidSeconds: 3600}, {IP: "fd00:9::a/64", ValidSeconds: 300}}}, true},
+		{"formed, no address list", dhcp.Info{IP: "2001:db8:1::a/64", SLAAC: true, LeaseSeconds: 3600}, true},
+		{"granted, with a temporary address", dhcp.Info{IP: "2001:db8:1::a/128",
+			Addrs:     []dhcp.V6Addr{{IP: "2001:db8:1::a/128", ValidSeconds: 3600}},
+			TempAddrs: []dhcp.V6Addr{{IP: "2001:db8:1::b/128", ValidSeconds: 600}}}, false},
+		{"granted, no address list", dhcp.Info{IP: "2001:db8:1::a/128", LeaseSeconds: 3600}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, _ := applyManager(t)
+			h := &fakeV6LinkAddrs{}
+			m.v6Addrs = h
+			m.handleEvent(dhcp.Event{Type: "bound", Data: tc.info}, true)
+			if len(h.replaced) == 0 {
+				t.Fatal("the bound event installed no address")
+			}
+			for i, f := range h.flags {
+				if got := f&unix.IFA_F_NOPREFIXROUTE != 0; got != tc.want {
+					t.Errorf("%s installed with noprefixroute=%v, want %v", h.replaced[i], got, tc.want)
+				}
+			}
+		})
 	}
 }

@@ -521,7 +521,7 @@ func (m *dhcpManager) renew(v6 bool, info dhcp.Info) error {
 		return fmt.Errorf("failed to parse IP address: %w", err)
 	}
 	if v6 {
-		v6AddrAttrs(ip, info.LeaseSeconds, info.PreferredSeconds, info.IPDeprecated)
+		v6AddrAttrs(ip, info.LeaseSeconds, info.PreferredSeconds, info.IPDeprecated, v6SourceOf(info))
 	}
 
 	wasLinkLocal := !v6 && m.onLinkLocal()
@@ -669,12 +669,33 @@ func (m *dhcpManager) restoreRoutes(routes []netlink.Route) {
 	}
 }
 
+// v6AddrSource says whether a server granted the address or the plugin formed it from an advertisement.
+type v6AddrSource uint8
+
+const (
+	v6Granted v6AddrSource = iota
+	v6Formed
+)
+
+func v6SourceOf(info dhcp.Info) v6AddrSource {
+	if info.SLAAC {
+		return v6Formed
+	}
+	return v6Granted
+}
+
 // v6AddrAttrs sets IFA_F_NODAD and the two lifetimes on a DHCPv6 address (#911). NODAD because the library already
 // ran duplicate address detection (RFC 9915 section 18.2.10.1); a second kernel run leaves the address tentative
 // and can mark it dadfailed (RFC 7527 section 4.1). The library owns expiry; the kernel lifetimes cover a plugin
 // down at expiry and express deprecation to sockets (RFC 4862 section 5.5.4). Both zero sends no IFA_CACHEINFO.
-func v6AddrAttrs(addr *netlink.Addr, valid, preferred int, deprecated bool) {
+func v6AddrAttrs(addr *netlink.Addr, valid, preferred int, deprecated bool, src v6AddrSource) {
 	addr.Flags |= unix.IFA_F_NODAD
+	// A formed address's prefix is on-link only by the advertisement's L flag (RFC 5942 section 4), which the plugin
+	// installs and withdraws itself; the kernel's prefix route outlived a Valid Lifetime 0 by up to two hours. Replacing
+	// the engine's permanent address with the flag removes that route, measured 2026-10-29 on 6.12 (#1412).
+	if src == v6Formed {
+		addr.Flags |= unix.IFA_F_NOPREFIXROUTE
+	}
 	addr.ValidLft = valid
 	addr.PreferedLft = preferred
 	// Once IFA_CACHEINFO is sent an infinite valid lifetime must be 0xFFFFFFFF: (valid 0, preferred 1800) is EINVAL,
@@ -785,7 +806,7 @@ func v6WantedAddrs(main *netlink.Addr, info dhcp.Info) ([]wantedV6Addr, error) {
 			}
 			addr = parsed
 		}
-		v6AddrAttrs(addr, a.ValidSeconds, a.PreferredSeconds, a.Deprecated)
+		v6AddrAttrs(addr, a.ValidSeconds, a.PreferredSeconds, a.Deprecated, v6SourceOf(info))
 		w := wantedV6Addr{addr: addr, key: addr.String()}
 		if w.key == mainKey {
 			out = append([]wantedV6Addr{w}, out...)
@@ -803,7 +824,7 @@ func v6WantedAddrs(main *netlink.Addr, info dhcp.Info) ([]wantedV6Addr, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse the IPv6 temporary address %q: %w", a.IP, err)
 		}
-		v6AddrAttrs(addr, a.ValidSeconds, a.PreferredSeconds, a.Deprecated)
+		v6AddrAttrs(addr, a.ValidSeconds, a.PreferredSeconds, a.Deprecated, v6SourceOf(info))
 		if key := addr.String(); !held[key] {
 			held[key] = true
 			out = append(out, wantedV6Addr{addr: addr, key: key})
