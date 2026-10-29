@@ -99,7 +99,7 @@ func (p *Plugin) applyEndpointClientID(ctx context.Context, r CreateEndpointRequ
 }
 
 // claimClientID inserts the claim unless another endpoint's claim on the network forbids sharing it, in one step under
-// p.mu so two concurrent creates cannot both pass; holder is the other endpoint, refused whether c was not inserted.
+// p.mu so two concurrent creates cannot both pass; holder is the other endpoint, refused whether c was not inserted (#219).
 func (p *Plugin) claimClientID(endpointID string, c clientIDClaim, refuseShared bool) (holder string, refused bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -140,7 +140,7 @@ func (p *Plugin) reclaimClientID(networkID, endpointID string, mac net.HardwareA
 }
 
 // recordedClientID is the endpoint's recorded option-61 payload when it is not the derived default, and whether the
-// network's client_id cannot have produced it, so the per-endpoint option did.
+// network's client_id cannot have produced it, so the per-endpoint option did (#219).
 func (p *Plugin) recordedClientID(networkID, endpointID string, mac net.HardwareAddr, opts DHCPNetworkOptions) (string, bool) {
 	_, res := p.recordResume(networkID, endpointRecordKey(opts.effectiveMode(), endpointID, mac))
 	payload, ok := dhcp.ClientIDPayload(res.Identity)

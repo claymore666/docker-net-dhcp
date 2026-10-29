@@ -20,7 +20,7 @@ import (
 )
 
 // createWithClientID creates a container on netName with the per-endpoint client_id driver option; removal is the
-// test's cleanup.
+// test's cleanup (#219).
 func createWithClientID(t *testing.T, ctx context.Context, cli *docker.Client, netName, ctrName, clientID string) string {
 	t.Helper()
 	create, err := cli.ContainerCreate(ctx, docker.ContainerCreateOptions{
