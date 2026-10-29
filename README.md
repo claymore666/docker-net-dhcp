@@ -61,8 +61,10 @@ and what each item is for is in [SECURITY.md](SECURITY.md#scope--what-this-plugi
   router keeps matching.
 - **ipvlan gets its own client id.** ipvlan containers share the parent's
   MAC, so each one gets its own DHCP client id (option 61) and its own
-  DUID ([#895]). That identity is new on every restart, so an ipvlan
-  container does not keep its address across `docker restart` ([#219]).
+  DUID ([#895]). That identity is new on every restart, so by default an
+  ipvlan container does not keep its address across `docker restart`.
+  The `client_id` driver option gives a container its own client id that
+  keeps the address across a restart and a recreate ([#219]).
 - **VLANs, sub-modes, MTU.** `-o vlan=` puts a macvlan or ipvlan network
   on a tagged VLAN off the parent ([#902]); `-o macvlan_mode=` and
   `-o ipvlan_mode=` pick the kernel mode of each link ([#905]); `-o mtu=`
