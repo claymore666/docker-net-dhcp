@@ -8,7 +8,7 @@
 # the digest is what Docker enforces and the tag is what a reader — or
 # scripts/check-go-pins.sh — can compare against the other Go pins in
 # this tree. A `1.26-alpine` tag hid go1.26.5 here through v1.5.0 (#525).
-FROM golang:1.27.3-alpine@sha256:f2c872bcee949b7be9c490efd02b48a8a2fbf947cdf533f1c58525ec9d8170fd AS builder
+FROM golang:1.27.3-alpine@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS builder
 
 # COVER_FLAGS is empty for the production build and `-cover -coverpkg=./...`
 # for the instrumented build used by the coverage workflow. Keeping the
@@ -56,7 +56,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
       -o bin/ ./cmd/...
 
 
-FROM alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+FROM alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
 
 # THE IMAGE CONTAINS NO DHCP CLIENT, AND THAT IS AN ASSERTION, NOT A
 # SIDE EFFECT. 2.0 performs the whole exchange in the plugin process
