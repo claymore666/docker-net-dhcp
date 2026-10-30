@@ -22,8 +22,13 @@ each address from the LAN's DHCP server and, in `bridge` and `macvlan`
 mode, keeps one identity per container across restarts and upgrades, so
 the router's lease table and its reservations stay true.
 
-Every release is run against real DHCP servers (Kea, ISC dhcpd, dnsmasq)
-in a separate lab ([real-server lab](docs/testing.md#real-server-lab)).
+Every release is run in a separate lab against real DHCP servers, Kea
+(single, hot-standby pair and behind a relay), ISC dhcpd (single and
+failover pair), dnsmasq, udhcpd, Pi-hole and OpenWrt, with Docker hosts
+on Debian 13, Ubuntu 24.04 and Debian 11 with Docker 20.10; a MikroTik
+RouterOS CHR cell is set up but has written no verdicts yet
+([latest lab results](https://github.com/claymore666/docker-net-dhcp-lab/blob/v0.3.0/results/README.md),
+[how the lab works](docs/testing.md#real-server-lab)).
 
 This is the successor of `devplayer0/docker-net-dhcp`, not a patched copy:
 2.x has its own DHCP engine and its own lifecycle code.
@@ -72,9 +77,18 @@ and what each item is for is in [SECURITY.md](SECURITY.md#scope--what-this-plugi
 - **Bridge mode from a spare NIC.** With `-o parent=` the plugin makes the
   bridge, enslaves the NIC and removes both with the network ([#903]);
   `-o force_create=true` overrides the firewall check on that bridge.
-  `-o link_local_fallback=true`
-  starts a container on a 169.254 address while the DHCP server is down
-  and moves it to the lease when one arrives ([#904]).
+- **APIPA fallback while the DHCP server is down.** With
+  `-o link_local_fallback=true` a container starts on a 169.254 address
+  (IPv4 only, bridge and macvlan), the plugin keeps asking and moves the
+  container to the lease in place when one arrives (v2.3.0, [#904],
+  [reference](docs/reference.md#link-local-fallback-link_local_fallback)).
+- **Monitoring.** [`/Plugin.Health`](docs/reference.md#pluginhealth) on
+  the plugin socket reports the lease state and the counters;
+  [`/metrics`](docs/reference.md#metrics) serves the same counters in
+  Prometheus text format, always on the socket and on a TCP listener when
+  `METRICS_ADDR` is set; `-o audit_log=true` appends every lease-lifecycle
+  event to a ledger under the state directory
+  ([audit ledger](docs/reference.md#lease-audit-ledger-audit_logtrue)).
 - **Leases follow Docker's lifecycle.** Renewal, rebind, NAK and expiry run
   in the plugin, one client per endpoint. `-o release_lease=` hands the
   address back at stop or at remove. Every Docker hook has a defined
