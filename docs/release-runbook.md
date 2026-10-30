@@ -1289,6 +1289,21 @@ be true.
    Delete what that sweep lists. Leave alone: open-PR branches,
    Dependabot branches (it recreates its own; close via the PR), and
    the `upstream/*` refs (those are the original fork's remote).
+13. **Update the roadmap Discussion after a final tag.** Not after an
+   rc. The roadmap is
+   [Discussion #906](https://github.com/claymore666/docker-net-dhcp/discussions/906).
+   Draft the edit first and send the draft to the maintainer; post it
+   only on their explicit go. The edit has four parts:
+   - the released version's row moves to *Shipped*, with the release date
+     and a link to its release page;
+   - every milestone opened since the last edit gets a row;
+   - the "main is at" line names the new tag;
+   - a row that cites a version or an issue the release changed is
+     brought in line.
+
+   Read the Discussion back after the edit. It is public: name issues,
+   pull requests and release pages by their public links, never by a
+   path outside the repository.
 
 ## Verifying
 
