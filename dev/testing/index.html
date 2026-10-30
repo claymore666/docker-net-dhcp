@@ -1255,12 +1255,12 @@ only in the workflows linked below.</p>
   never against the plugin's report.</li>
 </ul>
 <pre class="mermaid"><code>flowchart TB
-  subgraph labhost["Lab host, one machine; everything below is on it: the controller as its own processes, two VMs, one container, one network"]
+  subgraph labhost["Lab host, one machine; everything below is on it: the controller as its own processes, two VMs (three in the HA, failover and relay cells: a partner server or a relay), one container, one network"]
     CTL["labctl and scripts&lt;br/&gt;bring a cell up, run every scenario on every shape, tear it down"]
     subgraph cell["One cell: an isolated segment 10.200.N.0/24"]
       direction TB
-      SRC["Source VM&lt;br/&gt;Kea, ISC dhcpd or dnsmasq&lt;br/&gt;apt install, stock config plus a pool"]
-      DH["Docker host VM&lt;br/&gt;Debian 13 or Ubuntu 24.04&lt;br/&gt;plugin under test, five network shapes"]
+      SRC["Source VM&lt;br/&gt;Kea (single, HA pair, behind a relay), ISC dhcpd (single, failover pair),&lt;br/&gt;dnsmasq, udhcpd, Pi-hole, OpenWrt&lt;br/&gt;stock config plus a pool"]
+      DH["Docker host VM&lt;br/&gt;Debian 13, Ubuntu 24.04 or Debian 11 with Docker 20.10&lt;br/&gt;plugin under test, five network shapes"]
       OBS["Observer container&lt;br/&gt;tcpdump on the segment for the whole run"]
     end
     MG["Management network 10.200.255.0/24&lt;br/&gt;the controller's ssh path to every VM"]
@@ -1281,15 +1281,19 @@ the release notes and lives in the lab repository's
 <a href="https://github.com/claymore666/docker-net-dhcp-lab/tree/dev/results">results/</a>
 directory, with the evidence tarball attached to the lab release it ran on.</p>
 <ul>
-<li>Results: the latest run is v2.6.0-rc2 on the lab's development branch
-  after docker-net-dhcp-lab v0.2.0, over Kea, ISC dhcpd, dnsmasq, udhcpd,
-  Pi-hole, OpenWrt and a Kea relay as servers, with hosts on Debian 13,
-  Ubuntu 24.04 and Debian 11 (Docker 20.10): thirteen of fourteen cells
-  wrote verdicts, 3761 rows, 1683 PASS, 1384 not applicable, 401 FAIL and
+<li>Results: the latest run is plugin v2.6.0-rc2 on the lab tree before
+  the docker-net-dhcp-lab v0.3.0 fixes, over Kea (single, hot-standby
+  pair and behind a relay), ISC dhcpd (single and failover pair),
+  dnsmasq, udhcpd, Pi-hole and OpenWrt as servers, with hosts on Debian
+  13, Ubuntu 24.04 and Debian 11 with Docker 20.10:
+  thirteen of fourteen cells wrote verdicts (the MikroTik RouterOS CHR
+  cell wrote none, its base image did not build, a lab defect fixed in
+  v0.3.0), 3761 rows, 1683 PASS, 1384 not applicable, 401 FAIL and
   293 BLOCKED. The results page reads each FAIL and BLOCKED cluster: most
   are lab defects or a busy parent interface, and the plugin findings
   each have an issue
-  (<a href="https://github.com/claymore666/docker-net-dhcp-lab/blob/e2c452b48f933072696e3f6c5c7a48a0d2c69ee6/results/v0.3.0-plugin-v2.6.0-rc2.md">results page</a>).
+  (<a href="https://github.com/claymore666/docker-net-dhcp-lab/blob/v0.3.0/results/v0.3.0-plugin-v2.6.0-rc2.md">results page</a>,
+  <a href="https://github.com/claymore666/docker-net-dhcp-lab/releases/tag/v0.3.0">evidence on the lab release</a>).
   The run on v2.5.0 with lab v0.1.0 had 504 PASS, 6 N/A and 0 FAIL over 3
   servers, 2 hosts and 5 network shapes
   (<a href="https://github.com/claymore666/docker-net-dhcp-lab/blob/ba9203aafbdd2691f08bc2e497ab2be48a3fff33/results/v0.1.0-plugin-v2.5.0.md">results page</a>,
@@ -1303,8 +1307,14 @@ directory, with the evidence tarball attached to the lab release it ran on.</p>
   page says so; the rc2 run had 401 FAIL and 293 BLOCKED rows, most of
   them defects of the lab itself. The fixed-MAC reboot on <code>ipvlan</code> is not
   applicable, since its containers share the parent's MAC. The lab's
-  operations and soak scenarios are planned for docker-net-dhcp-lab v0.3.0
-  (<a href="https://github.com/claymore666/docker-net-dhcp-lab/issues/15">lab #15</a>).</li>
+  operations scenarios (audit ledger, metrics, host link names, VLAN
+  parent) shipped in docker-net-dhcp-lab v0.3.0 and have no host run yet.
+  Planned for lab v0.4.0: the soak scenarios
+  (<a href="https://github.com/claymore666/docker-net-dhcp-lab/issues/15">lab #15</a>),
+  the Windows Server cell's image build and run, its wiring shipped in
+  v0.3.0 (<a href="https://github.com/claymore666/docker-net-dhcp-lab/issues/14">lab #14</a>),
+  and a Fritz.Box cell
+  (<a href="https://github.com/claymore666/docker-net-dhcp-lab/issues/13">lab #13</a>).</li>
 </ul>
 <h2 id="supply-chain">Supply chain<a class="headerlink" href="#supply-chain" title="Permanent link">&para;</a></h2>
 <ul>
