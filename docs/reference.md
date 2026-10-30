@@ -1616,8 +1616,11 @@ not do. Concurrent restarts of several
 containers on one network inside the 60-second window fall back to fresh
 MACs instead of risking swapped identities between containers.
 Tombstones carry the container hostname so restarts in flight can be
-told apart when the hostname is known, and only when neither side knows
-it does the network-wide "exactly one match" rule apply. Sequential
+told apart: when both the tombstone and the new endpoint carry a
+hostname, the two must agree. When either side has none, because the
+tombstone was written for a container without a hostname or by a
+v0.5.0 binary, or because the new endpoint has no hostname, the
+network-wide "exactly one match" rule applies instead. Sequential
 restarts, the normal case, always satisfy it.
 
 A container whose hostname the plugin **refuses**, one carrying a
