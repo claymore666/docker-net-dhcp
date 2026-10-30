@@ -13,8 +13,13 @@ each address from the LAN's DHCP server and, in `bridge` and `macvlan`
 mode, keeps one identity per container across restarts and upgrades, so
 the router's lease table and its reservations stay true.
 
-Every release is run against real DHCP servers (Kea, ISC dhcpd, dnsmasq)
-in a separate lab ([real-server lab](testing.md#real-server-lab)).
+Every release is run in a separate lab against real DHCP servers, Kea
+(single, hot-standby pair and behind a relay), ISC dhcpd (single and
+failover pair), dnsmasq, udhcpd, Pi-hole and OpenWrt, with Docker hosts
+on Debian 13, Ubuntu 24.04 and Debian 11 with Docker 20.10; a MikroTik
+RouterOS CHR cell is set up but has written no verdicts yet
+([latest lab results](https://github.com/claymore666/docker-net-dhcp-lab/blob/v0.3.0/results/README.md),
+[how the lab works](testing.md#real-server-lab)).
 
 This is the successor of `devplayer0/docker-net-dhcp`, not a patched copy:
 2.x has its own DHCP engine and its own lifecycle code.
