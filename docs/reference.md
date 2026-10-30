@@ -1503,7 +1503,12 @@ container that is**, and only while it is the single one being kept.
 A MAC the user set changes this, in the last two cases below. So:
 
 - One container restarted, nothing else happening on the network: it
-  claims its own, and keeps its address. This is the normal case.
+  claims its own, and keeps its address on a server that files leases by
+  client identifier. This is the normal case. A server that files leases
+  by hardware address alone sees the new MAC Docker gave the endpoint
+  and may hand out another address; a container started with
+  `--mac-address` comes back under the same MAC (the last two cases
+  below).
 - A **different** container started inside that minute claims them
   first. The new container comes up on the stopped one's address, and
   the stopped one gets a fresh address when it comes back. Nothing is
