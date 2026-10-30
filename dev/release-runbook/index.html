@@ -2421,7 +2421,21 @@ blocks no publish. Without Hub credentials it records
 </code></pre></div>
    Delete what that sweep lists. Leave alone: open-PR branches,
    Dependabot branches (it recreates its own; close via the PR), and
-   the <code>upstream/*</code> refs (those are the original fork's remote).</p>
+   the <code>upstream/*</code> refs (those are the original fork's remote).
+13. <strong>Update the roadmap Discussion after a final tag.</strong> Not after an
+   rc. The roadmap is
+   <a href="https://github.com/claymore666/docker-net-dhcp/discussions/906">Discussion #906</a>.
+   Draft the edit first and send the draft to the maintainer; post it
+   only on their explicit go. The edit has four parts:
+   - the released version's row moves to <em>Shipped</em>, with the release date
+     and a link to its release page;
+   - every milestone opened since the last edit gets a row;
+   - the "main is at" line names the new tag;
+   - a row that cites a version or an issue the release changed is
+     brought in line.</p>
+<p>Read the Discussion back after the edit. It is public: name issues,
+   pull requests and release pages by their public links, never by a
+   path outside the repository.</p>
 <h2 id="verifying">Verifying<a class="headerlink" href="#verifying" title="Permanent link">&para;</a></h2>
 <p>After the workflow succeeds:</p>
 <ul>
