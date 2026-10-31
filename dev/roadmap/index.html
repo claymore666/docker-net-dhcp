@@ -816,10 +816,21 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#v270-planned" class="md-nav__link">
+  <a href="#v270-released" class="md-nav__link">
     <span class="md-ellipsis">
       
-        v2.7.0, planned
+        v2.7.0, released
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#v280-planned" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        v2.8.0, planned
       
     </span>
   </a>
@@ -1162,10 +1173,21 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#v270-planned" class="md-nav__link">
+  <a href="#v270-released" class="md-nav__link">
     <span class="md-ellipsis">
       
-        v2.7.0, planned
+        v2.7.0, released
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#v280-planned" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        v2.8.0, planned
       
     </span>
   </a>
@@ -1334,9 +1356,15 @@ below decide what is in a release; this page follows them.</p>
 </tr>
 <tr>
 <td>v2.7.0</td>
-<td>planned</td>
-<td>Option and mode test coverage from the lab option review, and bug fixes</td>
+<td>released</td>
+<td>A per-container <code>client_id</code> option, the EBUSY error that names the children, and the SLAAC prefix route</td>
 <td><a href="https://github.com/claymore666/docker-net-dhcp/milestone/42">milestone 42</a></td>
+</tr>
+<tr>
+<td>v2.8.0</td>
+<td>planned</td>
+<td>An IPAM-mode restart that keeps the address on a server that files leases by MAC, and renewal behind a DHCP relay</td>
+<td><a href="https://github.com/claymore666/docker-net-dhcp/milestone/43">milestone 43</a></td>
 </tr>
 </tbody>
 </table>
@@ -1467,10 +1495,27 @@ below decide what is in a release; this page follows them.</p>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1324">#1324</a>, each release run reads both Docker Hub descriptions back after
   the sync and goes red when either differs</li>
 </ul>
-<h3 id="v270-planned">v2.7.0, planned<a class="headerlink" href="#v270-planned" title="Permanent link">&para;</a></h3>
-<p>Option and mode test coverage from the lab option review, and bug fixes
-found in the 2026-10 hunt. The list is the
-<a href="https://github.com/claymore666/docker-net-dhcp/milestone/42">milestone</a>.</p>
+<h3 id="v270-released">v2.7.0, released<a class="headerlink" href="#v270-released" title="Permanent link">&para;</a></h3>
+<ul>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/219">#219</a>, a <code>client_id</code> driver option that sets DHCP option 61 for one
+  container, so ipvlan containers keep their address across a restart
+  and a recreate</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1372">#1372</a>, the EBUSY error for a macvlan or ipvlan child names the
+  children the plugin holds on the parent</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1412">#1412</a>, a SLAAC address leaves no kernel prefix route behind after the
+  router withdraws its prefix</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1406">#1406</a>, the plugin image drops five apk pins that Alpine 3.24.3 makes
+  redundant</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1417">#1417</a>, the README, the docs index and the testing guide name what the
+  real-server lab covers</li>
+</ul>
+<h3 id="v280-planned">v2.8.0, planned<a class="headerlink" href="#v280-planned" title="Permanent link">&para;</a></h3>
+<ul>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1416">#1416</a>, IPAM mode: a restarted container keeps its address on a DHCP
+  server that files leases by MAC</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1419">#1419</a>, the IPv4 client renews at RENEWING behind a DHCP relay, with
+  the dhcp-golib v1.5.2 fix</li>
+</ul>
 <h2 id="the-release-line">The release line<a class="headerlink" href="#the-release-line" title="Permanent link">&para;</a></h2>
 <pre class="mermaid"><code>flowchart LR
     v20["v2.0&lt;br/&gt;the project's own&lt;br/&gt;DHCP engine"]
@@ -1480,8 +1525,9 @@ found in the 2026-10 hunt. The list is the
     v24["v2.4&lt;br/&gt;the rest of IPv6"]
     v25["v2.5&lt;br/&gt;CI, code debt and&lt;br/&gt;prefix delegation"]
     v26["v2.6&lt;br/&gt;IPv6-only networks and&lt;br/&gt;the IPAM IPv6 pool"]
-    v20 --&gt; v21 --&gt; v22 --&gt; v23 --&gt; v24 --&gt; v25 --&gt; v26</code></pre>
-<p>v2.0 to v2.6 are released. There are no dates. Every
+    v27["v2.7&lt;br/&gt;per-container client_id"]
+    v20 --&gt; v21 --&gt; v22 --&gt; v23 --&gt; v24 --&gt; v25 --&gt; v26 --&gt; v27</code></pre>
+<p>v2.0 to v2.7 are released. There are no dates. Every
 release, patches included, is in
 <a href="https://github.com/claymore666/docker-net-dhcp/blob/main/RELEASE_NOTES.md">the release notes</a>.</p>
 <h2 id="the-bar-every-feature-is-measured-against">The bar every feature is measured against<a class="headerlink" href="#the-bar-every-feature-is-measured-against" title="Permanent link">&para;</a></h2>

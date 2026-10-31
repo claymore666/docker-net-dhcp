@@ -1349,11 +1349,13 @@ and what each item is for is in <a href="https://github.com/claymore666/docker-n
 </ul>
 <p>The plugin refuses these with a message that names the reason.</p>
 <h2 id="planned">Planned<a class="headerlink" href="#planned" title="Permanent link">&para;</a></h2>
-<p>v2.6.1 fixes the IPv6 address lifetimes of an <code>ipv6_mode=auto</code> endpoint
-that fell back to the advertised prefix (<a href="https://github.com/claymore666/docker-net-dhcp/issues/1369">#1369</a>) and the Docker Hub
-description, which the release runs did not update (<a href="https://github.com/claymore666/docker-net-dhcp/issues/1324">#1324</a>). v2.7.0 is
-planned: option and mode test coverage from the lab option review, and
-bug fixes (<a href="https://github.com/claymore666/docker-net-dhcp/milestone/42">milestone</a>).
+<p>v2.7.0 adds a <code>client_id</code> driver option for one container (<a href="https://github.com/claymore666/docker-net-dhcp/issues/219">#219</a>), an
+EBUSY error that names the children the plugin holds on the parent
+(<a href="https://github.com/claymore666/docker-net-dhcp/issues/1372">#1372</a>) and a SLAAC address that leaves no kernel prefix route behind
+(<a href="https://github.com/claymore666/docker-net-dhcp/issues/1412">#1412</a>). v2.8.0 is planned: an IPAM-mode restart that keeps the
+address on a DHCP server that files leases by MAC (<a href="https://github.com/claymore666/docker-net-dhcp/issues/1416">#1416</a>) and a fix
+for renewal behind a DHCP relay (<a href="https://github.com/claymore666/docker-net-dhcp/issues/1419">#1419</a>)
+(<a href="https://github.com/claymore666/docker-net-dhcp/milestone/43">milestone</a>).
 The full list,
 with what this project will not do, is on the <a href="roadmap/">roadmap</a>.</p>
 <h2 id="how-to-check-any-of-this">How to check any of this<a class="headerlink" href="#how-to-check-any-of-this" title="Permanent link">&para;</a></h2>
