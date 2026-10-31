@@ -4,14 +4,17 @@
 package plugin
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"net"
 	"net/netip"
 	"syscall"
+	"time"
 
 	"github.com/claymore666/dhcp-golib/lease"
 	"github.com/claymore666/dhcp-golib/runtime"
+	"github.com/claymore666/dhcp-golib/wire"
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
@@ -411,6 +414,68 @@ var (
 func (m *dhcpManager) hostSourceFor(v6 bool) (netip.Addr, string, error) {
 	held, _ := m.releasedAddr(v6)
 	return hostSourceFor(m.opts, v6, held)
+}
+
+// handOverHopAnswers is a seam: the hand-over's release is a write that succeeds whether or not it arrives (#1416).
+var handOverHopAnswers = hopAnswersProbe
+
+// handOverProbeBound matches the library's on-link release bound, linkResolveBound in dhcp-golib's runtime.
+var handOverProbeBound = time.Second
+
+// hopAnswersProbe reports a reply to an RFC 5227 section 1.1 probe from the release's next hop: the server on the
+// leased subnet, else the lease's gateway. The probe's zero sender teaches no receiver a mapping, as in the library's
+// resolveByProbe. Silence, a socket error or no v4 hop is false, so the start keeps the previous client id (#1416).
+func hopAnswersProbe(rec lease.Record, iface string) bool {
+	hop := rec.Lease.ServerID.Unmap()
+	if rec.Lease.Addr.Bits() != 32 && !rec.Lease.Addr.Contains(hop) {
+		hop = rec.Lease.Gateway.Unmap()
+	}
+	if !hop.Is4() || iface == "" {
+		return false
+	}
+	link, err := openARPLink(iface)
+	if err != nil {
+		return false
+	}
+	defer link.Close()
+	probe, err := wire.EncodeARP(&wire.ARPPacket{Op: wire.ARPRequest, SenderHW: link.HardwareAddr(),
+		TargetHW: make([]byte, 6), SenderIP: netip.IPv4Unspecified(), TargetIP: hop})
+	if err != nil || link.Send(probe) != nil {
+		return false
+	}
+	deadline := time.After(handOverProbeBound)
+	for {
+		select {
+		case in, ok := <-link.Received():
+			if !ok || in.Err != nil {
+				return false
+			}
+			if pkt, err := wire.DecodeARP(in.Frame); err == nil && pkt.Op == wire.ARPReply && pkt.SenderIP == hop &&
+				len(pkt.SenderHW) == 6 && !bytes.Equal(pkt.SenderHW, make([]byte, 6)) &&
+				!bytes.Equal(pkt.SenderHW, []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}) {
+				return true
+			}
+		case <-deadline:
+			return false
+		}
+	}
+}
+
+// serverOnThisHost reports a v4 server id among this namespace's own addresses, or an unreadable list. The release
+// leaves bound to the parent, the ARP for an own address from an own address goes unanswered, and the datagram dies
+// in the neighbour queue after a successful write (measured on veth 2026-10-31, #1416).
+func serverOnThisHost(rec lease.Record) bool {
+	sid := rec.Lease.ServerID.Unmap()
+	addrs, err := nlAddrList(nil, unix.AF_INET)
+	if err != nil {
+		return true
+	}
+	for _, a := range addrs {
+		if own, ok := netip.AddrFromSlice(a.IP); ok && own.Unmap() == sid {
+			return true
+		}
+	}
+	return false
 }
 
 // hostSourceFor picks the release source (#962): for v4 any non-link-local parent address (RFC 3927) that is not the

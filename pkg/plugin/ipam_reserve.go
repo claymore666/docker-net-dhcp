@@ -326,6 +326,16 @@ func (p *Plugin) ipamHandOver(networkID string, claim ipamClaim, opts DHCPNetwor
 	}
 	held, _ := netip.ParseAddr(claim.addr)
 	fields := log.Fields{"network": shortID(networkID), "record": claim.id, "ip": claim.addr, "mac": mac.String()}
+	if serverOnThisHost(claim.prior) {
+		log.WithFields(fields).WithField("server", claim.prior.Lease.ServerID.String()).
+			Info("The DHCP server answers from an address this host holds, so a release from the parent would not reach it; asking under the previous client identifier instead")
+		return ""
+	}
+	if !handOverHopAnswers(claim.prior, opts.hostLink()) {
+		log.WithFields(fields).WithField("server", claim.prior.Lease.ServerID.String()).
+			Info("The DHCP server, or the gateway to it, did not answer an ARP probe, so a release could be lost unnoticed; asking under the previous client identifier instead")
+		return ""
+	}
 	out, err := releaseFromRecord(claim.prior, opts, false, held, nil, fields)
 	if out != releaseSent {
 		log.WithError(err).WithFields(fields).WithField("outcome", string(out)).

@@ -1133,7 +1133,8 @@ func TestIPAM_RequireMACKeepsEachPinnedContainersOwnIdentityInsideTheWindow(t *t
 
 // A restarted IPAM container has a new MAC. The plugin releases the previous lease under the old MAC and client id,
 // then asks for the address under the new MAC's own id, which a server keyed on the MAC alone (dnsmasq
-// --dhcp-ignore-clid, like the Fritz.Box measured in #1416) grants. Both arms run on one fixture one flag apart.
+// --dhcp-ignore-clid, like the Fritz.Box measured in #1416) grants. The first two arms run the server in its own
+// namespace, as a LAN server is; the third keeps it in the plugin's, where no release can reach it (#1416 r1).
 
 // TestIPAM_SingleRestartKeepsTheAddressWhateverTheServerKeysOn checks that a restarted IPAM container keeps its address on a server keyed on option 61 and on one keyed on the MAC alone.
 func TestIPAM_SingleRestartKeepsTheAddressWhateverTheServerKeysOn(t *testing.T) {
@@ -1173,11 +1174,18 @@ func TestIPAM_SingleRestartKeepsTheAddressWhateverTheServerKeysOn(t *testing.T) 
 		return before, after, afterMAC, ef.CountLogLines("DHCPRELEASE", before) - released
 	}
 
-	keeps := func(t *testing.T, ef *harness.EphemeralFixture, before, after, afterMAC string, releases int) {
+	keeps := func(t *testing.T, ef *harness.EphemeralFixture, before, after, afterMAC string, releases, want int) {
 		t.Helper()
 		if after != before {
 			t.Errorf("the container came back on %s; it held %s. A single restart inside the window "+
 				"keeps the address on this server.", after, before)
+		}
+		if want == 0 {
+			if releases != 0 {
+				t.Errorf("the server logged %d DHCPRELEASE for %s across the restart, want 0: it holds an address "+
+					"in the plugin's namespace, so the plugin asks under the previous client id", releases, before)
+			}
+			return
 		}
 		if releases != 1 {
 			t.Errorf("the server logged %d DHCPRELEASE for %s across the restart, want 1: the plugin hands "+
@@ -1190,16 +1198,22 @@ func TestIPAM_SingleRestartKeepsTheAddressWhateverTheServerKeysOn(t *testing.T) 
 	}
 
 	t.Run("a server that honours option 61 keeps the address", func(t *testing.T) {
-		ef := harness.NewEphemeralFixture(t, harness.WithDnsmasqBackend())
+		ef := harness.NewEphemeralFixture(t, harness.WithDnsmasqBackend(), harness.WithServerNamespace())
 		before, after, mac, releases := restartOnce(t, ef, "dh-itest-ipam-clid-on", "dh-itest-ipam-clid-on-ctr")
-		keeps(t, ef, before, after, mac, releases)
+		keeps(t, ef, before, after, mac, releases, 1)
 	})
 
 	t.Run("a server keyed on the MAC alone keeps the address", func(t *testing.T) {
-		ef := harness.NewEphemeralFixture(t, harness.WithIgnoreClientID())
+		ef := harness.NewEphemeralFixture(t, harness.WithIgnoreClientID(), harness.WithServerNamespace())
 		before, after, mac, releases := restartOnce(t, ef, "dh-itest-ipam-clid-off", "dh-itest-ipam-clid-off-ctr")
-		keeps(t, ef, before, after, mac, releases)
+		keeps(t, ef, before, after, mac, releases, 1)
 		// harness.AssertIP checks the main fixture's range.
 		harness.AssertEphemeralIP(t, after)
+	})
+
+	t.Run("a server on the plugin's own host keeps the address under the previous id", func(t *testing.T) {
+		ef := harness.NewEphemeralFixture(t, harness.WithDnsmasqBackend())
+		before, after, mac, releases := restartOnce(t, ef, "dh-itest-ipam-clid-host", "dh-itest-ipam-clid-host-ctr")
+		keeps(t, ef, before, after, mac, releases, 0)
 	})
 }

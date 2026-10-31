@@ -29,7 +29,7 @@ const (
 
 	// Kea's server end lives in its own namespace (#356): dnsmasq binds 0.0.0.0%<iface>:67 with SO_REUSEADDR and Kea's
 	// fallback socket bind is then refused, so beside the suite-static dnsmasq Kea opens no sockets. Measured both ways.
-	// The dnsmasq backend stays in the host namespace so the FQDN test can query its resolver.
+	// The dnsmasq backend stays in the host namespace so the FQDN test can query its resolver, unless WithServerNamespace.
 	ephemeralNetns = "dh-itest-eph"
 
 	EphemeralServerAddr = "192.168.101.1/24"
@@ -99,6 +99,9 @@ type EphemeralFixture struct {
 
 	// ignoreClientID keys lease bindings on the hardware address alone, dnsmasq's --dhcp-ignore-clid.
 	ignoreClientID bool
+
+	// serverNetns moves the dnsmasq backend into the namespace Kea uses (#1416).
+	serverNetns bool
 
 	leaseSeconds int
 
@@ -202,6 +205,15 @@ func WithIgnoreClientID() EphemeralOption {
 	return func(ef *EphemeralFixture) {
 		ef.backend = backendDnsmasq
 		ef.ignoreClientID = true
+	}
+}
+
+// WithServerNamespace runs the dnsmasq backend in its own namespace, as Kea runs. In the host's namespace a unicast
+// from the parent's address to the server never reaches dnsmasq: the ARP for one own address from another goes
+// unanswered (measured 2026-10-31, #1416). Not with WithDNS or WithV6Range.
+func WithServerNamespace() EphemeralOption {
+	return func(ef *EphemeralFixture) {
+		ef.serverNetns = true
 	}
 }
 
@@ -324,7 +336,7 @@ func NewEphemeralFixture(t *testing.T, opts ...EphemeralOption) *EphemeralFixtur
 // LeaseSeconds is the lease lifetime this fixture grants.
 func (ef *EphemeralFixture) LeaseSeconds() int { return ef.leaseSeconds }
 
-func (ef *EphemeralFixture) isolated() bool { return ef.backend == backendKea }
+func (ef *EphemeralFixture) isolated() bool { return ef.backend == backendKea || ef.serverNetns }
 
 func (ef *EphemeralFixture) run(name string, args ...string) {
 	ef.t.Helper()
@@ -608,7 +620,7 @@ func (ef *EphemeralFixture) startDnsmasq() {
 		)
 	}
 	args = append(args, portArg)
-	ef.cmd = withCLocale(exec.Command("/usr/sbin/dnsmasq", args...))
+	ef.cmd = ef.netnsCommand("/usr/sbin/dnsmasq", args...)
 	ef.cmd.Stdout = logF
 	ef.cmd.Stderr = logF
 	ef.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/claymore666/dhcp-golib/lease"
+	"github.com/vishvananda/netlink"
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 )
@@ -154,6 +155,9 @@ func TestIPAMHandOver_NotTakenKeepsTodaysExchange(t *testing.T) {
 		opts      func() DHCPNetworkOptions
 		sendErr   error
 		wantSends int
+		// ownAddrs answers the namespace-wide address list; the parent's list stays f0Parent's.
+		ownAddrs  func() ([]netlink.Addr, error)
+		silentHop bool
 	}{
 		{name: "the same MAC", mac: removed, opts: f0Options},
 		{name: "a network client_id", mac: restarted, opts: func() DHCPNetworkOptions {
@@ -167,10 +171,30 @@ func TestIPAMHandOver_NotTakenKeepsTodaysExchange(t *testing.T) {
 			return o
 		}},
 		{name: "the release not sent", mac: restarted, opts: f0Options, sendErr: errors.New("no route"), wantSends: 1},
+		{name: "a server on this host", mac: restarted, opts: f0Options, ownAddrs: func() ([]netlink.Addr, error) {
+			return []netlink.Addr{{IPNet: &net.IPNet{IP: net.ParseIP("192.168.99.1"), Mask: net.CIDRMask(24, 32)}}}, nil
+		}},
+		{name: "an unreadable address list", mac: restarted, opts: f0Options, ownAddrs: func() ([]netlink.Addr, error) {
+			return nil, errors.New("netlink dump interrupted")
+		}},
+		{name: "a next hop that does not answer the probe", mac: restarted, opts: f0Options, silentHop: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p, b, x, _ := h1Fixture(t)
 			x.sender.err = tc.sendErr
+			if tc.silentHop {
+				handOverHopAnswers = func(lease.Record, string) bool { return false }
+			}
+			if tc.ownAddrs != nil {
+				parentAddrs := nlAddrList
+				nlAddrList = func(l netlink.Link, family int) ([]netlink.Addr, error) {
+					if l == nil {
+						return tc.ownAddrs()
+					}
+					return parentAddrs(l, family)
+				}
+				t.Cleanup(func() { nlAddrList = parentAddrs })
+			}
 			old := f0Tombstone(t, p, removed, f0Addr)
 
 			res, err := s2Reserve(t, p, b, tc.opts(), tc.mac)

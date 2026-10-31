@@ -74,6 +74,9 @@ func f0Fixture(t *testing.T) (*Plugin, *ipamBinding, *fakeSender, string) {
 	f0Parent(t, f0Bridge)
 	sender := installSender(t, nil)
 	f0HandOverWait(t)
+	prevHop := handOverHopAnswers
+	handOverHopAnswers = func(lease.Record, string) bool { return true }
+	t.Cleanup(func() { handOverHopAnswers = prevHop })
 
 	journal := filepath.Join(t.TempDir(), recordFileName)
 	p := &Plugin{
