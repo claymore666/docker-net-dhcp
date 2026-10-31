@@ -1684,7 +1684,8 @@ on <code>compose down</code>):</p>
   <a href="../reference/#host-side-interface-names-host_ifname">Host-side interface names</a>.</li>
 <li>Use <code>--mac-address</code> / <code>mac_address</code> for MAC-keyed reservations or to
   reuse an old lease; <code>--hostname</code> / <code>hostname</code> is sent as DHCP option 12
-  for DHCP-DNS integration. Per-endpoint and per-container knobs are
+  for DHCP-DNS integration (as option 81 instead when the network sets
+  <code>register_dns</code>). Per-endpoint and per-container knobs are
   documented in the <a href="../reference/#driver-options-per-endpoint">driver reference</a>.</li>
 </ul>
 <h2 id="see-also">See also<a class="headerlink" href="#see-also" title="Permanent link">&para;</a></h2>

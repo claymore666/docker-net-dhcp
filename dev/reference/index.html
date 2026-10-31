@@ -2923,7 +2923,7 @@ value as an invalid duration.</p>
 <td>all</td>
 <td><code>false</code></td>
 <td>v1.3.0</td>
-<td>Send the DHCP FQDN option built from the container's hostname, asking the DHCP server to register that name in DNS: option 81 on DHCPv4 (the A record and the reverse PTR), and since v2.3.0 option 39 on a DHCPv6 lease (the AAAA record, #1029). Reuses the same hostname already sent as the option-12 hint. Best-effort and advisory, because many consumer routers ignore the option, so this <em>requests</em> registration, it does not guarantee resolution. <strong>With the option off, the DHCPv6 server's lease table shows no name for the container</strong>, unlike v4, where option 12 carries the name either way: DHCPv6 has no plain hostname option, and option 39 always asks the server to register the name, so the plugin sends it only when asked to. Turning the option on is the way to get the name into the DHCPv6 server's table. A hostname with a label longer than 63 characters is refused on a <code>register_dns</code> network, on both families, because it cannot be encoded as a DNS name; without the option it is accepted. <code>ipv6_mode=slaac</code> registers no AAAA, since there is no DHCPv6 lease to carry the name, and an <code>ipv6_mode=auto</code> network that fell back to SLAAC never registered one; the plugin logs both. Off by default: dynamic-DNS registration is a network-policy decision. See below.</td>
+<td>Send the DHCP FQDN option built from the container's hostname, asking the DHCP server to register that name in DNS: option 81 on DHCPv4 (the A record and the reverse PTR), and since v2.3.0 option 39 on a DHCPv6 lease (the AAAA record, #1029). Takes the same container hostname that option 12 carries on a network without the option, but replaces option 12: with <code>register_dns</code> on, the client sends option 81 and <strong>not</strong> option 12. A router that registers names only from option 12 (a Fritz.Box, for example) then learns no name; leave <code>register_dns</code> off there. Best-effort and advisory, because many consumer routers ignore the option, so this <em>requests</em> registration, it does not guarantee resolution. <strong>With the option off, the DHCPv6 server's lease table shows no name for the container</strong>, unlike v4, where option 12 carries the name either way: DHCPv6 has no plain hostname option, and option 39 always asks the server to register the name, so the plugin sends it only when asked to. Turning the option on is the way to get the name into the DHCPv6 server's table. A hostname with a label longer than 63 characters is refused on a <code>register_dns</code> network, on both families, because it cannot be encoded as a DNS name; without the option it is accepted. <code>ipv6_mode=slaac</code> registers no AAAA, since there is no DHCPv6 lease to carry the name, and an <code>ipv6_mode=auto</code> network that fell back to SLAAC never registered one; the plugin logs both. Off by default: dynamic-DNS registration is a network-policy decision. See below.</td>
 </tr>
 <tr>
 <td><code>audit_log</code></td>
@@ -3002,12 +3002,22 @@ still says option 121
 <h3 id="dynamic-dns-registration-register_dns-option-81-39">Dynamic-DNS registration (<code>register_dns</code>, option 81 / 39)<a class="headerlink" href="#dynamic-dns-registration-register_dns-option-81-39" title="Permanent link">&para;</a></h3>
 <p>With <code>-o register_dns=true</code>, every endpoint on the network sends the
 DHCP <strong>FQDN option</strong>, option 81 (RFC 4702), built from the container's
-hostname, asking the server to publish that name in DNS. This pairs with
-the option-12 hostname hint the plugin already sends: the hostname says
-<em>who we are</em>, the FQDN option asks the server to <em>publish it</em>. The flags
+hostname, asking the server to publish that name in DNS. The flags
 byte asks the server to perform <strong>both</strong> the forward (A) and the reverse
 (PTR) update; the container runs no DNS updater of its own, so the
 server does all the work.</p>
+<p><strong>Option 81 replaces option 12; the two are not sent together.</strong> RFC 4702
+section 3.1 has an FQDN client send option 81 instead of the plain
+hostname option, so on a <code>register_dns</code> network every DISCOVER and
+REQUEST carries option 81 and none carries option 12. A server that
+honours option 81 (dnsmasq, for one) registers the name from it. A
+router that registers names only from option 12, such as a Fritz.Box,
+ignores option 81 and shows the container with no name at all. On such a
+router leave <code>register_dns</code> off: the plugin then hands the container's
+hostname to the running client, which sends it as option 12 on an early
+renewal, and the router names the container. The first exchange can go
+out without any name when the container's name is not yet known to the
+plugin (see <a href="#dhcp-identity">DHCP identity</a>).</p>
 <p><strong>On a DHCPv6 lease the same option is option 39</strong> (RFC 4704), sent
 since v2.3.0
 (<a href="https://github.com/claymore666/docker-net-dhcp/issues/1029">#1029</a>).
@@ -3269,7 +3279,9 @@ plugin allocates no IPv6 pool and <code>--ip6</code> is not served
   server's MAC-keyed reservations apply (macvlan and bridge; ipvlan
   rejects custom MACs by kernel design).</li>
 <li><code>--hostname</code> / Compose <code>hostname</code> is sent as DHCP option 12, so
-  DHCP-DNS integration registers the container under this name.</li>
+  DHCP-DNS integration registers the container under this name. On a
+  network with <code>register_dns</code> it is sent as option 81 instead, and not
+  as option 12 (see Dynamic-DNS registration, above).</li>
 </ul>
 <hr />
 <h2 id="plugin-settings">Plugin settings<a class="headerlink" href="#plugin-settings" title="Permanent link">&para;</a></h2>
@@ -3611,7 +3623,11 @@ in every mode:</p>
   <code>hostname:</code>, <code>docker run --hostname</code>). Servers that auto-update DNS
   publish the container under that name. Best-effort on the initial
   DISCOVER (the plugin waits up to 2s for libnetwork to bind the
-  endpoint to a container ID); the renewal client always sends it. In
+  endpoint to a container ID, and the first exchange goes out without a
+  name when that wait runs out); the renewal client sends it once it
+  knows the name. On a network with <code>register_dns</code> the hostname travels
+  as option 81 instead and option 12 is not sent on any message (see
+  Dynamic-DNS registration, above). In
   <strong>IPAM mode</strong> the first exchange carries no hostname at all: Docker
   asks for the address before the endpoint exists, so there is no
   container to read a name from, and the name first reaches the server
@@ -4891,7 +4907,7 @@ already parse it were not told to expect a new type.</p>
 <td><code>unsafe_hostnames_rejected</code></td>
 <td>no</td>
 <td>n/a</td>
-<td>(v1.8.0+) Container hostnames dropped because they carried a control character (#692). <strong>What the drop protects changed in 2.0.</strong> Nothing generates a client config any more. <code>directives_refused</code>, which counted values kept out of one, is removed for exactly that reason, and the hostname now goes straight into the DHCP parameters the plugin builds and onto the wire, as option 12 and, with <code>register_dns</code>, as the option-81 FQDN. The drop is still the safe outcome and the lease proceeds, because the hostname decorates the exchange and the opt-in <code>register_dns</code> registration, so this is not <code>healthy</code>-affecting. It is not purely cosmetic, though: the hostname is also the key that narrows tombstone matching to the container that wrote the tombstone, where an <em>empty</em> hostname means "match any tombstone on this network", so a refusal is deliberately kept distinguishable from an absence instead of collapsed into an empty string. Read it as an intent signal and not as a fault: Docker does not validate <code>--hostname</code>, and a legitimate one never contains a control character, so a non-zero value means something sent one on purpose. Underscores and other technically-illegal-but-common hostnames are <strong>not</strong> counted; the rule is about control characters and never about RFC 1123. <strong>Not a check:</strong> the imperative says how to <em>read</em> a non-zero value and never what to <em>do</em> about one: the same row says the drop is the safe outcome and the lease proceeds, so there is no degraded state for a check to fire on.</td>
+<td>(v1.8.0+) Container hostnames dropped because they carried a control character (#692). <strong>What the drop protects changed in 2.0.</strong> Nothing generates a client config any more. <code>directives_refused</code>, which counted values kept out of one, is removed for exactly that reason, and the hostname now goes straight into the DHCP parameters the plugin builds and onto the wire, as option 12, or with <code>register_dns</code> as the option-81 FQDN instead. The drop is still the safe outcome and the lease proceeds, because the hostname decorates the exchange and the opt-in <code>register_dns</code> registration, so this is not <code>healthy</code>-affecting. It is not purely cosmetic, though: the hostname is also the key that narrows tombstone matching to the container that wrote the tombstone, where an <em>empty</em> hostname means "match any tombstone on this network", so a refusal is deliberately kept distinguishable from an absence instead of collapsed into an empty string. Read it as an intent signal and not as a fault: Docker does not validate <code>--hostname</code>, and a legitimate one never contains a control character, so a non-zero value means something sent one on purpose. Underscores and other technically-illegal-but-common hostnames are <strong>not</strong> counted; the rule is about control characters and never about RFC 1123. <strong>Not a check:</strong> the imperative says how to <em>read</em> a non-zero value and never what to <em>do</em> about one: the same row says the drop is the safe outcome and the lease proceeds, so there is no degraded state for a check to fire on.</td>
 </tr>
 <tr>
 <td><code>hostnames_applied_late</code></td>
@@ -5503,7 +5519,7 @@ external (shareable across projects, survives <code>compose down</code>):</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-31-1" name="__codelineno-31-1" href="#__codelineno-31-1"></a><span class="nt">services</span><span class="p">:</span>
 <a id="__codelineno-31-2" name="__codelineno-31-2" href="#__codelineno-31-2"></a><span class="w">  </span><span class="nt">app</span><span class="p">:</span>
 <a id="__codelineno-31-3" name="__codelineno-31-3" href="#__codelineno-31-3"></a><span class="w">    </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">nginx</span>
-<a id="__codelineno-31-4" name="__codelineno-31-4" href="#__codelineno-31-4"></a><span class="w">    </span><span class="nt">hostname</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-server</span><span class="w">          </span><span class="c1"># → DHCP option 12 → DHCP-DNS name</span>
+<a id="__codelineno-31-4" name="__codelineno-31-4" href="#__codelineno-31-4"></a><span class="w">    </span><span class="nt">hostname</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-server</span><span class="w">          </span><span class="c1"># → DHCP option 12 (option 81 with register_dns) → DNS name</span>
 <a id="__codelineno-31-5" name="__codelineno-31-5" href="#__codelineno-31-5"></a><span class="w">    </span><span class="nt">mac_address</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">02:42:ac:00:00:01</span><span class="w">  </span><span class="c1"># match a server-side reservation</span>
 <a id="__codelineno-31-6" name="__codelineno-31-6" href="#__codelineno-31-6"></a><span class="w">    </span><span class="nt">networks</span><span class="p">:</span>
 <a id="__codelineno-31-7" name="__codelineno-31-7" href="#__codelineno-31-7"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">lan</span>
