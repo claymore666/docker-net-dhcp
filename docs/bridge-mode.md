@@ -454,7 +454,8 @@ Notes:
   [Host-side interface names](reference.md#host-side-interface-names-host_ifname).
 - Use `--mac-address` / `mac_address` for MAC-keyed reservations or to
   reuse an old lease; `--hostname` / `hostname` is sent as DHCP option 12
-  for DHCP-DNS integration. Per-endpoint and per-container knobs are
+  for DHCP-DNS integration (as option 81 instead when the network sets
+  `register_dns`). Per-endpoint and per-container knobs are
   documented in the [driver reference](reference.md#driver-options-per-endpoint).
 
 ## See also
