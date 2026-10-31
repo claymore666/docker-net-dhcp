@@ -466,7 +466,7 @@ func hopAnswersProbe(rec lease.Record, iface string) bool {
 // in the neighbour queue after a successful write (measured on veth 2026-10-31, #1416).
 func serverOnThisHost(rec lease.Record) bool {
 	sid := rec.Lease.ServerID.Unmap()
-	addrs, err := nlAddrList(nil, unix.AF_INET)
+	addrs, err := util.DumpResult(nlAddrList(nil, unix.AF_INET))
 	if err != nil {
 		return true
 	}

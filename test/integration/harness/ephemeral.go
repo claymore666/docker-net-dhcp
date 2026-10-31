@@ -100,7 +100,6 @@ type EphemeralFixture struct {
 	// ignoreClientID keys lease bindings on the hardware address alone, dnsmasq's --dhcp-ignore-clid.
 	ignoreClientID bool
 
-	// serverNetns moves the dnsmasq backend into the namespace Kea uses (#1416).
 	serverNetns bool
 
 	leaseSeconds int
@@ -208,9 +207,8 @@ func WithIgnoreClientID() EphemeralOption {
 	}
 }
 
-// WithServerNamespace runs the dnsmasq backend in its own namespace, as Kea runs. In the host's namespace a unicast
-// from the parent's address to the server never reaches dnsmasq: the ARP for one own address from another goes
-// unanswered (measured 2026-10-31, #1416). Not with WithDNS or WithV6Range.
+// WithServerNamespace runs the dnsmasq backend in Kea's namespace; in the host's, ARP from one own address for another
+// goes unanswered, so a parent's unicast never arrives (measured 2026-10-31, #1416). Not with WithDNS or WithV6Range.
 func WithServerNamespace() EphemeralOption {
 	return func(ef *EphemeralFixture) {
 		ef.serverNetns = true
