@@ -1,3 +1,6 @@
+// Copyright the docker-net-dhcp contributors.
+// SPDX-License-Identifier: GPL-3.0-only
+
 package plugin
 
 import (
@@ -93,6 +96,9 @@ func TestIPAMHandOver_ReleasesUnderTheTombstonesMACThenAsksUnderTheOwnID(t *test
 	}
 	if r := f0Rec(t, p, res.record); r.Phase != lease.PhaseCreated || !bytes.Equal(r.CHAddr, restarted) {
 		t.Fatalf("the fresh record is %v on %v, want created on %v", r.Phase, net.HardwareAddr(r.CHAddr), restarted)
+	}
+	if renew, ok := dhcp.ClientIDPayload(f0Rec(t, p, res.record).Identity); !ok || !bytes.Equal(renew, x.clientID) {
+		t.Fatalf("the fresh record renews under client id %x, want the %x the exchange was ACKed under", renew, x.clientID)
 	}
 	if !res.rebound {
 		t.Fatal("the reservation is not marked re-bound, so a refused endpoint would close an address it holds")
