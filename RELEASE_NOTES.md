@@ -8,6 +8,74 @@ The notes below go back to the first release of this project.
 
 [predecessor]: https://github.com/devplayer0/docker-net-dhcp
 
+## v2.8.0
+
+An IPAM-mode restart now keeps the container's address on a DHCP server
+that files leases by hardware address: the plugin hands the previous
+lease back with a DHCPRELEASE and asks for the same address under the
+new MAC. Behind a DHCP relay the IPv4 client renews at T1 again, with
+dhcp-golib v1.5.2. The `ipam_rebind_moved` counter reports a restart the
+server answered with another address.
+
+### Upgrade notes
+
+**The privilege prompt does not change.** No field `docker plugin upgrade`
+prompts on has moved since v2.0.0. The manifest is the same as v2.7.0's,
+so `docker plugin upgrade` from v2.7.0 asks for nothing new.
+
+<!-- manifest-delta: begin baseline=v2.7.0 -->
+
+| field | v2.7.0 | v2.8.0 | prompted |
+| --- | --- | --- | --- |
+| `linux.capabilities` | `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | no change |
+| `network.type` | `host` | `host` | no change |
+| `ipchost` | `false` | `false` | no change |
+| `pidhost` | `true` | `true` | no change |
+| `mounts` | `/var/run/docker.sock:bind`, `/var/lib/net-dhcp:rbind,rw`, `/var/run/docker:rbind,ro` | `/var/run/docker.sock:bind`, `/var/lib/net-dhcp:rbind,rw`, `/var/run/docker:rbind,ro` | no change |
+| `propagatedmount` | `(absent)` | `(absent)` | no change |
+| `linux.devices` | `(absent)` | `(absent)` | no change |
+| `linux.allowalldevices` | `false` | `false` | no change |
+| `env` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `DHCPV6_ABSENCE_MEMORY`, `STATE_DIR`, `METRICS_ADDR`, `DOCKER_HOST` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `DHCPV6_ABSENCE_MEMORY`, `STATE_DIR`, `METRICS_ADDR`, `DOCKER_HOST` | no change |
+
+<!-- manifest-delta: end -->
+
+| What changed | What it does to you |
+| --- | --- |
+| An IPAM-mode restart that reclaims a stopped container's lease sends one DHCPRELEASE for the previous lease, waits two seconds, then asks for the same address under an identifier derived from the new MAC (#1416) | `docker restart` of such a container takes two seconds longer. The DHCP server logs a RELEASE at the restart, and `releases_sent` counts it, on a network with `release_lease=never` too |
+| A server that files leases by hardware address (dnsmasq with `--dhcp-ignore-clid`, BusyBox udhcpd, a consumer router) gives the restarted container its address back (#1416) | Before, such a server handed the new MAC another address. A server that files by client identifier gives the released address to the new identifier the same way |
+| The hand-over is skipped when the release could be lost (#1416): the server, or the gateway to a relayed one, does not answer an ARP probe within one second; or the server answers from an address the plugin's host holds. It is also skipped on a network with `client_id`, in `ipvlan`, and for a container started with `--mac-address` | The plugin asks under the previous client identifier, with no release and no wait, as before v2.8.0. Only a server that files by client identifier gives the same address then |
+| `release_lease=never` sends no DHCPRELEASE at the stop, with one exception: the IPAM-mode hand-over above (#1416) | A rule that blocks outbound DHCP releases on a `never` network sees one at a restart. The reference states the exception beside the option |
+| The new `ipam_rebind_moved` counter, in `/health` and the metrics endpoint, counts a restart that claimed a stopped container's lease and was given another address (#1416) | It does not affect `healthy`. A restart with `--ip` is not counted |
+| Behind a DHCP relay the IPv4 client sends the unicast RENEW at T1; it renewed only by the broadcast REBIND at T2 (#1419, dhcp-golib v1.5.2) | Less broadcast load on the relay and more margin before a short lease expires. A DHCP server on the same link is unaffected. A relay that is not a router does not forward the frame, and the lease renews at T2 as before |
+
+### New
+
+- In IPAM mode a restarted container keeps its address on a server that
+  files leases by hardware address: the plugin releases the previous
+  lease, waits two seconds and asks for the same address under the new
+  MAC's own identifier. The cases where it does not are in the table
+  above. `ipam_rebind_moved` counts a restart the server answered with
+  another address (#1416, PR #1423). See Restart stability in
+  `docs/reference.md`.
+
+### Fixed
+
+- Behind a DHCP relay the IPv4 client never sent the unicast RENEW at T1
+  and renewed only by the broadcast REBIND at T2. The library transport
+  refused a unicast to a server it had heard nothing from, and a relayed
+  reply names the server in option 54 but arrives from the relay.
+  dhcp-golib v1.5.2 sends the frame to the relay's hardware address with
+  the server as IP destination (RFC 2131 section 4.4.5); the plugin pins
+  it (#1419, PR #1420).
+
+### CI
+
+- The IPAM restart integration test reads the release and the new lease
+  from the server's own log and lease file, on a server that files by
+  client identifier, on one that files by MAC (`--dhcp-ignore-clid`),
+  both in their own namespace, and on a server in the plugin's namespace,
+  where it expects no release (#1416, PR #1423).
+
 ## v2.7.0
 
 A container can carry its own DHCP client identifier with the
@@ -24,8 +92,6 @@ The plugin image drops five apk pins that Alpine 3.24.3 makes redundant.
 prompts on has moved since v2.0.0. The manifest is the same as v2.6.1's,
 so `docker plugin upgrade` from v2.6.1 asks for nothing new.
 
-<!-- manifest-delta: begin baseline=v2.6.1 -->
-
 | field | v2.6.1 | v2.7.0 | prompted |
 | --- | --- | --- | --- |
 | `linux.capabilities` | `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | no change |
@@ -37,8 +103,6 @@ so `docker plugin upgrade` from v2.6.1 asks for nothing new.
 | `linux.devices` | `(absent)` | `(absent)` | no change |
 | `linux.allowalldevices` | `false` | `false` | no change |
 | `env` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `DHCPV6_ABSENCE_MEMORY`, `STATE_DIR`, `METRICS_ADDR`, `DOCKER_HOST` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `DHCPV6_ABSENCE_MEMORY`, `STATE_DIR`, `METRICS_ADDR`, `DOCKER_HOST` | no change |
-
-<!-- manifest-delta: end -->
 
 | What changed | What it does to you |
 | --- | --- |
