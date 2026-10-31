@@ -1503,7 +1503,12 @@ container that is**, and only while it is the single one being kept.
 A MAC the user set changes this, in the last two cases below. So:
 
 - One container restarted, nothing else happening on the network: it
-  claims its own, and keeps its address. This is the normal case.
+  claims its own, and keeps its address on a server that files leases by
+  client identifier. This is the normal case. A server that files leases
+  by hardware address alone sees the new MAC Docker gave the endpoint
+  and may hand out another address; a container started with
+  `--mac-address` comes back under the same MAC (the last two cases
+  below).
 - A **different** container started inside that minute claims them
   first. The new container comes up on the stopped one's address, and
   the stopped one gets a fresh address when it comes back. Nothing is
@@ -1616,8 +1621,11 @@ not do. Concurrent restarts of several
 containers on one network inside the 60-second window fall back to fresh
 MACs instead of risking swapped identities between containers.
 Tombstones carry the container hostname so restarts in flight can be
-told apart when the hostname is known, and only when neither side knows
-it does the network-wide "exactly one match" rule apply. Sequential
+told apart: when both the tombstone and the new endpoint carry a
+hostname, the two must agree. When either side has none, because the
+tombstone was written for a container without a hostname or by a
+v0.5.0 binary, or because the new endpoint has no hostname, the
+network-wide "exactly one match" rule applies instead. Sequential
 restarts, the normal case, always satisfy it.
 
 A container whose hostname the plugin **refuses**, one carrying a

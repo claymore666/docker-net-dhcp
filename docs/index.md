@@ -13,8 +13,13 @@ each address from the LAN's DHCP server and, in `bridge` and `macvlan`
 mode, keeps one identity per container across restarts and upgrades, so
 the router's lease table and its reservations stay true.
 
-Every release is run against real DHCP servers (Kea, ISC dhcpd, dnsmasq)
-in a separate lab ([real-server lab](testing.md#real-server-lab)).
+Every release is run in a separate lab against real DHCP servers, Kea
+(single, hot-standby pair and behind a relay), ISC dhcpd (single and
+failover pair), dnsmasq, udhcpd, Pi-hole and OpenWrt, with Docker hosts
+on Debian 13, Ubuntu 24.04 and Debian 11 with Docker 20.10; a MikroTik
+RouterOS CHR cell is set up but has written no verdicts yet
+([latest lab results](https://github.com/claymore666/docker-net-dhcp-lab/blob/v0.3.0/results/README.md),
+[how the lab works](testing.md#real-server-lab)).
 
 This is the successor of `devplayer0/docker-net-dhcp`, not a patched copy:
 2.x has its own DHCP engine and its own lifecycle code.
@@ -114,11 +119,13 @@ The plugin refuses these with a message that names the reason.
 
 ## Planned
 
-v2.6.1 fixes the IPv6 address lifetimes of an `ipv6_mode=auto` endpoint
-that fell back to the advertised prefix ([#1369]) and the Docker Hub
-description, which the release runs did not update ([#1324]). v2.7.0 is
-planned: option and mode test coverage from the lab option review, and
-bug fixes ([milestone](https://github.com/claymore666/docker-net-dhcp/milestone/42)).
+v2.7.0 adds a `client_id` driver option for one container ([#219]), an
+EBUSY error that names the children the plugin holds on the parent
+([#1372]) and a SLAAC address that leaves no kernel prefix route behind
+([#1412]). v2.8.0 is planned: an IPAM-mode restart that keeps the
+address on a DHCP server that files leases by MAC ([#1416]) and a fix
+for renewal behind a DHCP relay ([#1419])
+([milestone](https://github.com/claymore666/docker-net-dhcp/milestone/43)).
 The full list,
 with what this project will not do, is on the [roadmap](roadmap.md).
 
@@ -135,6 +142,10 @@ with what this project will not do, is on the [roadmap](roadmap.md).
   ([verifying releases](verifying-releases.md)).
 
 [#219]: https://github.com/claymore666/docker-net-dhcp/issues/219
+[#1419]: https://github.com/claymore666/docker-net-dhcp/issues/1419
+[#1416]: https://github.com/claymore666/docker-net-dhcp/issues/1416
+[#1412]: https://github.com/claymore666/docker-net-dhcp/issues/1412
+[#1372]: https://github.com/claymore666/docker-net-dhcp/issues/1372
 [#895]: https://github.com/claymore666/docker-net-dhcp/issues/895
 [#902]: https://github.com/claymore666/docker-net-dhcp/issues/902
 [#905]: https://github.com/claymore666/docker-net-dhcp/issues/905
@@ -145,8 +156,6 @@ with what this project will not do, is on the [roadmap](roadmap.md).
 [#214]: https://github.com/claymore666/docker-net-dhcp/issues/214
 [#733]: https://github.com/claymore666/docker-net-dhcp/issues/733
 [#1288]: https://github.com/claymore666/docker-net-dhcp/issues/1288
-[#1324]: https://github.com/claymore666/docker-net-dhcp/issues/1324
-[#1369]: https://github.com/claymore666/docker-net-dhcp/issues/1369
 [#1135]: https://github.com/claymore666/docker-net-dhcp/issues/1135
 [#1027]: https://github.com/claymore666/docker-net-dhcp/issues/1027
 

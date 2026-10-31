@@ -124,6 +124,13 @@ so `docker plugin upgrade` from v2.6.1 asks for nothing new.
   (#219). A second one makes a macvlan container start fail on a parent
   occupied by an ipvlan container, and the error must name the
   occupant's endpoint and network (#1372).
+- The README, the docs index and the testing guide name the servers,
+  hosts and results of the latest real-server lab run, and the README
+  names the APIPA fallback and the monitoring surfaces. The reference
+  says when a restarted container keeps its address (a server that files
+  leases by client identifier, or a container started with
+  `--mac-address`) and when a tombstone matches without a hostname
+  (#1417, PR #1418, PR #1421).
 
 ## v2.6.1
 
