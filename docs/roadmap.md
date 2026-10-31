@@ -17,7 +17,8 @@ below decide what is in a release; this page follows them.
 | v2.5.0 | released | CI consolidation and code debt, and DHCPv6 prefix delegation | [milestone 35](https://github.com/claymore666/docker-net-dhcp/milestone/35) |
 | v2.6.0 | released | Networks without an IPv4 pool, an IPv6 pool in the IPAM shape, and the CI consolidation | [milestone 39](https://github.com/claymore666/docker-net-dhcp/milestone/39) |
 | v2.6.1 | released | IPv6 address lifetimes and removal conditions, and the Docker Hub description check | [milestone 41](https://github.com/claymore666/docker-net-dhcp/milestone/41) |
-| v2.7.0 | planned | Option and mode test coverage from the lab option review, and bug fixes | [milestone 42](https://github.com/claymore666/docker-net-dhcp/milestone/42) |
+| v2.7.0 | released | A per-container `client_id` option, the EBUSY error that names the children, and the SLAAC prefix route | [milestone 42](https://github.com/claymore666/docker-net-dhcp/milestone/42) |
+| v2.8.0 | planned | An IPAM-mode restart that keeps the address on a server that files leases by MAC, and renewal behind a DHCP relay | [milestone 43](https://github.com/claymore666/docker-net-dhcp/milestone/43) |
 
 ### v2.3.0, released
 
@@ -146,11 +147,26 @@ below decide what is in a release; this page follows them.
 - [#1324], each release run reads both Docker Hub descriptions back after
   the sync and goes red when either differs
 
-### v2.7.0, planned
+### v2.7.0, released
 
-Option and mode test coverage from the lab option review, and bug fixes
-found in the 2026-10 hunt. The list is the
-[milestone](https://github.com/claymore666/docker-net-dhcp/milestone/42).
+- [#219], a `client_id` driver option that sets DHCP option 61 for one
+  container, so ipvlan containers keep their address across a restart
+  and a recreate
+- [#1372], the EBUSY error for a macvlan or ipvlan child names the
+  children the plugin holds on the parent
+- [#1412], a SLAAC address leaves no kernel prefix route behind after the
+  router withdraws its prefix
+- [#1406], the plugin image drops five apk pins that Alpine 3.24.3 makes
+  redundant
+- [#1417], the README, the docs index and the testing guide name what the
+  real-server lab covers
+
+### v2.8.0, planned
+
+- [#1416], IPAM mode: a restarted container keeps its address on a DHCP
+  server that files leases by MAC
+- [#1419], the IPv4 client renews at RENEWING behind a DHCP relay, with
+  the dhcp-golib v1.5.2 fix
 
 ## The release line
 
@@ -163,10 +179,11 @@ flowchart LR
     v24["v2.4<br/>the rest of IPv6"]
     v25["v2.5<br/>CI, code debt and<br/>prefix delegation"]
     v26["v2.6<br/>IPv6-only networks and<br/>the IPAM IPv6 pool"]
-    v20 --> v21 --> v22 --> v23 --> v24 --> v25 --> v26
+    v27["v2.7<br/>per-container client_id"]
+    v20 --> v21 --> v22 --> v23 --> v24 --> v25 --> v26 --> v27
 ```
 
-v2.0 to v2.6 are released. There are no dates. Every
+v2.0 to v2.7 are released. There are no dates. Every
 release, patches included, is in
 [the release notes](https://github.com/claymore666/docker-net-dhcp/blob/main/RELEASE_NOTES.md).
 
@@ -433,6 +450,12 @@ project does, that review is where it gets corrected.
 [#1369]: https://github.com/claymore666/docker-net-dhcp/issues/1369
 [#1370]: https://github.com/claymore666/docker-net-dhcp/issues/1370
 [#1371]: https://github.com/claymore666/docker-net-dhcp/issues/1371
+[#1372]: https://github.com/claymore666/docker-net-dhcp/issues/1372
+[#1406]: https://github.com/claymore666/docker-net-dhcp/issues/1406
+[#1412]: https://github.com/claymore666/docker-net-dhcp/issues/1412
+[#1416]: https://github.com/claymore666/docker-net-dhcp/issues/1416
+[#1417]: https://github.com/claymore666/docker-net-dhcp/issues/1417
+[#1419]: https://github.com/claymore666/docker-net-dhcp/issues/1419
 [moby/moby#52866]: https://github.com/moby/moby/pull/52866
 [moby/moby#52870]: https://github.com/moby/moby/issues/52870
 [moby/moby#52871]: https://github.com/moby/moby/pull/52871

@@ -130,7 +130,7 @@ so `docker plugin upgrade` from v2.6.1 asks for nothing new.
   says when a restarted container keeps its address (a server that files
   leases by client identifier, or a container started with
   `--mac-address`) and when a tombstone matches without a hostname
-  (#1417, PR #1418).
+  (#1417, PR #1418, PR #1421).
 
 ## v2.6.1
 
