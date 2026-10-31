@@ -38,6 +38,30 @@ func DnsmasqLeaseExpiry(leases, mac string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
+// DnsmasqLeaseAddr returns the v4 address dnsmasq leases to mac, from the same line DnsmasqLeaseExpiry reads (#1416).
+func DnsmasqLeaseAddr(leases, mac string) (netip.Addr, bool) {
+	want, err := net.ParseMAC(mac)
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	for _, line := range strings.Split(leases, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		got, err := net.ParseMAC(fields[1])
+		if err != nil || got.String() != want.String() {
+			continue
+		}
+		addr, err := netip.ParseAddr(fields[2])
+		if err != nil || !addr.Is4() {
+			return netip.Addr{}, false
+		}
+		return addr, true
+	}
+	return netip.Addr{}, false
+}
+
 // DnsmasqLease6Name reads the name ("*" for none) on addr's v6 line, after the "duid" line (dnsmasq lease.c, #1029).
 func DnsmasqLease6Name(leases, addr string) (string, bool) {
 	want, err := netip.ParseAddr(addr)

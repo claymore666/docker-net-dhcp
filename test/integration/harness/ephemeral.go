@@ -8,6 +8,7 @@ package harness
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -777,6 +778,22 @@ func (ef *EphemeralFixture) LeaseExpiry(mac string) (time.Time, bool) {
 		ef.t.Fatalf("read the dnsmasq lease file: %v", err)
 	}
 	return DnsmasqLeaseExpiry(string(b), mac)
+}
+
+// LeaseAddr returns the v4 address the dnsmasq backend last wrote for mac to its lease file (#1416).
+func (ef *EphemeralFixture) LeaseAddr(mac string) (netip.Addr, bool) {
+	ef.t.Helper()
+	if ef.backend != backendDnsmasq {
+		ef.t.Fatal("LeaseAddr reads dnsmasq's lease file; this fixture runs another server")
+	}
+	b, err := readLeaseFileSettled(ef.leaseFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return netip.Addr{}, false
+		}
+		ef.t.Fatalf("read the dnsmasq lease file: %v", err)
+	}
+	return DnsmasqLeaseAddr(string(b), mac)
 }
 
 func (ef *EphemeralFixture) V6LeaseAddrs(duid string) (stable, temporary []string) {

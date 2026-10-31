@@ -55,11 +55,25 @@ func f0Parent(t *testing.T, name string) {
 	t.Cleanup(func() { nlLinkByName, nlAddrList = prevByName, prevList })
 }
 
+// f0HandOverWait records each hand-over pause instead of sleeping it, answering a cancelled context as the real one.
+func f0HandOverWait(t *testing.T) *[]time.Duration {
+	t.Helper()
+	var waited []time.Duration
+	prev := ipamHandOverWait
+	ipamHandOverWait = func(ctx context.Context, d time.Duration) error {
+		waited = append(waited, d)
+		return ctx.Err()
+	}
+	t.Cleanup(func() { ipamHandOverWait = prev })
+	return &waited
+}
+
 func f0Fixture(t *testing.T) (*Plugin, *ipamBinding, *fakeSender, string) {
 	t.Helper()
 	withStateDir(t, t.TempDir())
 	f0Parent(t, f0Bridge)
 	sender := installSender(t, nil)
+	f0HandOverWait(t)
 
 	journal := filepath.Join(t.TempDir(), recordFileName)
 	p := &Plugin{

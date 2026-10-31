@@ -1131,13 +1131,13 @@ func TestIPAM_RequireMACKeepsEachPinnedContainersOwnIdentityInsideTheWindow(t *t
 	}
 }
 
-// A restarted IPAM container has a new MAC and keeps its address only because the server matches the re-sent client
-// identifier (RFC 2131 section 4.2); with dnsmasq's --dhcp-ignore-clid it gets a different address and no counter
-// moves. Both arms run on one fixture one flag apart (#110).
+// A restarted IPAM container has a new MAC. The plugin releases the previous lease under the old MAC and client id,
+// then asks for the address under the new MAC's own id, which a server keyed on the MAC alone (dnsmasq
+// --dhcp-ignore-clid, like the Fritz.Box measured in #1416) grants. Both arms run on one fixture one flag apart.
 
-// TestIPAM_SingleRestartNeedsAServerThatKeepsClientIDBindings checks that a restarted IPAM container keeps its address only on a server that honours option 61.
-func TestIPAM_SingleRestartNeedsAServerThatKeepsClientIDBindings(t *testing.T) {
-	restartOnce := func(t *testing.T, ef *harness.EphemeralFixture, netName, ctrName string) (before, after string) {
+// TestIPAM_SingleRestartKeepsTheAddressWhateverTheServerKeysOn checks that a restarted IPAM container keeps its address on a server keyed on option 61 and on one keyed on the MAC alone.
+func TestIPAM_SingleRestartKeepsTheAddressWhateverTheServerKeysOn(t *testing.T) {
+	restartOnce := func(t *testing.T, ef *harness.EphemeralFixture, netName, ctrName string) (before, after, afterMAC string, releases int) {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
 		defer cancel()
@@ -1153,13 +1153,14 @@ func TestIPAM_SingleRestartNeedsAServerThatKeepsClientIDBindings(t *testing.T) {
 			map[string]string{"parent": harness.EphemeralHostVeth},
 			map[string]string{"parent": harness.EphemeralHostVeth})
 		id, before, _ := harness.RunContainer(t, ctx, netName, ctrName)
+		released := ef.CountLogLines("DHCPRELEASE", before)
 
 		// Past the fixture's lease the address changes whatever the server keys on, so the restart's duration is checked.
 		started := time.Now()
 		if _, err := cli.ContainerRestart(ctx, id, docker.ContainerRestartOptions{}); err != nil {
 			t.Fatalf("ContainerRestart: %v", err)
 		}
-		after, _ = ipamNetworkAddress(t, ctx, cli, id, netName)
+		after, afterMAC = ipamNetworkAddress(t, ctx, cli, id, netName)
 		gap := time.Since(started)
 		t.Logf("%s: before=%s after=%s, the restart took %s of the fixture's %ds lease",
 			t.Name(), before, after, gap.Round(time.Second), harness.EphemeralDefaultLeaseSeconds)
@@ -1169,32 +1170,35 @@ func TestIPAM_SingleRestartNeedsAServerThatKeepsClientIDBindings(t *testing.T) {
 				"cannot decide what the server keys its bindings on, in either direction.",
 				gap.Round(time.Second), harness.EphemeralDefaultLeaseSeconds)
 		}
-		return before, after
+		return before, after, afterMAC, ef.CountLogLines("DHCPRELEASE", before) - released
+	}
+
+	keeps := func(t *testing.T, ef *harness.EphemeralFixture, before, after, afterMAC string, releases int) {
+		t.Helper()
+		if after != before {
+			t.Errorf("the container came back on %s; it held %s. A single restart inside the window "+
+				"keeps the address on this server.", after, before)
+		}
+		if releases != 1 {
+			t.Errorf("the server logged %d DHCPRELEASE for %s across the restart, want 1: the plugin hands "+
+				"the previous lease back once, before the new endpoint asks for the address", releases, before)
+		}
+		if got, ok := ef.LeaseAddr(afterMAC); !ok || got.String() != before {
+			t.Errorf("the server's lease file holds %v (found %v) for the restarted container's MAC %s, "+
+				"want %s", got, ok, afterMAC, before)
+		}
 	}
 
 	t.Run("a server that honours option 61 keeps the address", func(t *testing.T) {
 		ef := harness.NewEphemeralFixture(t, harness.WithDnsmasqBackend())
-		before, after := restartOnce(t, ef, "dh-itest-ipam-clid-on", "dh-itest-ipam-clid-on-ctr")
-		if after != before {
-			t.Errorf("the container came back on %s; it held %s. Against a server that keys "+
-				"its bindings on the client identifier the plugin re-sends, a single restart "+
-				"keeps the address, and that is the property IPAM mode claims.", after, before)
-		}
+		before, after, mac, releases := restartOnce(t, ef, "dh-itest-ipam-clid-on", "dh-itest-ipam-clid-on-ctr")
+		keeps(t, ef, before, after, mac, releases)
 	})
 
-	t.Run("a server keyed on the MAC alone does not", func(t *testing.T) {
+	t.Run("a server keyed on the MAC alone keeps the address", func(t *testing.T) {
 		ef := harness.NewEphemeralFixture(t, harness.WithIgnoreClientID())
-		before, after := restartOnce(t, ef, "dh-itest-ipam-clid-off", "dh-itest-ipam-clid-off-ctr")
-		if after == before {
-			t.Errorf("the container kept %s against a server started with --dhcp-ignore-clid.\n"+
-				"That server cannot match the re-sent client identifier, and the endpoint's "+
-				"hardware address is new, so keeping the address means the stability this "+
-				"driver advertises comes from somewhere this test does not know about. Read the "+
-				"dnsmasq arguments in the fixture dump first, since the flag not reaching the "+
-				"server produces exactly this, and the mechanism second; the reference's Restart "+
-				"stability section rests on the answer. The lease window is ruled out above, "+
-				"measured.", after)
-		}
+		before, after, mac, releases := restartOnce(t, ef, "dh-itest-ipam-clid-off", "dh-itest-ipam-clid-off-ctr")
+		keeps(t, ef, before, after, mac, releases)
 		// harness.AssertIP checks the main fixture's range.
 		harness.AssertEphemeralIP(t, after)
 	})
