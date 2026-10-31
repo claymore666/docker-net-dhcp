@@ -8,6 +8,7 @@ package harness
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,7 +29,7 @@ const (
 
 	// Kea's server end lives in its own namespace (#356): dnsmasq binds 0.0.0.0%<iface>:67 with SO_REUSEADDR and Kea's
 	// fallback socket bind is then refused, so beside the suite-static dnsmasq Kea opens no sockets. Measured both ways.
-	// The dnsmasq backend stays in the host namespace so the FQDN test can query its resolver.
+	// The dnsmasq backend stays in the host namespace so the FQDN test can query its resolver, unless WithServerNamespace.
 	ephemeralNetns = "dh-itest-eph"
 
 	EphemeralServerAddr = "192.168.101.1/24"
@@ -98,6 +99,8 @@ type EphemeralFixture struct {
 
 	// ignoreClientID keys lease bindings on the hardware address alone, dnsmasq's --dhcp-ignore-clid.
 	ignoreClientID bool
+
+	serverNetns bool
 
 	leaseSeconds int
 
@@ -201,6 +204,14 @@ func WithIgnoreClientID() EphemeralOption {
 	return func(ef *EphemeralFixture) {
 		ef.backend = backendDnsmasq
 		ef.ignoreClientID = true
+	}
+}
+
+// WithServerNamespace runs the dnsmasq backend in Kea's namespace; in the host's, ARP from one own address for another
+// goes unanswered, so a parent's unicast never arrives (measured 2026-10-31, #1416). Not with WithDNS or WithV6Range.
+func WithServerNamespace() EphemeralOption {
+	return func(ef *EphemeralFixture) {
+		ef.serverNetns = true
 	}
 }
 
@@ -323,7 +334,7 @@ func NewEphemeralFixture(t *testing.T, opts ...EphemeralOption) *EphemeralFixtur
 // LeaseSeconds is the lease lifetime this fixture grants.
 func (ef *EphemeralFixture) LeaseSeconds() int { return ef.leaseSeconds }
 
-func (ef *EphemeralFixture) isolated() bool { return ef.backend == backendKea }
+func (ef *EphemeralFixture) isolated() bool { return ef.backend == backendKea || ef.serverNetns }
 
 func (ef *EphemeralFixture) run(name string, args ...string) {
 	ef.t.Helper()
@@ -607,7 +618,7 @@ func (ef *EphemeralFixture) startDnsmasq() {
 		)
 	}
 	args = append(args, portArg)
-	ef.cmd = withCLocale(exec.Command("/usr/sbin/dnsmasq", args...))
+	ef.cmd = ef.netnsCommand("/usr/sbin/dnsmasq", args...)
 	ef.cmd.Stdout = logF
 	ef.cmd.Stderr = logF
 	ef.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -777,6 +788,22 @@ func (ef *EphemeralFixture) LeaseExpiry(mac string) (time.Time, bool) {
 		ef.t.Fatalf("read the dnsmasq lease file: %v", err)
 	}
 	return DnsmasqLeaseExpiry(string(b), mac)
+}
+
+// LeaseAddr returns the v4 address the dnsmasq backend last wrote for mac to its lease file (#1416).
+func (ef *EphemeralFixture) LeaseAddr(mac string) (netip.Addr, bool) {
+	ef.t.Helper()
+	if ef.backend != backendDnsmasq {
+		ef.t.Fatal("LeaseAddr reads dnsmasq's lease file; this fixture runs another server")
+	}
+	b, err := readLeaseFileSettled(ef.leaseFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return netip.Addr{}, false
+		}
+		ef.t.Fatalf("read the dnsmasq lease file: %v", err)
+	}
+	return DnsmasqLeaseAddr(string(b), mac)
 }
 
 func (ef *EphemeralFixture) V6LeaseAddrs(duid string) (stable, temporary []string) {

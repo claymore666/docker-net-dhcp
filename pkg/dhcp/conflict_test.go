@@ -507,6 +507,12 @@ func TestAcquireStep_AnAcquisitionEndsOnAcquiredAndNothingElse(t *testing.T) {
 			wantErrHas: "acquisition failed",
 		},
 		{
+			name:       "a NAK is recorded, not returned",
+			ev:         lease.Event{Kind: lease.Failed, Reason: proto.ReasonNak},
+			wantDone:   false,
+			wantErrHas: "acquisition failed",
+		},
+		{
 			name:     "a loss during the one-shot window is not an end",
 			ev:       lease.Event{Kind: lease.Lost, Reason: proto.ReasonConflict, Lease: conflicting},
 			wantDone: false,

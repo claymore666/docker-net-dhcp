@@ -662,6 +662,9 @@ type Plugin struct {
 	// RequestAddress carries no hostname or endpoint id, so the server decides (#110). Not healthy-affecting.
 	ipamRebindAmbiguous stampedCounter
 
+	// ipamRebindMoved counts re-binds the server answered with another address than the tombstone's (#1416).
+	ipamRebindMoved atomic.Int32
+
 	// ipamReserveDuplicateMAC counts requests refused because two endpoints carry one MAC, e.g. `--mac-address X`
 	// twice: libnetwork copies an operator MAC through (moby 28.5.2, libnetwork/network.go:1222 and :1240) (#110). A
 	// daemon re-send after a timeout does not move it: moby reuses the drained body reader (pkg/plugins/client.go
