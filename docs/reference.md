@@ -173,10 +173,10 @@ for unattended):
 sudo mkdir -p /var/lib/net-dhcp
 
 # amd64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.7.0
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.8.0
 
 # arm64 (v1.7.0 onward). The architecture is in the tag, see below
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.7.0-arm64
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.8.0-arm64
 ```
 
 **If the directory is missing**, the install pulls the plugin, then
@@ -190,7 +190,7 @@ plugin that is already there:
 
 ```bash
 sudo mkdir -p /var/lib/net-dhcp
-docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v2.7.0
+docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v2.8.0
 ```
 
 On arm64 that second line takes the `-arm64` tag, like every other
@@ -532,7 +532,7 @@ You bring an existing Linux bridge that is L2-connected to the LAN
 (see [`bridge-mode.md`](bridge-mode.md) for the bridge setup itself):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.7.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.8.0 \
     --ipam-driver null \
     -o bridge=my-bridge \
     my-dhcp-net
@@ -552,7 +552,7 @@ NIC as it was: no master, promiscuity 0, still up.
 
 ```bash
 sudo iptables -I DOCKER-USER -i lan0 -o lan0 -j ACCEPT
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.7.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.8.0 \
     --ipam-driver null \
     -o bridge=lan0 -o parent=eth1 -o force_create=true \
     lan-dhcp
@@ -623,7 +623,7 @@ kernel-generated MACs as macvlan children of a host NIC
 [sub-modes](#macvlan-and-ipvlan-sub-modes)):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.7.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.8.0 \
     --ipam-driver null \
     -o mode=macvlan -o parent=eth0 \
     lan-dhcp
@@ -648,7 +648,7 @@ without a server reservation, use
 [DHCP identity](#dhcp-identity).
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.7.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.8.0 \
     --ipam-driver null \
     -o mode=ipvlan -o parent=eth0 \
     lan-dhcp
@@ -744,7 +744,7 @@ Docker's own `macvlan` driver uses, so their DHCP traffic and everything
 after it leaves the parent tagged:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.7.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.8.0 \
     --ipam-driver null \
     -o mode=macvlan -o parent=eth0 -o vlan=100 \
     lan-vlan100
@@ -829,8 +829,8 @@ also serves an IPAM driver of its own (#110), and the line names the
 plugin twice:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.7.0 \
-    --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.7.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.8.0 \
+    --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.8.0 \
     -o mode=macvlan -o parent=eth0 \
     lan-dhcp
 ```
@@ -1883,11 +1883,13 @@ library.
 alongside its DHCPv4 one**. Docker reports it as `GlobalIPv6Address`,
 and it behaves like the v4 address in every way the protocol allows: it
 is requested back after a restart, renewed on its own timers, counted in
-its own `*_v6` counters, and handed back on exactly the same rule as the
+its own `*_v6` counters, and handed back on the same `release_lease` rule as the
 v4 address: no Release at all on a `release_lease=never` network, which
 is the default, one per family at Leave on a `release_lease=on_stop`
 network (#962), and one per family at the end of the restart window on a
-`release_lease=on_remove` network (#984). The two families are two
+`release_lease=on_remove` network (#984). The one exception is v4
+only: the IPAM-mode restart hand-over sends a DHCPRELEASE for the v4
+lease on any setting and no DHCPv6 Release (v2.8.0+, #1416). The two families are two
 records with two deadlines, so one can go back and the other fail in the
 same teardown, which is what the per-family counters are for.
 
@@ -2469,7 +2471,7 @@ socket also gives, so a permission problem looks exactly like a dead
 endpoint:
 
 ```bash
-PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v2.7.0)
+PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v2.8.0)
 sudo curl -s --unix-socket /run/docker/plugins/$PLUGIN_ID/net-dhcp.sock \
     http://localhost/Plugin.Health | jq .
 ```
@@ -2596,8 +2598,8 @@ already parse it were not told to expect a new type.
 | `dhcp_server_policy_exhausted` | no | n/a | (v1.8.0+) Initial acquisitions abandoned because **no** server listed in `dhcp_servers` answered (#111). Not healthy-affecting on its own: the acquisition failure it accompanies already fails the operation, and `dhcp_timeouts` does not count that failure (see its row). It exists because "the servers you named are all silent" and "DHCP is broken" look identical in a timeout log and call for different action. |
 | `dhcp_server_policy_timeouts` | no | n/a | (v1.8.0+) The renewal half of the same question (#731): `dhcp_timeouts` ticks raised on an endpoint whose **renewal** client is restricted to `dhcp_servers`. `dhcp_server_policy_exhausted` cannot cover this: nothing is exhausted at renewal, because the persistent client has no ladder to walk; it holds one whitelist and simply gets no answers, which looks exactly like the server being down. A **strict subset** of `dhcp_timeouts`, and that is how to read it: the two rising together says the allow-list is the cause (a named server renumbered, retired or firewalled), `dhcp_timeouts` rising alone says it is not. Not healthy-affecting, for that same reason: every tick here is already counted in `dhcp_timeouts`, and counting one outage twice would make a policy-restricted endpoint look worse than an unrestricted one failing identically. v4 only: `dhcp_servers` is not applied to DHCPv6, so this can never rise for a v6-only failure. **Not a check:** the imperative is to read this counter *against* `dhcp_timeouts`, because the pair says which cause, and this counter alone says only that a renewal timed out, which `dhcp_timeouts` already counts and already surfaces. |
 | `dhcp_timeouts` | no | n/a | DHCP failures reported by a running client itself: one tick for each `leasefail` the container's persistent client raises when its retransmission schedule runs out with no server answering, which includes a held lease that ran out without being renewed. **A container whose first lease fails does not move it.** The acquisition at endpoint creation runs before that client exists and its failure only fails `docker run`, so with the server down or UDP 67 and 68 blocked, containers fail to start and this counter stays at 0. What moves then is `dhcp_server_tier_fallbacks` for each step down the `dhcp_servers` ladder and, only when `dhcp_servers` is set, `dhcp_server_policy_exhausted`; with no `dhcp_servers` a failed first acquisition moves none of the three and shows only as the `docker run` error. **Changed in 2.0.** 1.x had no direct signal and inferred one from a watchdog that compared the granted lifetime against the time since the client was last served, so a bound endpoint's outage surfaced only after its whole lease had elapsed plus one watchdog tick, up to ~24 hours on a 24-hour lease. The in-tree client owns the lease and its own retransmission schedule, so it reports the failure when the schedule runs out instead of one watchdog tick later. **Read that against the lease.** On a **held** lease the client keeps retransmitting until the lease itself expires, so on a long lease the counter moves only at the end of it; `renewals_unanswered` is the earlier signal there (#940), and the two rows are read together. `OUTAGE_TICK` and `OUTAGE_GRACE` are gone with the watchdog. v4+v6 aggregate, equal to its `_v4` half in 2.0. |
-| `client_stop_failures` | no | n/a | (renamed from `lease_release_failures` in v1.9.0, #800) A renewal client did not shut down cleanly when the plugin stopped it at teardown. **What "cleanly" means changed in 2.0:** there is no client process to signal and no exit status to read. The plugin cancels the client's context and waits for its goroutine to return, so a tick here means the run loop came back with an error that was not the cancellation, or did not come back inside the finish timeout at all. It does **not** mean a lease went unreleased: the client's stop sends no DHCPRELEASE, and whether the address goes back is the network's `release_lease` setting, which sends one itself (see the `release_lease` row, and `releases_sent` and `release_failures`). On the default `never` every stopped container's address is held until it expires whatever this counter reads. A pattern points at clients wedging in their own loop, or at a finish timeout set too tight. |
-| `releases_sent` | no | n/a | **(v2.1.1)** Leases handed back to the server: a DHCPRELEASE (RFC 2131 section 4.4.6) or a DHCPv6 Release (RFC 9915 section 18.2.7) that left this host. Zero on every network that does not set `release_lease`, which is the default and every network created before v2.1.1. Counted **from the send** and never from the decision to release: it moves where the datagram left the host, so a release the host could not put on the wire moves `release_failures` instead. Split per family, because a dual-stack endpoint can hand one address back and keep the other. Expect roughly one per family per `docker stop` on an `on_stop` network, and one per family per stop that was not followed by a restart inside the window on an `on_remove` network, 65 to 80 seconds after the stop (#984). |
+| `client_stop_failures` | no | n/a | (renamed from `lease_release_failures` in v1.9.0, #800) A renewal client did not shut down cleanly when the plugin stopped it at teardown. **What "cleanly" means changed in 2.0:** there is no client process to signal and no exit status to read. The plugin cancels the client's context and waits for its goroutine to return, so a tick here means the run loop came back with an error that was not the cancellation, or did not come back inside the finish timeout at all. It does **not** mean a lease went unreleased: the client's stop sends no DHCPRELEASE, and whether the address goes back is the network's `release_lease` setting, which sends one itself (see the `release_lease` row, and `releases_sent` and `release_failures`). On the default `never` a stopped container's address is held until it expires whatever this counter reads, unless an IPAM-mode restart under a new MAC hands it over (v2.8.0+, #1416, see [Restart stability](#restart-stability-mac-and-ip)). A pattern points at clients wedging in their own loop, or at a finish timeout set too tight. |
+| `releases_sent` | no | n/a | **(v2.1.1)** Leases handed back to the server: a DHCPRELEASE (RFC 2131 section 4.4.6) or a DHCPv6 Release (RFC 9915 section 18.2.7) that left this host. Zero on every network that does not set `release_lease`, which is the default and every network created before v2.1.1, except for the IPAM-mode restart hand-over, whose one DHCPRELEASE counts here on any setting (v2.8.0+, #1416). Counted **from the send** and never from the decision to release: it moves where the datagram left the host, so a release the host could not put on the wire moves `release_failures` instead. Split per family, because a dual-stack endpoint can hand one address back and keep the other. Expect roughly one per family per `docker stop` on an `on_stop` network, and one per family per stop that was not followed by a restart inside the window on an `on_remove` network, 65 to 80 seconds after the stop (#984). |
 | `release_failures` | no | warn | **(v2.1.1)** Attempts to hand a lease back that put no message on the wire. The plugin log names which of them it was, beside the counter: this endpoint and family have no lease record to build from, the record holds no address or no server identity, the record is one the sender refuses, the parent interface carries no link-local address to send an IPv6 Release from, the IPv4 server sits behind a relay and the lease names no gateway or the gateway does not answer, the send itself failed, or a DHCPv6 address could not be taken off the container link first, which RFC 9915 section 18.2.7 requires before the exchange may begin. Not healthy-affecting, because nothing on this host is broken by it: the container is stopping either way and the address is simply left to expire on the server's clock, which is what a `release_lease=never` network does on every teardown. **Worth investigating** all the same, because a network that asked for its addresses back is not getting them back, and a pool sized for prompt returns will run short. Stays at zero on a `never` network, which has nothing to attempt. On an `on_remove` network the attempt is made once, at the end of the restart window, and is not retried: the record is closed either way and the address is left to expire (#984). |
 | `releases_reclaimed` | no | n/a | **(v2.2.0, #984)** Held addresses a **running container is using again** at the end of the restart window on a `release_lease=on_remove` network, so the record was closed and nothing went on the wire. It is the option's quiet half, and it is the only outside sign that the window did what it exists for: with `releases_sent` climbing and this flat, nothing is restarting inside the window and the option is behaving as a slower `on_stop`; with this climbing, restarts are keeping their addresses. What counts as a claim is another record on the same network holding the same **address**, not the same MAC, so a container pinned to a MAC that came back on a different address does not hold the old one and the old one is released. **It is narrower than "nothing was sent".** Two other outcomes send nothing and do not move it: the same address stopped a second time, where the newer record has its own deadline and decides the address, and an address acquisition in flight under the same endpoint key, where the address is left to expire so an exchange that may be about to be given it is not undercut. Both have their own `debug` line, as does a rarer third: a container that took a held record back on restart while the state disk refused to record it (#1237). `releases_sent` plus `releases_reclaimed` is therefore **not** the number of windows that ended. Split per family, because a dual-stack endpoint can have one address in use again and the other released. Zero on `never` and on `on_stop`, which have no window. |
 | `naks_received` | no | n/a | (v1.0.0+) The server NAKed a renewal, a rebind or an INIT-REBOOT request (v4+v6 aggregate). The client recovers by re-acquiring, so each NAK is typically followed by a `leases_obtained` bump, and by a `lease_changed` bump if the address moved. Climbing alongside `lease_changed` means containers are being re-addressed mid-life. |
@@ -2674,7 +2676,7 @@ already parse it were not told to expect a new type.
 | `address_conflicts_v6` | no | n/a | (v2.0.0) The DHCPv6 share: an address the container's kernel found on the link by Duplicate Address Detection (RFC 4862 §5.4), declined to the server under RFC 9915 §18.2.8. It is **not ARP**: no `acd_*` counter moves for it and `conflict_check` does not govern it, because DAD is the kernel's, runs on every IPv6 address, and cannot be turned off from a network option. The client then acquires a replacement address and the plugin applies it to the container's interface, while **Docker's record of the endpoint keeps the old address**, the same truthfulness gap `lease_changed` describes, so read `lease_changed_v6` beside this. |
 | `lease_changed_v6`, `leases_obtained_v6`, `leases_renewed_v6`, `renewals_unanswered_v6`, `dhcp_timeouts_v6`, `naks_received_v6` | no | n/a | (v1.2.0+) The IPv6-only share of the matching counter above (#212). Each counts only the v6 client's events. On a dual-stack host this isolates the v6-specific NAK/timeout signal the combined number hides. `client_stop_failures_v6` (v1.7.0+, #608) joins the split with the same rule; `ledger_write_failures` has no per-family split. |
 | `lease_changed_v4`, `leases_obtained_v4`, `leases_renewed_v4`, `renewals_unanswered_v4`, `dhcp_timeouts_v4`, `naks_received_v4`, `client_stop_failures_v4` | no | n/a | (v1.8.0+, #730) The IPv4-only share, on the same rule. Both halves are now stored and the unsuffixed counter is their **sum**. It is not a counter in its own right and nothing increments it. Before v1.8.0 the v4 share was not stored: it was recovered as `aggregate − *_v6` at render time, which could read one lower than the previous scrape and make Prometheus treat the whole counter as reset. Use `*_v4` instead of doing that subtraction yourself. |
-| `releases_sent_v4`, `releases_sent_v6`, `release_failures_v4`, `release_failures_v6` | no | n/a (`release_failures`: warn) | **(v2.1.1, #962)** The per-family shares of the two `release_lease` counters above, on the same rule: both halves are stored and the unsuffixed counter is their sum. Read them separately, because the two families release differently. IPv4 keeps its address on the link and names the binding in `ciaddr` (RFC 2131 section 3.1(6)); IPv6 must take the address off the link before the exchange may begin (RFC 9915 section 18.2.7), so a dual-stack endpoint can hand one address back and fail to hand the other back in the same teardown. All four stay at zero on a network that does not set `release_lease`. |
+| `releases_sent_v4`, `releases_sent_v6`, `release_failures_v4`, `release_failures_v6` | no | n/a (`release_failures`: warn) | **(v2.1.1, #962)** The per-family shares of the two `release_lease` counters above, on the same rule: both halves are stored and the unsuffixed counter is their sum. Read them separately, because the two families release differently. IPv4 keeps its address on the link and names the binding in `ciaddr` (RFC 2131 section 3.1(6)); IPv6 must take the address off the link before the exchange may begin (RFC 9915 section 18.2.7), so a dual-stack endpoint can hand one address back and fail to hand the other back in the same teardown. All four stay at zero on a network that does not set `release_lease`, except `releases_sent_v4`, which counts the IPAM-mode restart hand-over (v2.8.0+, #1416). |
 | `releases_reclaimed_v4`, `releases_reclaimed_v6` | no | n/a | **(v2.2.0, #984)** The per-family shares of `releases_reclaimed`, on the same rule and with the same narrow meaning: a running container on the address, not every held address that was not handed back. Both halves are stored and the unsuffixed counter is their sum. They are separate for the reason the pair above is: the two families are two records with two deadlines, so a restarting container can claim one address back inside the window and take a fresh one of the other family. Both stay at zero on a network that does not set `release_lease=on_remove`. |
 
 ### `/metrics`
@@ -2688,7 +2690,7 @@ quietly go missing from your dashboards.
 On the plugin socket, always:
 
 ```bash
-PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v2.7.0)
+PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v2.8.0)
 sudo curl -s --unix-socket /run/docker/plugins/$PLUGIN_ID/net-dhcp.sock \
     http://localhost/metrics
 ```
@@ -2697,7 +2699,7 @@ Prometheus cannot scrape a UNIX socket, so for an actual scrape target
 set `METRICS_ADDR`:
 
 ```bash
-PLUGIN=ghcr.io/claymore666/docker-net-dhcp:v2.7.0
+PLUGIN=ghcr.io/claymore666/docker-net-dhcp:v2.8.0
 docker plugin disable "$PLUGIN"
 docker plugin set "$PLUGIN" METRICS_ADDR=127.0.0.1:9099
 docker plugin enable "$PLUGIN"
@@ -2857,7 +2859,7 @@ Raise verbosity with a disable, a set, and an enable, in that order,
 because `docker plugin set` is refused while the plugin is running:
 
 ```bash
-PLUGIN=ghcr.io/claymore666/docker-net-dhcp:v2.7.0
+PLUGIN=ghcr.io/claymore666/docker-net-dhcp:v2.8.0
 docker plugin disable "$PLUGIN"
 docker plugin set "$PLUGIN" LOG_LEVEL=trace
 docker plugin enable "$PLUGIN"
@@ -2900,8 +2902,10 @@ One JSON object per line; kinds `bound`, `renew`, `stopped`,
 its goroutine returned; `stop_failed` means it returned an error other
 than the cancellation, or did not return inside the finish timeout.
 Neither says anything about the lease. On a `release_lease=never`
-network, which is the default, the plugin sends no DHCPRELEASE at all
-and the address is held until it expires (#800). On a
+network, which is the default, the plugin sends no DHCPRELEASE at the
+stop and the address is held until it expires (#800); the one release
+such a network sees is the IPAM-mode restart hand-over, sent when the
+restarted container asks for its address (#1416). On a
 `release_lease=on_stop` network the release is attempted at Leave,
 before the client is stopped, and it is reported in `releases_sent_v4`,
 `releases_sent_v6` and their failure pair, never here (#962). On a
@@ -2940,7 +2944,7 @@ Compose-managed alternative (network lifecycle tied to the project):
 ```yaml
 networks:
   lan:
-    driver: ghcr.io/claymore666/docker-net-dhcp:v2.7.0
+    driver: ghcr.io/claymore666/docker-net-dhcp:v2.8.0
     driver_opts:
       mode: macvlan
       parent: eth0
