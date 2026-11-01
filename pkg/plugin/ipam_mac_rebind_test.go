@@ -6,6 +6,7 @@ package plugin
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -223,12 +224,15 @@ func TestIpamReserveAddress_RequireMACSendsTheOwnClientIDBesideANeighboursTombst
 		name       string
 		requireMAC bool
 		wantRebind bool
+		releaseErr error
 	}{
-		{"require_mac=true", true, false},
-		{"require_mac=false", false, true},
+		{"require_mac=true", true, false, nil},
+		{"require_mac=false, the tombstone handed over", false, true, nil},
+		{"require_mac=false, the hand-over release not sent", false, true, errors.New("no route")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p, b, _, journal := f0Fixture(t)
+			p, b, sender, journal := f0Fixture(t)
+			sender.err = tc.releaseErr
 			s2ReserveLink(t)
 			theirs := f0Tombstone(t, p, neighbour, f0Addr)
 
@@ -249,6 +253,19 @@ func TestIpamReserveAddress_RequireMACSendsTheOwnClientIDBesideANeighboursTombst
 			}
 
 			ownID := resolveClientID(opts, "", own)
+			if tc.wantRebind && tc.releaseErr == nil {
+				if !bytes.Equal(sent, ownID) || res.record == theirs || f0Rec(t, p, theirs).Phase != lease.PhaseClosed {
+					t.Fatalf("sent client id %x under record %q, want the own %x under a fresh record beside the "+
+						"closed tombstone %q", sent, res.record, ownID, theirs)
+				}
+				if n := sender.callCount(); n != 1 || !bytes.Equal(sender.recs[0].CHAddr, neighbour) {
+					t.Fatalf("%d releases, want one under the tombstone's MAC %v", n, neighbour)
+				}
+				if got := p.ipamRebindMoved.Load(); got != 1 {
+					t.Fatalf("ipam_rebind_moved = %d, want 1: the ACK named %s, not the tombstone's %s", got, f0Addr2, f0Addr)
+				}
+				return
+			}
 			if tc.wantRebind {
 				if !bytes.Equal(sent, neighbour) || res.record != theirs {
 					t.Fatalf("sent client id %x under record %q, want the single tombstone's %x under %q",

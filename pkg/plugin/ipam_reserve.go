@@ -237,10 +237,11 @@ func (p *Plugin) runIPAMReserve(ctx context.Context, networkID string, sn stored
 
 	// Exactly one live tombstone supplies the address and the client-id the server filed it under; with more than one,
 	// RequestAddress carries no hostname or endpoint id to choose on, so the server decides and it is counted (#110).
-	recordID, rebindAddr, rebindIdentity, recordID6 := p.ipamRebindCandidate(networkID, mac, opts.RequireMAC, identity)
-	rebound := recordID != ""
-	requestedIP, demanded := ipamExchangeAddresses(requestedIP, rebindAddr)
-	clientID = ipamExchangeClientID(clientID, rebindIdentity)
+	claim := p.ipamClaimTombstone(networkID, mac, opts.RequireMAC, identity)
+	recordID, rebound := claim.id, claim.id != ""
+	requestedIP, demanded := ipamExchangeAddresses(requestedIP, claim.addr)
+	freshID := clientID
+	clientID = ipamExchangeClientID(clientID, claim.prior.Identity)
 	if recordID == "" {
 		recordID = p.recordReserved(networkID, mac, identity)
 	}
@@ -272,6 +273,25 @@ func (p *Plugin) runIPAMReserve(ctx context.Context, networkID string, sn stored
 		giveUp(rebound)
 		return ipamReservation{record: recordID}, err
 	}
+	// The hand-over comes last before the exchange, so no exit above releases a lease nothing then asks for.
+	handedOver := ""
+	if rebound {
+		if fresh := p.ipamHandOver(networkID, claim, opts, mac, identity); fresh != "" {
+			handedOver, recordID = claim.id, fresh
+			base.RecordID, base.ClientID = fresh, freshID
+			giveUp = func(keepTheWindow bool) {
+				now := time.Now()
+				p.ipamEndRecord(fresh, false, now)
+				p.ipamGiveUpAttempt(handedOver, keepTheWindow, now)
+			}
+		}
+	}
+	if handedOver != "" {
+		if err := ipamHandOverWait(ctx, ipamHandOverGap); err != nil {
+			giveUp(rebound)
+			return none, fmt.Errorf("the start was cancelled while the DHCP server took back the previous lease of %v: %w", mac, err)
+		}
+	}
 
 	info, _, err := p.acquireWithPolicy(ctx, name, pol, false, budget, "", base)
 	if err != nil {
@@ -286,9 +306,73 @@ func (p *Plugin) runIPAMReserve(ctx context.Context, networkID string, sn stored
 		giveUp(false)
 		return none, err
 	}
+	if handedOver != "" {
+		p.ipamEndRecord(handedOver, false, time.Time{})
+	}
+	if rebound && demanded == "" {
+		p.countRebindMoved(networkID, claim.addr, res.addr.Addr())
+	}
 	res.rebound = rebound
-	res.record6 = recordID6
+	res.record6 = claim.id6
 	return res, nil
+}
+
+// ipamHandOver releases the tombstone's lease under the MAC it is filed under, so the exchange can ask for its address
+// under the new MAC's own id: a Fritz.Box gave the old option 61 from a new MAC another address, and after a RELEASE
+// gave the old address to the new id (measured 2026-10-30, #1416); client_id and ipvlan send one id for both.
+func (p *Plugin) ipamHandOver(networkID string, claim ipamClaim, opts DHCPNetworkOptions, mac net.HardwareAddr, identity []byte) string {
+	if bytes.Equal(claim.prior.CHAddr, mac) || opts.ClientID != "" || opts.effectiveMode() == ModeIPvlan {
+		return ""
+	}
+	held, _ := netip.ParseAddr(claim.addr)
+	fields := log.Fields{"network": shortID(networkID), "record": claim.id, "ip": claim.addr, "mac": mac.String()}
+	if serverOnThisHost(claim.prior) {
+		log.WithFields(fields).WithField("server", claim.prior.Lease.ServerID.String()).
+			Info("The DHCP server answers from an address this host holds, so a release from the parent would not reach it; asking under the previous client identifier instead")
+		return ""
+	}
+	if !handOverHopAnswers(claim.prior, opts.hostLink()) {
+		log.WithFields(fields).WithField("server", claim.prior.Lease.ServerID.String()).
+			Info("The DHCP server, or the gateway to it, did not answer an ARP probe, so a release could be lost unnoticed; asking under the previous client identifier instead")
+		return ""
+	}
+	out, err := releaseFromRecord(claim.prior, opts, false, held, nil, fields)
+	if out != releaseSent {
+		log.WithError(err).WithFields(fields).WithField("outcome", string(out)).
+			Info("Could not hand the recently-removed endpoint's lease back before its successor asks for the address; asking under the previous client identifier instead")
+		return ""
+	}
+	p.countRelease(false, true)
+	return p.recordCreated(networkID, mac, identity)
+}
+
+// ipamHandOverGap: a Fritz.Box asked 0.42 s after the RELEASE gave the address back in 3 of 6 runs, 1 s or 2 s after
+// it in 3 of 3 each (measured 2026-10-31, #1416).
+const ipamHandOverGap = 2 * time.Second
+
+// ipamHandOverWait is a seam so tests pin the pause without sleeping; a cancelled start returns at once.
+var ipamHandOverWait = func(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+// countRebindMoved counts a re-bind whose ACK named another address than the tombstone's, the server's decision.
+func (p *Plugin) countRebindMoved(networkID, asked string, got netip.Addr) {
+	if got.String() == asked {
+		return
+	}
+	p.ipamRebindMoved.Add(1)
+	log.WithFields(log.Fields{
+		"network": shortID(networkID),
+		"asked":   asked,
+		"got":     got.String(),
+	}).Info("A restarted container asked for its previous address and the DHCP server gave it another one")
 }
 
 // ipamAcceptedReservation is the only constructor of the returned reservation, so the acceptance rules cannot be
@@ -560,18 +644,30 @@ func (p *Plugin) recordReserved(networkID string, mac net.HardwareAddr, identity
 // ipamRebindCandidate re-binds exactly one live tombstone; with more than one it counts and logs, since
 // RequestAddress carries no hostname or endpoint id to choose on (#110).
 func (p *Plugin) ipamRebindCandidate(networkID string, mac net.HardwareAddr, requireMAC bool, identity []byte) (string, string, []byte, string) {
+	c := p.ipamClaimTombstone(networkID, mac, requireMAC, identity)
+	return c.id, c.addr, c.prior.Identity, c.id6
+}
+
+// ipamClaim is a re-bound tombstone; prior is the record before the claim, holding the MAC its lease is filed under.
+type ipamClaim struct {
+	id, addr, id6 string
+	prior         lease.Record
+}
+
+func (p *Plugin) ipamClaimTombstone(networkID string, mac net.HardwareAddr, requireMAC bool, identity []byte) ipamClaim {
+	var none ipamClaim
 	if p.records == nil {
-		return "", "", nil, ""
+		return none
 	}
 	rb, err := p.records.Rebuilt()
 	if err != nil {
 		log.WithError(err).WithField("network", shortID(networkID)).Warn("Could not read the lease records; this reservation gets a fresh identity")
-		return "", "", nil, ""
+		return none
 	}
 	now := time.Now()
 	candidates := ipamMACDecides(p.ipamUnheldTombstones(networkID, rb.Tombstones(networkID, now)), mac, requireMAC, identity)
 	if len(candidates) == 0 {
-		return "", "", nil, ""
+		return none
 	}
 	var siblings []lease.Record
 	if len(candidates) == 1 {
@@ -584,18 +680,18 @@ func (p *Plugin) ipamRebindCandidate(networkID string, mac net.HardwareAddr, req
 			"candidates": len(candidates),
 			"v6":         len(siblings),
 		}).Info("More than one recently-removed endpoint on this network could claim this address request; the DHCP server decides and the address can change")
-		return "", "", nil, ""
+		return none
 	}
 	rec := candidates[0]
 	addr, ok := rec.Addr()
 	if !ok {
-		return "", "", nil, ""
+		return none
 	}
 	if err := p.records.Rebound(rec.ID, mac); err != nil {
 		log.WithError(err).WithField("record", rec.ID).Warn("Could not re-bind the recently-removed endpoint's record; this reservation gets a fresh identity")
-		return "", "", nil, ""
+		return none
 	}
-	return rec.ID, addr.String(), rec.Identity, p.ipamRebind6(siblings, mac)
+	return ipamClaim{id: rec.ID, addr: addr.String(), id6: p.ipamRebind6(siblings, mac), prior: rec}
 }
 
 // ipamMACDecides narrows the candidates to the requesting MAC's tombstones when there are any, and always on a

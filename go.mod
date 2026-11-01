@@ -3,7 +3,7 @@ module github.com/claymore666/docker-net-dhcp/v2
 go 1.27.0
 
 require (
-	github.com/claymore666/dhcp-golib v1.5.1
+	github.com/claymore666/dhcp-golib v1.5.2
 	github.com/containerd/errdefs v1.0.0
 	github.com/docker/go-connections v0.8.2
 	github.com/gorilla/handlers v1.5.2

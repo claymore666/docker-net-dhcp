@@ -218,7 +218,7 @@
 #              TestIPAM_ARemovedNeighbourMakesTheRebindAmbiguous at 34.00
 #              -- a network, two container starts and a stop -- plus the
 #              seconds its third start adds. The eighteenth,
-#              TestIPAM_SingleRestartNeedsAServerThatKeepsClientIDBindings,
+#              TestIPAM_SingleRestartKeepsTheAddressWhateverTheServerKeysOn,
 #              is 50.00: two arms, each one TestIPAM_SingleRestartKeeps-
 #              TheAddress at 22.00 on its own ephemeral fixture, plus
 #              that fixture's setup and teardown twice.
@@ -756,7 +756,7 @@ TestIPAM_ReplayAfterDaemonRestart_IPv6	45.00
 TestIPAM_RequireMACKeepsEachPinnedContainersOwnIdentityInsideTheWindow	38.00
 TestIPAM_RestartedTogetherIsTheDocumentedLimit	38.00
 TestIPAM_SingleRestartKeepsTheAddress	22.00
-TestIPAM_SingleRestartNeedsAServerThatKeepsClientIDBindings	50.00
+TestIPAM_SingleRestartKeepsTheAddressWhateverTheServerKeysOn	50.00
 TestIPAM_StaticIPIsHonouredWithASubnet	24.00
 TestIPAM_StaticIPWithoutASubnetIsStillTheAddressAsked	7.00
 TestIPAM_TwoEndpointsCannotShareOneHardwareAddress	16.00

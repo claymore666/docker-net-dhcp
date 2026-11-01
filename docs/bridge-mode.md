@@ -53,7 +53,7 @@ reads the policy and cannot see the rule:
 
 ```bash
 sudo iptables -I DOCKER-USER -i lan0 -o lan0 -j ACCEPT
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.7.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.8.0 \
   --ipam-driver null -o bridge=lan0 -o parent=eth1 -o force_create=true lan-dhcp
 ```
 
@@ -330,7 +330,7 @@ default 34 s `lease_timeout` look for that line in the plugin log: the error
 ```bash
 # On arm64 use the -arm64 tag. A network stores this exact reference
 # as its driver, so it must name the plugin you installed.
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.7.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.8.0 \
   --ipam-driver null -o bridge=my-bridge my-dhcp-net
 ```
 
@@ -345,7 +345,7 @@ and type an IPv6 `--subnet`; see
 
 ```bash
 # arm64: the -arm64 tag here too.
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.7.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.8.0 \
   --ipam-driver null -o bridge=my-bridge -o ipv6_mode=dhcp my-dhcp-net
 ```
 
@@ -427,7 +427,7 @@ services:
 networks:
   dhcp:
     # arm64: the -arm64 tag, matching the plugin you installed.
-    driver: ghcr.io/claymore666/docker-net-dhcp:v2.7.0
+    driver: ghcr.io/claymore666/docker-net-dhcp:v2.8.0
     driver_opts:
       bridge: my-bridge
       ipv6_mode: 'dhcp'
@@ -454,7 +454,8 @@ Notes:
   [Host-side interface names](reference.md#host-side-interface-names-host_ifname).
 - Use `--mac-address` / `mac_address` for MAC-keyed reservations or to
   reuse an old lease; `--hostname` / `hostname` is sent as DHCP option 12
-  for DHCP-DNS integration. Per-endpoint and per-container knobs are
+  for DHCP-DNS integration (as option 81 instead when the network sets
+  `register_dns`). Per-endpoint and per-container knobs are
   documented in the [driver reference](reference.md#driver-options-per-endpoint).
 
 ## See also

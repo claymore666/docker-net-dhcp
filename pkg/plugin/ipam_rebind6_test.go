@@ -71,6 +71,9 @@ type s2Line struct {
 	op lease.RecordOp
 }
 
+// s2Fresh stands for the one record a hand-over writes, whose id is minted inside the reserve (#1416).
+const s2Fresh = "<fresh>"
+
 func s2Tail(t *testing.T, journal string, from int, want ...s2Line) []lease.RecordEvent {
 	t.Helper()
 	tail := s2Lines(t, journal)[from:]
@@ -81,8 +84,21 @@ func s2Tail(t *testing.T, journal string, from int, want ...s2Line) []lease.Reco
 	if len(got) != len(want) {
 		t.Fatalf("the journal gained %v, want %v", got, want)
 	}
+	fresh := ""
 	for i := range want {
-		if got[i] != want[i] {
+		w := want[i]
+		if w.id == s2Fresh && fresh == "" {
+			fresh = got[i].id
+			for _, named := range want {
+				if named.id == fresh {
+					t.Fatalf("the journal gained %v, want a record none of %v names", got, want)
+				}
+			}
+		}
+		if w.id == s2Fresh {
+			w.id = fresh
+		}
+		if got[i] != w {
 			t.Fatalf("the journal gained %v, want %v", got, want)
 		}
 	}
@@ -118,11 +134,21 @@ func s2ReserveLink(t *testing.T) {
 }
 
 func s2Exchange(t *testing.T, answer *dhcp.Info, fail *error) {
+	s2ExchangeObserving(t, answer, fail, new(bool))
+}
+
+// s2ExchangeObserving writes the ACK onto the exchange's record, as the chassis does (pkg/dhcp/chassis.go).
+func s2ExchangeObserving(t *testing.T, answer *dhcp.Info, fail *error, observe *bool) {
 	t.Helper()
 	prev := dhcpGetIP
-	dhcpGetIP = func(context.Context, string, *dhcp.DHCPClientOptions) (dhcp.Info, dhcp.RAObservation, error) {
+	dhcpGetIP = func(_ context.Context, _ string, o *dhcp.DHCPClientOptions) (dhcp.Info, dhcp.RAObservation, error) {
 		if *fail != nil {
 			return dhcp.Info{}, dhcp.RAObservation{}, *fail
+		}
+		if *observe && o.Records != nil {
+			if err := o.Records.Observed(o.RecordID, acquired(answer.IP, time.Hour), nil); err != nil {
+				t.Errorf("Observed: %v", err)
+			}
 		}
 		return *answer, dhcp.RAObservation{}, nil
 	}
@@ -184,15 +210,19 @@ func TestIPAMRebind6_BothHalvesMoveTogetherThroughEveryFailedAttempt(t *testing.
 			t.Fatalf("%s: the reserve succeeded", a.name)
 		}
 		after := time.Now()
-		tail := s2Tail(t, journal, from,
-			s2Line{id4, lease.OpRebind}, s2Line{id6, lease.OpRebind},
-			s2Line{id4, lease.OpRetain}, s2Line{id6, lease.OpRetain})
+		want := []s2Line{{id4, lease.OpRebind}, {id6, lease.OpRebind}, {id4, lease.OpRetain}, {id6, lease.OpRetain}}
+		if a.opts.DHCPServers == "" {
+			// The exchange ran, so the hand-over wrote a fresh record first and the give-up closed it (#1416).
+			want = append(want[:2], s2Line{s2Fresh, lease.OpCreate}, s2Line{s2Fresh, lease.OpClose}, want[2], want[3])
+		}
+		tail := s2Tail(t, journal, from, want...)
 		if !bytes.Equal(tail[0].CHAddr, mac) || !bytes.Equal(tail[1].CHAddr, mac) {
 			t.Fatalf("%s: the re-bind lines carry %v and %v, want both on %v", a.name,
 				net.HardwareAddr(tail[0].CHAddr), net.HardwareAddr(tail[1].CHAddr), mac)
 		}
-		if !tail[2].Deadline.Equal(tail[3].Deadline) {
-			t.Fatalf("%s: the retain lines carry %v and %v, want one deadline", a.name, tail[2].Deadline, tail[3].Deadline)
+		r4, r6 := tail[len(tail)-2], tail[len(tail)-1]
+		if !r4.Deadline.Equal(r6.Deadline) {
+			t.Fatalf("%s: the retain lines carry %v and %v, want one deadline", a.name, r4.Deadline, r6.Deadline)
 		}
 		d := s2Pair(t, p, id4, id6, mac, lease.PhaseRetained)
 		if d.Before(before.Add(tombstoneTTL)) || d.After(after.Add(tombstoneTTL)) {
@@ -207,19 +237,25 @@ func TestIPAMRebind6_BothHalvesMoveTogetherThroughEveryFailedAttempt(t *testing.
 	if err != nil {
 		t.Fatalf("the reserve failed: %v", err)
 	}
-	s2Tail(t, journal, from, s2Line{id4, lease.OpRebind}, s2Line{id6, lease.OpRebind})
-	if d := s2Pair(t, p, id4, id6, last, lease.PhaseCreated); !d.IsZero() {
-		t.Fatalf("a re-bound pair still carries the deadline %v", d)
+	tail := s2Tail(t, journal, from, s2Line{id4, lease.OpRebind}, s2Line{id6, lease.OpRebind},
+		s2Line{s2Fresh, lease.OpCreate}, s2Line{id4, lease.OpClose})
+	fresh := tail[2].ID
+	if r := f0Rec(t, p, id6); r.Phase != lease.PhaseCreated || !r.Deadline.IsZero() || !bytes.Equal(r.CHAddr, last) {
+		t.Fatalf("the v6 half is %v on %v to %v, want created on %v with no deadline", r.Phase, net.HardwareAddr(r.CHAddr), r.Deadline, last)
 	}
-	if res.record != id4 || res.record6 != id6 {
-		t.Fatalf("the reservation carries (%q, %q), want (%q, %q)", res.record, res.record6, id4, id6)
+	if r := f0Rec(t, p, fresh); r.Phase != lease.PhaseCreated || !bytes.Equal(r.CHAddr, last) {
+		t.Fatalf("the fresh v4 record is %v on %v, want created on %v, where a re-bound record stands", r.Phase, net.HardwareAddr(r.CHAddr), last)
+	}
+	if res.record != fresh || res.record6 != id6 {
+		t.Fatalf("the reservation carries (%q, %q), want (%q, %q)", res.record, res.record6, fresh, id6)
 	}
 	kept, ok := p.ipamReserves.take(ipamReserveKey(b.PoolID, last))
-	if !ok || kept.record != id4 || kept.record6 != id6 {
+	if !ok || kept.record != fresh || kept.record6 != id6 {
 		t.Fatalf("CreateEndpoint would take (%v, %+v), want both ids", ok, kept)
 	}
-	if n := sender.callCount(); n != 0 {
-		t.Errorf("%d releases went on the wire", n)
+	// One hand-over release per attempt that reached the exchange: two failed ones and the last.
+	if n := sender.callCount(); n != 3 {
+		t.Errorf("%d releases went on the wire, want 3", n)
 	}
 }
 
@@ -267,7 +303,8 @@ func TestIPAMRebind6_AV4OnlyJournalIsWhatItWas(t *testing.T) {
 	if _, err := s2Reserve(t, p, b, f0Options(), m2); err == nil {
 		t.Fatal("the reserve succeeded")
 	}
-	s2Tail(t, journal, from, s2Line{id4, lease.OpRebind}, s2Line{id4, lease.OpRetain})
+	s2Tail(t, journal, from, s2Line{id4, lease.OpRebind}, s2Line{s2Fresh, lease.OpCreate},
+		s2Line{s2Fresh, lease.OpClose}, s2Line{id4, lease.OpRetain})
 
 	fail = nil
 	from = len(s2Lines(t, journal))
@@ -275,9 +312,9 @@ func TestIPAMRebind6_AV4OnlyJournalIsWhatItWas(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the reserve failed: %v", err)
 	}
-	s2Tail(t, journal, from, s2Line{id4, lease.OpRebind})
-	if res.record != id4 || res.record6 != "" {
-		t.Fatalf("the reservation carries (%q, %q), want (%q, none)", res.record, res.record6, id4)
+	tail := s2Tail(t, journal, from, s2Line{id4, lease.OpRebind}, s2Line{s2Fresh, lease.OpCreate}, s2Line{id4, lease.OpClose})
+	if res.record != tail[1].ID || res.record6 != "" {
+		t.Fatalf("the reservation carries (%q, %q), want (%q, none)", res.record, res.record6, tail[1].ID)
 	}
 }
 
@@ -286,13 +323,16 @@ func s2Rebound(t *testing.T, p *Plugin, b *ipamBinding, mac net.HardwareAddr) (s
 	s2ReserveLink(t)
 	id4 := f0Tombstone(t, p, f0MAC(0x01), f0Addr)
 	id6 := s2Tombstone6(t, p, f0MAC(0x01), s2Addr6)
-	answer, fail := dhcp.Info{IP: f0Addr, Gateway: "192.168.99.1"}, error(nil)
-	s2Exchange(t, &answer, &fail)
+	answer, fail, observe := dhcp.Info{IP: f0Addr, Gateway: "192.168.99.1"}, error(nil), true
+	s2ExchangeObserving(t, &answer, &fail, &observe)
 	res, err := s2Reserve(t, p, b, f0Options(), mac)
-	if err != nil || res.record != id4 || res.record6 != id6 {
-		t.Fatalf("the re-bind reserve gave (%+v, %v), want both ids", res, err)
+	if err != nil || res.record == "" || res.record == id4 || res.record6 != id6 {
+		t.Fatalf("the re-bind reserve gave (%+v, %v), want a handed-over v4 record beside the tombstone's v6 one", res, err)
 	}
-	return id4, id6
+	if r := f0Rec(t, p, id4); r.Phase != lease.PhaseClosed {
+		t.Fatalf("the handed-over tombstone is %v, want closed", r.Phase)
+	}
+	return res.record, id6
 }
 
 func TestIPAMRebind6_EveryGiveUpEndsBothHalvesOnOneDeadline(t *testing.T) {
@@ -338,6 +378,7 @@ func TestIPAMRebind6_EveryGiveUpEndsBothHalvesOnOneDeadline(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			p, b, sender, journal := f0Fixture(t)
 			id4, id6 := s2Rebound(t, p, b, restarted)
+			handOver := sender.callCount()
 			from := len(s2Lines(t, journal))
 			before := time.Now()
 
@@ -368,8 +409,8 @@ func TestIPAMRebind6_EveryGiveUpEndsBothHalvesOnOneDeadline(t *testing.T) {
 					t.Fatalf("the journal carries %v and %v, want one fresh deadline", end4.Deadline, end6.Deadline)
 				}
 			}
-			if n := sender.callCount(); n != 0 {
-				t.Errorf("%d releases went on the wire", n)
+			if n := sender.callCount() - handOver; n != 0 {
+				t.Errorf("%d releases went on the wire after the hand-over", n)
 			}
 		})
 	}
@@ -382,13 +423,14 @@ func TestIPAMRebind6_TheReserveExitsEndBothHalves(t *testing.T) {
 		opts         DHCPNetworkOptions
 		ack          string
 		want4, want6 lease.Phase
+		handOver     bool
 	}{
 		{name: "the conflict check cannot be read", opts: func() DHCPNetworkOptions {
 			o := f0Options()
 			o.ConflictCheck = "sometimes"
 			return o
 		}(), ack: f0Addr, want4: lease.PhaseRetained, want6: lease.PhaseRetained},
-		{name: "the ACK is refused", opts: f0Options(), ack: "10.9.9.9/24", want4: lease.PhaseClosed, want6: lease.PhaseRetained},
+		{name: "the ACK is refused", opts: f0Options(), ack: "10.9.9.9/24", want4: lease.PhaseClosed, want6: lease.PhaseRetained, handOver: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p, b, sender, journal := f0Fixture(t)
@@ -406,18 +448,21 @@ func TestIPAMRebind6_TheReserveExitsEndBothHalves(t *testing.T) {
 			if tc.want4 == lease.PhaseClosed {
 				end4 = lease.OpClose
 			}
-			tail := s2Tail(t, journal, from,
-				s2Line{id4, lease.OpRebind}, s2Line{id6, lease.OpRebind}, s2Line{id4, end4}, s2Line{id6, end6})
+			want, sent := []s2Line{{id4, lease.OpRebind}, {id6, lease.OpRebind}, {id4, end4}, {id6, end6}}, 0
+			if tc.handOver {
+				want, sent = append(want[:2], s2Line{s2Fresh, lease.OpCreate}, s2Line{s2Fresh, lease.OpClose}, want[2], want[3]), 1
+			}
+			tail := s2Tail(t, journal, from, want...)
 			if r := f0Rec(t, p, id4); r.Phase != tc.want4 {
 				t.Fatalf("the v4 record is %v, want %v", r.Phase, tc.want4)
 			}
 			if tc.want4 == lease.PhaseRetained {
 				s2Pair(t, p, id4, id6, mine, lease.PhaseRetained)
-			} else if r := f0Rec(t, p, id6); r.Phase != tc.want6 || !tail[3].Deadline.After(time.Now()) {
+			} else if r := f0Rec(t, p, id6); r.Phase != tc.want6 || !tail[len(tail)-1].Deadline.After(time.Now()) {
 				t.Fatalf("the v6 record is %v to %v, want retained: its lease was never refused", r.Phase, r.Deadline)
 			}
-			if n := sender.callCount(); n != 0 {
-				t.Errorf("%d releases went on the wire", n)
+			if n := sender.callCount(); n != sent {
+				t.Errorf("%d releases went on the wire, want %d", n, sent)
 			}
 		})
 	}

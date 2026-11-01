@@ -31,6 +31,28 @@ func TestDnsmasqLeaseExpiry_ReadsTheLineOfThatMAC(t *testing.T) {
 	}
 }
 
+func TestDnsmasqLeaseAddr_ReadsTheV4AddressOnTheLineOfThatMAC(t *testing.T) {
+	const leases = "1790000000 aa:bb:cc:dd:ee:ff 192.168.97.20 stolen-by *\n" +
+		"1790000123 02:42:C0:A8:61:0B 192.168.97.21 dh-itest-bind2-ctr 01:02:42:c0:a8:61:0b\n" +
+		"1790000200 02:42:c0:a8:61:0d not-an-address x *\n"
+	for _, tc := range []struct {
+		mac    string
+		want   string
+		wantOK bool
+	}{
+		{"02:42:c0:a8:61:0b", "192.168.97.21", true},
+		{"aa:bb:cc:dd:ee:ff", "192.168.97.20", true},
+		{"02:42:c0:a8:61:0c", "", false},
+		{"02:42:c0:a8:61:0d", "", false},
+		{"not-a-mac", "", false},
+	} {
+		got, ok := DnsmasqLeaseAddr(leases, tc.mac)
+		if ok != tc.wantOK || (ok && got.String() != tc.want) {
+			t.Errorf("DnsmasqLeaseAddr(%s) = %v, %v; want %s, %v", tc.mac, got, ok, tc.want, tc.wantOK)
+		}
+	}
+}
+
 func TestDnsmasqLease6Name_ReadsTheV6LineOfThatAddress(t *testing.T) {
 	const leases = "1790000000 02:42:c0:a8:67:0b 192.168.103.11 web1 01:02:42:c0:a8:67:0b\n" +
 		"duid 00:01:00:01:30:00:00:01:02:42:c0:a8:67:01\n" +

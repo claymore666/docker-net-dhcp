@@ -341,6 +341,8 @@ type HealthResponse struct {
 	IPAMReplayMiss int32 `json:"ipam_replay_miss"`
 	// IPAMRebindAmbiguous counts address requests that met more than one removed endpoint, so the server chose (#110).
 	IPAMRebindAmbiguous int32 `json:"ipam_rebind_ambiguous"`
+	// IPAMRebindMoved counts re-binds the server answered with another address than the removed endpoint's (#1416).
+	IPAMRebindMoved int32 `json:"ipam_rebind_moved"`
 	// IPAMReserveDuplicateMAC counts address requests refused for a hardware address already leasing (#110).
 	IPAMReserveDuplicateMAC int32 `json:"ipam_reserve_duplicate_mac"`
 	// IPAMStrandedRecords counts CREATED records a previous process left without an endpoint, given up at start-up
@@ -667,6 +669,7 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		IPAMReplayHits:               p.ipamReplayHits.Load(),
 		IPAMReplayMiss:               p.ipamReplayMiss.Load(),
 		IPAMRebindAmbiguous:          p.ipamRebindAmbiguous.Load(),
+		IPAMRebindMoved:              p.ipamRebindMoved.Load(),
 		IPAMReserveDuplicateMAC:      p.ipamReserveDuplicateMAC.Load(),
 		IPAMStrandedRecords:          p.ipamStrandedRecords.Load(),
 		IPAMReleaseUnknown:           p.ipamReleaseUnknown.Load(),

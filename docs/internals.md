@@ -124,10 +124,19 @@ acquired, and nothing below it:
   the cap is logged. That is why the flag must not go below 30s; the
   reference states the rule for operators under
   [Address allocation](reference.md#address-allocation).
-- The identity that carries a restarted container's address back is the
-  client identifier of the previous endpoint, taken from the lease
-  record. Docker's request carries no hostname and no endpoint id. The
-  one thing narrower to match on is the MAC, when the user set it: a
+- The identity that carries a restarted container's address back comes
+  from the previous endpoint's lease record. Since v2.8.0, when Docker
+  gave the endpoint a new MAC, the plugin releases the previous lease
+  under that record's hardware address and client identifier and asks
+  for the address under the identifier derived from the new MAC
+  (#1416). No hand-over happens on a network with `client_id`, in
+  `ipvlan` or under an unchanged MAC, where one identifier serves both
+  endpoints. Where the release could be lost, because the server
+  answers from an address this host holds, the server or the gateway
+  to it does not answer an ARP probe, or the release could not be
+  sent, it asks under the previous client identifier without a
+  release, as before. Docker's request carries no
+  hostname and no endpoint id. The one thing narrower to match on is the MAC, when the user set it: a
   kept identity leased under the requesting MAC is that container's own,
   and on a `require_mac=true` network nothing else is claimed (#1118).
   With a Docker-generated MAC there is nothing narrower, so the
@@ -543,6 +552,11 @@ By default it does not, and that is deliberate as of v1.9.0 (#800). Two
 values are the exceptions: `release_lease=on_stop`, which releases at
 the stop (#962), and `release_lease=on_remove`, which holds the address
 for the restart window first and releases at the end of it (#984).
+In IPAM mode a restart that gives the container a new MAC also hands
+the previous lease back on any setting, `never` included: one
+DHCPRELEASE, then the hand-over gap of two seconds before the restarted
+container asks for the address under that MAC (#1416). The cases that skip it are listed under
+[Restart stability](reference.md#restart-stability-mac-and-ip).
 
 A lease is a lease. When a container stops, its address stays leased
 until the lease expires, and if the container comes back before then it
