@@ -67,6 +67,13 @@ so `docker plugin upgrade` from v2.7.0 asks for nothing new.
   dhcp-golib v1.5.2 sends the frame to the relay's hardware address with
   the server as IP destination (RFC 2131 section 4.4.5); the plugin pins
   it (#1419, PR #1420).
+- The reference said `register_dns` pairs with the option-12 hostname
+  hint. With `register_dns` on, the DHCPv4 client sends option 81 in
+  place of option 12 on every DISCOVER and REQUEST (RFC 4702 section
+  3.1), so a router that registers names only from option 12 shows the
+  container with no name. The `register_dns` row and the Dynamic-DNS
+  registration section now say so and advise leaving the option off on
+  such a router; nothing changes in use (#1426, PR #1427).
 
 ### CI
 
