@@ -553,9 +553,9 @@ values are the exceptions: `release_lease=on_stop`, which releases at
 the stop (#962), and `release_lease=on_remove`, which holds the address
 for the restart window first and releases at the end of it (#984).
 In IPAM mode a restart that gives the container a new MAC also hands
-the previous lease back on every setting, `never` included: one
-DHCPRELEASE, two seconds before the restarted container asks for the
-address under that MAC (#1416). The cases that skip it are listed under
+the previous lease back on any setting, `never` included: one
+DHCPRELEASE, then the hand-over gap of two seconds before the restarted
+container asks for the address under that MAC (#1416). The cases that skip it are listed under
 [Restart stability](reference.md#restart-stability-mac-and-ip).
 
 A lease is a lease. When a container stops, its address stays leased

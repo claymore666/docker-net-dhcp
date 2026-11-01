@@ -1883,11 +1883,13 @@ library.
 alongside its DHCPv4 one**. Docker reports it as `GlobalIPv6Address`,
 and it behaves like the v4 address in every way the protocol allows: it
 is requested back after a restart, renewed on its own timers, counted in
-its own `*_v6` counters, and handed back on exactly the same rule as the
+its own `*_v6` counters, and handed back on the same `release_lease` rule as the
 v4 address: no Release at all on a `release_lease=never` network, which
 is the default, one per family at Leave on a `release_lease=on_stop`
 network (#962), and one per family at the end of the restart window on a
-`release_lease=on_remove` network (#984). The two families are two
+`release_lease=on_remove` network (#984). The one exception is v4
+only: the IPAM-mode restart hand-over sends a DHCPRELEASE for the v4
+lease on any setting and no DHCPv6 Release (v2.8.0+, #1416). The two families are two
 records with two deadlines, so one can go back and the other fail in the
 same teardown, which is what the per-family counters are for.
 
