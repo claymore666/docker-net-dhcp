@@ -362,6 +362,25 @@
   
   
     <li class="md-tabs__item">
+      <a href="../tested-against/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Tested against
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
       <a href="../roadmap/" class="md-tabs__link">
         
   
@@ -676,6 +695,33 @@
   
   
     <li class="md-nav__item">
+      <a href="../tested-against/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tested against
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../roadmap/" class="md-nav__link">
         
   
@@ -775,10 +821,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_11" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_12" checked>
         
           
-          <label class="md-nav__link" for="__nav_11" id="__nav_11_label" tabindex="">
+          <label class="md-nav__link" for="__nav_12" id="__nav_12_label" tabindex="">
             
   
   
@@ -796,8 +842,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_11_label" aria-expanded="true">
-          <label class="md-nav__title" for="__nav_11">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_12_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_12">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1855,7 +1901,7 @@ be true.</p>
    it on the release branch with the rest of this step. Exit 2 means the
    API could not be read; run it again rather than treating it as a pass.
    The offline half already runs on every pull request.</p>
-<p>The work happens here, on the release branch. The rc dry-run (step 8)
+<p>The work happens here, on the release branch. The rc dry-run (step 9)
    is the <strong>enforcement gate</strong>: the real <code>vX.Y.Z</code> tag does not ship
    until every milestone PR is ticked off against the docs. By the real
    tag, text and code (and the published site) must agree.
@@ -1920,7 +1966,7 @@ be true.</p>
 <p><strong>The maintainer signs off on the release notes before the tag.</strong> Not
    optional and not implied by approving the release PR: show the
    rendered <code>## vX.Y.Z</code> section and wait for an explicit go. The rc
-   window (step 8) is the checkpoint: by the real <code>vX.Y.Z</code> tag the notes
+   window (step 9) is the checkpoint: by the real <code>vX.Y.Z</code> tag the notes
    must already be signed off, because the tag publishes them. If the
    notes change after the tag, edit
    <a href="https://github.com/claymore666/docker-net-dhcp/blob/main/RELEASE_NOTES.md"><code>RELEASE_NOTES.md</code></a>
@@ -2101,7 +2147,10 @@ be true.</p>
 <li>
 <p><strong>Pull main, dry-run, then tag:</strong> first push <code>vX.Y.Z-rc1</code> and
    confirm the workflow run is green end-to-end (pre-release mode,
-   <code>:latest</code> untouched; see "Pre-release dry-run" above). Then:
+   <code>:latest</code> untouched; see "Pre-release dry-run" above). Start the lab run
+   (step 9a below) from that rc and wait for its verdict: the final tag
+   below is not pushed until the lab has one and every FAIL is explained.
+   Then:
    <div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>git<span class="w"> </span>checkout<span class="w"> </span>main<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>pull<span class="w"> </span>--ff-only<span class="w"> </span><span class="o">&amp;&amp;</span>
 <a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="c1"># Step 4&#39;s check, on the tree that is about to be tagged. The release</span>
 <a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a><span class="c1"># page&#39;s body comes from here, and its refusal would otherwise arrive</span>
@@ -2232,8 +2281,17 @@ blocks no publish. Without Hub credentials it records
 </ul>
 </li>
 </ol>
-<p>Every green checklist below includes the arm64 jobs.
-10. <strong>Confirm the GitHub Release</strong>. The <code>github-release</code> job now cuts it
+<p>Every green checklist below includes the arm64 jobs.</p>
+<p>9a. <strong>Run the rc through the real-server lab.</strong> Every rc goes through the
+   lab once, before the final tag, with the rc tag from step 9 as the
+   plugin under test. The final tag in step 9 waits for the verdict. How to
+   run it is in the
+   <a href="https://github.com/claymore666/docker-net-dhcp-lab#run-every-scenario-on-a-cell">lab README</a>.
+   A FAIL verdict blocks the final until it is explained, in the release
+   issue or on the lab's results page. When the run is done, update
+   <a href="../tested-against/">Tested against</a> with its rows.</p>
+<ol>
+<li><strong>Confirm the GitHub Release</strong>. The <code>github-release</code> job now cuts it
     automatically once the install proofs are green (so a plugin that
     doesn't install never gets an advertised Releases page). It attaches
     the cosign-signed artifacts and builds the body as: a generated lead
@@ -2277,7 +2335,8 @@ blocks no publish. Without Hub credentials it records
    1.x this step pasted a per-release digest block into
    <a href="../verifying-releases/">Verifying releases</a>, and since #547 the
    release run enforced it. From 2.0 that step is gone, from the doc and
-   from <code>release.yml</code> both.</p>
+   from <code>release.yml</code> both.</li>
+</ol>
 <p><strong>Why it had to go.</strong> The tag and the
    commit are compiled into the binary from 2.0 (<code>VERSION</code>/<code>COMMIT</code>
    through <code>-ldflags -X</code>, plan row O-4). The step's own recovery was
