@@ -54,11 +54,12 @@ lists every run, including older plugin versions.
 
 - PASS: the check held, and the verdict links its evidence.
 - FAIL: the check did not hold. A FAIL row is a finding about the plugin
-  only when the results page says so; each page groups its FAIL and BLOCKED
-  rows by cause, and many were defects of the lab itself, fixed since. The
-  full v0.5.0 run page states that no row of its run points at a plugin
-  defect; the page of the OpenWrt and Windows reruns explains its FAIL and
-  BLOCKED rows one by one. Read the cause list on the page before reading a count as a plugin problem.
+  only when the results page says so. Each page lists its FAIL and BLOCKED
+  rows with their cause where one is known, and many were defects of the
+  lab itself, fixed since. The full v0.5.0 run page states that no row of
+  its run points at a plugin defect; the page of the OpenWrt and Windows
+  reruns explains its FAIL and BLOCKED rows one by one. Read the cause list
+  on the page before reading a count as a plugin problem.
 - BLOCKED: the lab could not reach a known starting state for the scenario,
   for example a Docker host that did not come back from a reboot in time.
   The verdict names the reason.

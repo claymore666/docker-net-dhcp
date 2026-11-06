@@ -121,40 +121,24 @@ the release notes and lives in the lab repository's
 directory, with the evidence tarball attached to the lab release it ran on.
 [Tested against](tested-against.md) lists the newest result per cell.
 
-- Results: the latest run is plugin v2.6.0-rc2 on the lab tree before
-  the docker-net-dhcp-lab v0.3.0 fixes, over Kea (single, hot-standby
-  pair and behind a relay), ISC dhcpd (single and failover pair),
-  dnsmasq, udhcpd, Pi-hole and OpenWrt as servers, with hosts on Debian
-  13, Ubuntu 24.04 and Debian 11 with Docker 20.10:
-  thirteen of fourteen cells wrote verdicts (the MikroTik RouterOS CHR
-  cell wrote none, its base image did not build, a lab defect fixed in
-  v0.3.0), 3761 rows, 1683 PASS, 1384 not applicable, 401 FAIL and
-  293 BLOCKED. The results page reads each FAIL and BLOCKED cluster: most
-  are lab defects or a busy parent interface, and the plugin findings
-  each have an issue
-  ([results page](https://github.com/claymore666/docker-net-dhcp-lab/blob/v0.3.0/results/v0.3.0-plugin-v2.6.0-rc2.md),
-  [evidence on the lab release](https://github.com/claymore666/docker-net-dhcp-lab/releases/tag/v0.3.0)).
+- Results: the newest result per cell, with plugin version, lab version,
+  date and counts, is on [Tested against](tested-against.md). The latest
+  full run is plugin v2.8.0-rc1 on lab v0.5.0
+  ([results page](https://github.com/claymore666/docker-net-dhcp-lab/blob/v0.5.0/results/v0.5.0-plugin-v2.8.0-rc1.md),
+  [evidence on the lab release](https://github.com/claymore666/docker-net-dhcp-lab/releases/tag/v0.5.0)).
   The run on v2.5.0 with lab v0.1.0 had 504 PASS, 6 N/A and 0 FAIL over 3
   servers, 2 hosts and 5 network shapes
   ([results page](https://github.com/claymore666/docker-net-dhcp-lab/blob/ba9203aafbdd2691f08bc2e497ab2be48a3fff33/results/v0.1.0-plugin-v2.5.0.md),
   [evidence on the lab release](https://github.com/claymore666/docker-net-dhcp-lab/releases/tag/v0.1.0)).
 - Proves: what the plugin does in each journey on each network shape
   against stock DHCP servers, judged against the server's lease table,
-  with the evidence published. The rc2 run did not pass every everyday
-  journey: its FAIL and BLOCKED rows include everyday-journey rows that
-  the results page does not yet attribute to the lab or to the plugin.
+  with the evidence published. Each results page lists its FAIL and
+  BLOCKED rows with their cause where one is known.
 - Limits: a FAIL or BLOCKED row is not a plugin finding until the results
-  page says so; the rc2 run had 401 FAIL and 293 BLOCKED rows, most of
-  them defects of the lab itself. The fixed-MAC reboot on `ipvlan` is not
-  applicable, since its containers share the parent's MAC. The lab's
-  operations scenarios (audit ledger, metrics, host link names, VLAN
-  parent) shipped in docker-net-dhcp-lab v0.3.0 and have no host run yet.
-  Planned for lab v0.4.0: the soak scenarios
-  ([lab #15](https://github.com/claymore666/docker-net-dhcp-lab/issues/15)),
-  the Windows Server cell's image build and run, its wiring shipped in
-  v0.3.0 ([lab #14](https://github.com/claymore666/docker-net-dhcp-lab/issues/14)),
-  and a Fritz.Box cell
-  ([lab #13](https://github.com/claymore666/docker-net-dhcp-lab/issues/13)).
+  page says so; many were defects of the lab itself, fixed since. The
+  fixed-MAC reboot on `ipvlan` is not applicable, since its containers
+  share the parent's MAC. What is not tested is listed under
+  [Not tested](tested-against.md#not-tested).
 
 ## Supply chain
 - [CodeQL](https://github.com/claymore666/docker-net-dhcp/blob/main/.github/workflows/codeql.yml),
