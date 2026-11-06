@@ -27,7 +27,8 @@ Every release is run in a separate lab against real DHCP servers, Kea
 failover pair), dnsmasq, udhcpd, Pi-hole and OpenWrt, with Docker hosts
 on Debian 13, Ubuntu 24.04 and Debian 11 with Docker 20.10; a MikroTik
 RouterOS CHR cell is set up but has written no verdicts yet
-([latest lab results](https://github.com/claymore666/docker-net-dhcp-lab/blob/v0.3.0/results/README.md),
+([latest lab results](https://github.com/claymore666/docker-net-dhcp-lab/blob/v0.5.0/results/README.md),
+[tested against](docs/tested-against.md),
 [how the lab works](docs/testing.md#real-server-lab)).
 
 This is the successor of `devplayer0/docker-net-dhcp`, not a patched copy:
