@@ -704,7 +704,7 @@ be true.
    API could not be read; run it again rather than treating it as a pass.
    The offline half already runs on every pull request.
 
-   The work happens here, on the release branch. The rc dry-run (step 8)
+   The work happens here, on the release branch. The rc dry-run (step 9)
    is the **enforcement gate**: the real `vX.Y.Z` tag does not ship
    until every milestone PR is ticked off against the docs. By the real
    tag, text and code (and the published site) must agree.
@@ -774,7 +774,7 @@ be true.
    **The maintainer signs off on the release notes before the tag.** Not
    optional and not implied by approving the release PR: show the
    rendered `## vX.Y.Z` section and wait for an explicit go. The rc
-   window (step 8) is the checkpoint: by the real `vX.Y.Z` tag the notes
+   window (step 9) is the checkpoint: by the real `vX.Y.Z` tag the notes
    must already be signed off, because the tag publishes them. If the
    notes change after the tag, edit
    [`RELEASE_NOTES.md`](https://github.com/claymore666/docker-net-dhcp/blob/main/RELEASE_NOTES.md)
@@ -981,7 +981,10 @@ be true.
    match what's in `git log`.
 9. **Pull main, dry-run, then tag:** first push `vX.Y.Z-rc1` and
    confirm the workflow run is green end-to-end (pre-release mode,
-   `:latest` untouched; see "Pre-release dry-run" above). Then:
+   `:latest` untouched; see "Pre-release dry-run" above). Start the lab run
+   (step 9a below) from that rc and wait for its verdict: the final tag
+   below is not pushed until the lab has one and every FAIL is explained.
+   Then:
    ```sh
    git checkout main && git pull --ff-only &&
    # Step 4's check, on the tree that is about to be tagged. The release
@@ -1115,6 +1118,16 @@ be true.
         `⚠️ Docker Hub descriptions not verified` in the summary.
 
    Every green checklist below includes the arm64 jobs.
+
+9a. **Run the rc through the real-server lab.** Every rc goes through the
+   lab once, before the final tag, with the rc tag from step 9 as the
+   plugin under test. The final tag in step 9 waits for the verdict. How to
+   run it is in the
+   [lab README](https://github.com/claymore666/docker-net-dhcp-lab#run-every-scenario-on-a-cell).
+   A FAIL verdict blocks the final until it is explained, in the release
+   issue or on the lab's results page. When the run is done, update
+   [Tested against](tested-against.md) with its rows.
+
 10. **Confirm the GitHub Release**. The `github-release` job now cuts it
     automatically once the install proofs are green (so a plugin that
     doesn't install never gets an advertised Releases page). It attaches

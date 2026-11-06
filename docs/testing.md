@@ -119,6 +119,7 @@ Every plugin release gets one lab run; its results page is linked from
 the release notes and lives in the lab repository's
 [results/](https://github.com/claymore666/docker-net-dhcp-lab/tree/dev/results)
 directory, with the evidence tarball attached to the lab release it ran on.
+[Tested against](tested-against.md) lists the newest result per cell.
 
 - Results: the latest run is plugin v2.6.0-rc2 on the lab tree before
   the docker-net-dhcp-lab v0.3.0 fixes, over Kea (single, hot-standby
