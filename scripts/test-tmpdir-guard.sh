@@ -91,7 +91,7 @@ sandbox() { # sandbox <dir> — populate a runnable copy
        "$REPO/scripts/tmpdir-guard.sh" "$sb/scripts/"
 }
 
-# bash 5.3 (ubuntu-26.04 runners) refuses `cd ""`; the incident needs the
+# bash 5.3 (the ubuntu-26.04 image) refuses `cd ""`; the incident needs the
 # 5.2 semantics, so both arms run under them or the control proves nothing.
 CD52="$WORK/cd52.sh"
 printf '%s\n' 'cd() { if [ "$#" -eq 1 ] && [ -z "$1" ]; then return 0; fi; builtin cd "$@"; }' > "$CD52"
