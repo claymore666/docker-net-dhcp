@@ -91,9 +91,14 @@ sandbox() { # sandbox <dir> — populate a runnable copy
        "$REPO/scripts/tmpdir-guard.sh" "$sb/scripts/"
 }
 
+# bash 5.3 (the ubuntu-26.04 image) refuses `cd ""`; the incident needs the
+# 5.2 semantics, so both arms run under them or the control proves nothing.
+CD52="$WORK/cd52.sh"
+printf '%s\n' 'cd() { if [ "$#" -eq 1 ] && [ -z "$1" ]; then return 0; fi; builtin cd "$@"; }' > "$CD52"
+
 SB="$WORK/guarded"
 sandbox "$SB"
-( cd "$SB" && PATH="$INERT:$PATH" bash scripts/test-check-coverage-floor.sh ) \
+( cd "$SB" && PATH="$INERT:$PATH" BASH_ENV="$CD52" bash scripts/test-check-coverage-floor.sh ) \
     >"$WORK/guarded.out" 2>&1
 grc=$?
 if [ "$grc" -ne 0 ]; then
@@ -126,7 +131,7 @@ if grep -F '=$(mktemp -d)' "$PRE/scripts/test-check-coverage-floor.sh" >/dev/nul
 else
     no "the control really is the pre-fix shape (the revert matched nothing)"
 fi
-( cd "$PRE" && PATH="$INERT:$PATH" bash scripts/test-check-coverage-floor.sh ) \
+( cd "$PRE" && PATH="$INERT:$PATH" BASH_ENV="$CD52" bash scripts/test-check-coverage-floor.sh ) \
     >"$WORK/prefix.out" 2>&1
 if [ -e "$PRE/.git" ]; then
     ok "the pre-fix shape does build its fixture in that directory"
