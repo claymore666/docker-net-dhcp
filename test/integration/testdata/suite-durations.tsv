@@ -43,15 +43,11 @@
 #              lines across the three runs. Median rather than mean: the
 #              ephemeral runner pool produces occasional slow jobs and
 #              one such sample should not move a test's weight.
-#   one row     TestLeaseRenewIPv6_HonorsT1 is 73.85, and it alone is NOT
-#              from the corpus runs above: this round changed that test's
-#              body (its baseline moved from the bind to t1-t1Slop), so
-#              the 90.03 the corpus measured costs a tree that no longer
-#              exists — drift in the subject, which the note above says
-#              is the one thing that disqualifies a sample. Its figure
-#              is the median of the same test on the three head runs
-#              34204413442 / 34205039347 / 34206023827: 74.16, 73.60,
-#              73.85. Same method, three samples, a later corpus.
+#   one row    TestLeaseRenewIPv6_HonorsT1 moved to the Kea v6 fixture in
+#              #275 (T1 10s instead of dnsmasq's 60s), so every earlier
+#              figure for it, 73.85 included, costs a tree that no longer
+#              exists. Its row is INFERRED (T1 plus the segment and Kea
+#              start-up) until the first lane that runs the new body.
 #   one row    TestFailure_UnansweredRenewalsCounted is 84.19, and it
 #              alone is not from the corpus runs above either: it
 #              arrives with #940 and no corpus run could have costed it.
@@ -527,7 +523,7 @@
 #              create-time probe of up to 8 s plus the 22 to 25 s a serverless start takes.
 #   samples    3 for every corpus row. SIXTY-EIGHT rows are not corpus
 #              samples, and the seventeen groups below are disjoint and
-#              exhaust them: the five `one row` notes above -- 73.85,
+#              exhaust them: the five `one row` notes above -- 35.00,
 #              84.19, 0.05, 12.08 and 13.00 -- the eighteen #110 rows,
 #              the four #962 TestReleaseLease_* rows, the two
 #              #816/#817 rows, the four #984 TestReleaseLease_OnRemove*
@@ -538,10 +534,10 @@
 #              TestMTUOption_* rows, the four #905 TestSubModes_* rows
 #              the three #902 TestVlan_* rows, the #904 row, the
 #              #1118 row, the #1125 row and the #1116 row.
-#              Sixty-five of the sixty-eight are INFERRED; the three
-#              that are measured are
-#              TestLeaseRenewIPv6_HonorsT1, from three later head runs,
-#              and TestFailure_UnansweredRenewalsCounted and
+#              Sixty-six of the sixty-eight are INFERRED (#275 turned
+#              TestLeaseRenewIPv6_HonorsT1 from measured to inferred);
+#              the two that are measured are
+#              TestFailure_UnansweredRenewalsCounted and
 #              TestHostname_ReachesTheServersTableAfterTheClientStarts,
 #              each from a single sample. The previous edition carried
 #              four inferred rows and fourteen v6 rows recovered from the 1.9.0
@@ -808,7 +804,7 @@ TestJoinGuard_AStartInsideAForcedAdvertisementWindowKeepsTheGateway_Macvlan	40.0
 TestJoinNoContainer_AddressIsHeldUntilItExpires	26.95
 TestJoin_TheAdvertisedRoutesAreInTheContainerAtStart	100.00
 TestJoin_TheAdvertisedRoutesAreInTheContainerAtStart_ParentAttached	220.00
-TestLeaseRenewIPv6_HonorsT1	73.85
+TestLeaseRenewIPv6_HonorsT1	35.00
 TestLeaseRenew_HonorsT1	27.38
 TestLeaseRetention_ARestartRebootsRatherThanDiscovers	12.92
 TestLeaseRetention_NothingEverReleases	35.23
