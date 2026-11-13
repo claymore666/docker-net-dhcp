@@ -425,8 +425,6 @@ func TestLeaseRenewIPv6_HonorsT1(t *testing.T) {
 		time.Since(anchor).Round(time.Second))
 
 	t1 := v6RenewT1 * time.Second
-	// A row that is not the bind's can only be a renewal; the loop runs from the bind so an early one is read too, and
-	// the stamp check below judges it. The read slack past the ceiling covers the stamp's second of resolution.
 	deadline := anchor.Add(t1 + v6RenewCeiling + 2*time.Second)
 	rows := keaRowsFor(kea, addr)
 	for len(rows) <= len(bound) && time.Now().Before(deadline) {
