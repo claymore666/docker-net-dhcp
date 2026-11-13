@@ -216,6 +216,17 @@ DOCKERFILE="$TMP/Dockerfile.noalpine" APK_AVAIL_FILE="$TMP/avail.txt" \
 if [ $? -eq 2 ]; then echo "PASS: missing FROM alpine: exits 2"; else
     echo "FAIL: missing FROM alpine: should exit 2"; failures=$((failures + 1)); fi
 
+# --- the real Dockerfile pins zlib (#1438) ------------------------------
+# Trivy reports the base digest's zlib; the pin is the fix and a cleanup
+# that drops it again (#1406 did) has no other symptom.
+REAL_DF="$(cd "$(dirname "$0")/.." && pwd)/Dockerfile"
+if DOCKERFILE="$REAL_DF" bash "$CHECK" --list-pins 2>&1 | grep -qE '^zlib=1\.4-r0$'; then
+    echo "PASS: the Dockerfile's apk pins include zlib=1.4-r0"
+else
+    echo "FAIL: the Dockerfile does not pin zlib=1.4-r0 (CVE-2026-4738, #1438)"
+    failures=$((failures + 1))
+fi
+
 # --- the CRON CALLER must pass --strict (#742) -------------------------
 # The report-only mode above is correct for a human at a terminal and
 # WRONG for the scheduled workflow, which was invoking it bare. GitHub
