@@ -220,7 +220,7 @@ if [ $? -eq 2 ]; then echo "PASS: missing FROM alpine: exits 2"; else
 # Trivy reports the base digest's zlib; the pin is the fix and a cleanup
 # that drops it again (#1406 did) has no other symptom.
 REAL_DF="$(cd "$(dirname "$0")/.." && pwd)/Dockerfile"
-if DOCKERFILE="$REAL_DF" bash "$CHECK" --list-pins 2>&1 | grep -qE '^zlib=1\.4-r0$'; then
+if DOCKERFILE="$REAL_DF" bash "$CHECK" --list-pins 2>&1 | grep -E '^zlib=1\.4-r0$' >/dev/null; then
     echo "PASS: the Dockerfile's apk pins include zlib=1.4-r0"
 else
     echo "FAIL: the Dockerfile does not pin zlib=1.4-r0 (CVE-2026-4738, #1438)"
