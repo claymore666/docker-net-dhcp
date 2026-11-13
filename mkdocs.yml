@@ -108,6 +108,7 @@ nav:
   - Architecture: architecture.md
   - How it works: internals.md
   - Testing: testing.md
+  - Tested against: tested-against.md
   - Roadmap: roadmap.md
   - Verifying releases: verifying-releases.md
   - Contributing: contributing.md

@@ -13,6 +13,7 @@ package integration
 import (
 	"context"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"strings"
@@ -68,16 +69,6 @@ func countDHCPv6Replies(t *testing.T, logPath, addr string, alsoMatch ...string)
 		t.Fatalf("read dnsmasq log: %v", err)
 	}
 	return harness.CountDHCPv6Binds(string(data), append([]string{addr}, alsoMatch...)...)
-}
-
-// lastDHCPv6ReplyAt returns the server's stamp on the last DHCPREPLY for addr, and whether one was readable.
-func lastDHCPv6ReplyAt(t *testing.T, logPath, addr string) (time.Time, bool) {
-	t.Helper()
-	data, err := os.ReadFile(logPath)
-	if err != nil {
-		t.Fatalf("read dnsmasq log: %v", err)
-	}
-	return harness.LastDHCPv6BindAt(string(data), time.Now(), addr)
 }
 
 // countLogToken counts lines of the dnsmasq log carrying every needle.
@@ -371,61 +362,45 @@ func TestTombstoneRestart_PreservesIPv6(t *testing.T) {
 	}
 }
 
-// dnsmasq derives DHCPv6 T1 as lease/2 = 60s from the 2m lease and cannot advertise it separately, so the wait stands.
-// A second DHCPREPLY lands within seconds of the bind (run 34203647801), so the baseline is taken a slop before T1 and
-// the window is anchored on the stamp of the bind's DHCPREPLY (#103).
+// Kea sets the DHCPv6 timers verbatim, which dnsmasq cannot (T1 is lease/2 there). The renewal row's own stamp must fall
+// in [T1-floor, T1+ceiling] after the bind row's: the client's T1-less fallbacks land at 0.5 x preferred (25s) and at
+// T2/2 (20s), both outside it, as do lease/2 (30s) and T2 (40s); a stamp resolves to whole seconds (#275).
+const (
+	v6RenewT1      = 10
+	v6RenewT2      = 40
+	v6RenewValid   = 60
+	v6RenewPref    = 50
+	v6RenewFloor   = 2 * time.Second
+	v6RenewCeiling = 4 * time.Second
+)
 
-// TestLeaseRenewIPv6_HonorsT1 checks from the server's log that a DHCPv6 renewal happens at T1 and keeps the address (#103).
-func TestLeaseRenewIPv6_HonorsT1(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
-	defer cancel()
-
-	netName := "dh-itest-v6renew"
-
-	t.Cleanup(func() {
-		if t.Failed() {
-			fixture.DumpLogs(func(s string) { t.Log(s) })
-			harness.DumpPluginLog(t)
+// keaRowsFor is the rows of Kea's lease file for one IA_NA address, oldest first.
+func keaRowsFor(kea *harness.Kea6Fixture, addr netip.Addr) []harness.Kea6Row {
+	var out []harness.Kea6Row
+	for _, r := range kea.Rows() {
+		if a, err := netip.ParseAddr(r.Addr); err == nil && a == addr && r.LeaseType == harness.Kea6LeaseNA {
+			out = append(out, r)
 		}
-	})
-
-	// These diagnostics root-caused the udev MACAddressPolicy neighbour-cache poisoning (#103).
-	var dumps []*os.File
-	for _, iface := range []string{harness.HostVeth, harness.IpvlanParent, harness.DHCPSegment} {
-		f, err := os.CreateTemp("", "v6dbg-"+iface+"-*.txt")
-		if err != nil {
-			t.Fatalf("tcpdump capture file: %v", err)
-		}
-		td := exec.Command("tcpdump", "-i", iface, "-l", "-n", "-e",
-			"udp port 546 or udp port 547 or icmp6")
-		td.Stdout, td.Stderr = f, f
-		if err := td.Start(); err != nil {
-			t.Logf("tcpdump unavailable (%v); continuing without capture", err)
-			break
-		}
-		dumps = append(dumps, f)
-		t.Cleanup(func() {
-			_ = td.Process.Kill()
-			_, _ = td.Process.Wait()
-		})
 	}
-	t.Cleanup(func() {
-		for _, f := range dumps {
-			if t.Failed() {
-				data, _ := os.ReadFile(f.Name())
-				t.Logf("--- tcpdump %s ---\n%s", f.Name(), data)
-			}
-			_ = os.Remove(f.Name())
-		}
-		if t.Failed() {
-			neigh, _ := exec.Command("ip", "-6", "neigh", "show").CombinedOutput()
-			t.Logf("--- host ip -6 neigh ---\n%s", neigh)
-		}
-	})
+	return out
+}
 
-	harness.CreateNetwork(t, ctx, netName, "macvlan", map[string]string{"ipv6": "true"})
-	id, _, _ := harness.RunContainer(t, ctx, netName, "dh-itest-v6renew-ctr")
+// keaRowStamp is when Kea wrote the row: its expiry less its lifetime, in whole seconds.
+func keaRowStamp(r harness.Kea6Row) time.Time { return time.Unix(r.Expire-r.Valid, 0) }
 
+// TestLeaseRenewIPv6_HonorsT1 checks from Kea's lease file that a DHCPv6 renewal happens at T1 and keeps the address (#103, #275).
+func TestLeaseRenewIPv6_HonorsT1(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	cli := dockerClientFor(t)
+
+	f, kea := keaPDSegment(t, harness.WithKea6Timers(v6RenewT1, v6RenewT2),
+		harness.WithKea6Lifetimes(v6RenewValid, v6RenewPref))
+	id, err := startOnV6SegmentAs(t, ctx, cli, f, onV6Macvlan, "dh-itest-v6renew",
+		map[string]string{"ipv6_mode": "dhcp", "propagate_dns": ""})
+	if err != nil {
+		t.Fatalf("ContainerStart on the Kea segment: %v", err)
+	}
 	t.Cleanup(func() {
 		if t.Failed() {
 			t.Logf("--- container ip -6 addr ---\n%s", harness.ExecOutput(t, context.Background(), id, "ip", "-6", "addr"))
@@ -435,68 +410,55 @@ func TestLeaseRenewIPv6_HonorsT1(t *testing.T) {
 
 	v6 := linkGlobalV6(t, ctx, id, harness.IPAcquisitionBudget)
 	if v6 == "" {
-		t.Fatal("no global IPv6 appeared on the container link")
+		t.Fatalf("no global IPv6 appeared on the container link; Kea's lease file:\n%s", kea.LeaseFileText())
 	}
-	startReplies := countDHCPv6Replies(t, fixture.DnsmasqLog(), v6)
+	addr := netip.MustParseAddr(v6)
 
-	// t1 is dnsmasq's lease/2; t1Slop keeps a renewal exactly at t1 out of the baseline; ceiling allows a loaded runner.
-	const (
-		t1             = 60 * time.Second
-		t1Slop         = 5 * time.Second
-		renewalCeiling = 75 * time.Second
-	)
-
-	// T1 starts when dnsmasq sends the reply, and the address shows in the container after DAD, a netlink hop and a poll,
-	// which left 4 to 5 seconds before the renewal; the anchor is the reply's own stamp, with the client-side time as a
-	// logged fallback (#103). No reply in [t1-t1Slop, ceiling] means the timer did not fire in the window; a different
-	// address means the lease was replaced.
-	clientAnchor := time.Now()
-	anchor, anchorName := clientAnchor, "the address surfacing (server stamp unreadable)"
-	if serverBind, ok := lastDHCPv6ReplyAt(t, fixture.DnsmasqLog(), v6); ok {
-		anchor, anchorName = serverBind, "the server's own DHCPREPLY stamp"
-		t.Logf("anchor: %s, %s before the address surfaced",
-			anchorName, clientAnchor.Sub(serverBind).Round(time.Second))
-	} else {
-		t.Logf("anchor: %s", anchorName)
+	// T1 runs from the reply that bound the address, whose row Kea stamps; the client-side time would add the DAD, netlink
+	// and poll delay the address took to surface (#103).
+	bound := keaRowsFor(kea, addr)
+	if len(bound) == 0 {
+		t.Fatalf("Kea's lease file has no IA_NA row for %s:\n%s", addr, kea.LeaseFileText())
 	}
+	anchor := keaRowStamp(bound[len(bound)-1])
+	t.Logf("anchor: Kea's own row stamp %s, %s before the address surfaced", anchor.Format(time.TimeOnly),
+		time.Since(anchor).Round(time.Second))
 
-	if wait := time.Until(anchor.Add(t1 - t1Slop)); wait > 0 {
-		select {
-		case <-ctx.Done():
-			t.Fatalf("context cancelled before the renewal window opened: %v", ctx.Err())
-		case <-time.After(wait):
-		}
-	}
-	baseline := countDHCPv6Replies(t, fixture.DnsmasqLog(), v6)
-	atBind := startReplies
-	t.Logf("DHCPREPLYs for %s: %d at the bind, %d at %s after %s — watching for one more until %s",
-		v6, atBind, baseline, t1-t1Slop, anchorName, renewalCeiling)
-
-	deadline := anchor.Add(renewalCeiling)
-	endReplies := baseline
-	for time.Now().Before(deadline) {
-		if endReplies = countDHCPv6Replies(t, fixture.DnsmasqLog(), v6); endReplies > baseline {
-			break
-		}
+	t1 := v6RenewT1 * time.Second
+	deadline := anchor.Add(t1 + v6RenewCeiling + 2*time.Second)
+	rows := keaRowsFor(kea, addr)
+	for len(rows) <= len(bound) && time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
 			t.Fatalf("context cancelled inside the renewal window: %v", ctx.Err())
-		case <-time.After(time.Second):
+		case <-time.After(500 * time.Millisecond):
 		}
+		rows = keaRowsFor(kea, addr)
 	}
-	t.Logf("DHCPREPLYs for %s: baseline=%d end=%d at %s after %s",
-		v6, baseline, endReplies, time.Since(anchor).Round(time.Second), anchorName)
+	t.Logf("Kea rows for %s: %d at the bind, %d at %s after the anchor", addr, len(bound), len(rows),
+		time.Since(anchor).Round(time.Second))
 
-	// Read after the reply, so the comparison spans the renewal.
 	after := linkGlobalV6(t, ctx, id, 5*time.Second)
 	if after != v6 {
 		t.Errorf("IPv6 changed across renewal window: %s -> %s", v6, after)
 	}
-	if endReplies <= baseline {
-		t.Errorf("no DHCPREPLY for %s in the %s..%s window after %s — T1 is %s, "+
-			"so the v6 renewal timer never fired (the server logged %d reply/replies before "+
-			"the window opened, and none inside it)",
-			v6, t1-t1Slop, renewalCeiling, anchorName, t1, baseline)
+	if len(rows) <= len(bound) {
+		t.Fatalf("Kea wrote no row for %s within %s of its bind row — T1 is %s, so the v6 renewal timer never fired "+
+			"in time (lease/2 is %ds, T2 is %ds)\nKea's lease file:\n%s",
+			addr, t1+v6RenewCeiling, t1, v6RenewValid/2, v6RenewT2, kea.LeaseFileText())
+	}
+	renewed := rows[len(bound)]
+	if off := keaRowStamp(renewed).Sub(anchor); off < t1-v6RenewFloor || off > t1+v6RenewCeiling {
+		t.Errorf("Kea's first row after the bind for %s is stamped %s after it, want %s..%s (T1 %s): the client did "+
+			"not renew at the server's T1\nKea's lease file:\n%s",
+			addr, off, t1-v6RenewFloor, t1+v6RenewCeiling, t1, kea.LeaseFileText())
+	}
+	if renewed.Expire <= bound[len(bound)-1].Expire {
+		t.Errorf("Kea's renewal row for %s expires at %d, no later than the bind row's %d: the lease was not extended",
+			addr, renewed.Expire, bound[len(bound)-1].Expire)
+	}
+	if got := kea.HeldRows(renewed.DUID, harness.Kea6LeaseNA); !keaHoldsAddr(got, addr) {
+		t.Errorf("Kea no longer holds %s after the renewal: %+v", addr, got)
 	}
 }
 

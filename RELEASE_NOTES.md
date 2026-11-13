@@ -74,6 +74,13 @@ so `docker plugin upgrade` from v2.7.0 asks for nothing new.
   container with no name. The `register_dns` row and the Dynamic-DNS
   registration section now say so and advise leaving the option off on
   such a router; nothing changes in use (#1426, PR #1427).
+- The plugin image is built with Go 1.27.4 (v2.7.0: 1.27.3), which fixes
+  the standard-library `net/http` advisory GO-2026-6859, a crash of an
+  HTTP/1 server. The plugin serves its API and its metrics endpoint
+  through that server (#1440, PR #1441).
+- The plugin image pins `zlib` 1.4-r0. The image scan reported
+  CVE-2026-4738 against the 1.3.2-r1 that the `alpine:3.24.3` base
+  ships (#1438, PR #1443).
 
 ### CI
 
@@ -82,6 +89,11 @@ so `docker plugin upgrade` from v2.7.0 asks for nothing new.
   client identifier, on one that files by MAC (`--dhcp-ignore-clid`),
   both in their own namespace, and on a server in the plugin's namespace,
   where it expects no release (#1416, PR #1423).
+- The docs site has a Tested against page: one row per real-server lab
+  cell with the plugin version, the lab version, the date, the verdict
+  counts and a link to the results page. The README and the testing
+  guide link to it, and the release runbook runs each rc through the lab
+  before the final tag (#1433, PR #1434).
 
 ## v2.7.0
 

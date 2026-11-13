@@ -8,7 +8,7 @@
 # the digest is what Docker enforces and the tag is what a reader — or
 # scripts/check-go-pins.sh — can compare against the other Go pins in
 # this tree. A `1.26-alpine` tag hid go1.26.5 here through v1.5.0 (#525).
-FROM golang:1.27.3-alpine@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS builder
+FROM golang:1.27.4-alpine@sha256:0a5f7fe796599ff487605987432e7619ae45beeb2fba4c2ce0b907879932aebf AS builder
 
 # COVER_FLAGS is empty for the production build and `-cover -coverpkg=./...`
 # for the instrumented build used by the coverage workflow. Keeping the
@@ -78,6 +78,10 @@ FROM alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c
 # superseded fails the build loudly instead of drifting silently between
 # builds of the same Dockerfile.
 #
+# zlib is pinned because the base digest ships 1.3.2-r1, which the
+# scanner reports as CVE-2026-4738, fixed in 1.4-r0 (#1438). Drop the
+# pin when the base digest ships zlib 1.4-r0 or later.
+#
 # NO SECOND DHCP CLIENT (2.0). 1.x shipped dhcpcd and drove it as a child
 # process; 2.0 leases in-process through the library, so a client that
 # could also lease on the same link is an unmanaged second speaker for
@@ -105,7 +109,8 @@ FROM alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c
 # that no non-test file in this repository imports os/exec.
 RUN mkdir -p /run/docker/plugins /var/lib/net-dhcp && \
     apk add --no-cache \
-        iproute2=7.0.0-r0 && \
+        iproute2=7.0.0-r0 \
+        zlib=1.4-r0 && \
     for c in dhcpcd udhcpc udhcpc6 dhclient dhcpcd6; do \
         p="$(command -v "$c" 2>/dev/null || true)"; \
         [ -n "$p" ] || continue; \
