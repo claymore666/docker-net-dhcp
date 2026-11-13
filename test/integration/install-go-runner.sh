@@ -19,7 +19,7 @@
 
 set -euo pipefail
 
-GO_VERSION="${GO_VERSION:-1.27.3}"
+GO_VERSION="${GO_VERSION:-1.27.4}"
 ARCH="${ARCH:-linux-amd64}"
 TARBALL="go${GO_VERSION}.${ARCH}.tar.gz"
 URL="https://go.dev/dl/${TARBALL}"
