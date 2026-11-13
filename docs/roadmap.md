@@ -221,7 +221,7 @@ numbers are anchors; the order is not a queue.
 | --- | --- | --- |
 | Quiet addressing faults | RFC 5227 conflict detection runs inside the container's namespace for the life of the lease; every new failure mode gets a counter as well as a log line | [#524] |
 | Lease identity across recreates | the DHCPv6 half shipped with 2.0; the deterministic MAC is blocked upstream and the ipvlan client-id carries no milestone | [#218], [#219], [#895] |
-| arm64 | a native arm64 runner executes the full integration suite as a release-candidate gate, and the shipping shape is per-architecture tags | [#507], [#531] |
+| arm64 | a native arm64 runner executes the full integration suite as a release-candidate gate, and the shipping shape is per-architecture tags; one install tag for both architectures is blocked upstream | [#507], [#531], [#1140] |
 | A test substrate that cannot lie | a test that only passes once something is weakened is treated as a bug report, and a gate enforces it | [#403] |
 | Supply chain and documentation | releases are signed, provenanced, SBOM'd and reproducible; the remaining pull is the OpenSSF silver and gold criteria | [#452] |
 
@@ -255,6 +255,8 @@ all, so the architecture lives in the tag. A third-party
 registry serves one, and [#1035] measured it: `docker plugin install`
 refuses a manifest list, and an OCI image index, on every engine from 20.10 to
 29.8, by tag and by digest, while the per-architecture tags install.
+One install tag for both architectures needs a change in the engine
+([#1140], under "Blocked upstream" below).
 
 **A test substrate that cannot lie.** This is infrastructure work with a
 user-visible reason: on this project, every timing crutch removed from CI
@@ -273,13 +275,14 @@ page exists because `documentation_roadmap` is one of them ([#452]).
 
 ## Blocked upstream
 
-Two features cannot ship until Docker's own engine carries a change.
+Three features cannot ship until Docker's own engine carries a change.
 They stay open on purpose:
 
 | Here | Needs | Upstream |
 | --- | --- | --- |
 | [#218], the deterministic MAC | network drivers to receive the endpoint name at `CreateEndpoint`, as IPAM drivers already do | [moby/moby#52870] (issue), [moby/moby#52871] (PR, open) |
 | [#949], ipvlan with this plugin as the IPAM driver | Docker to leave the container's interface MAC alone at start when the link cannot change it. Today it sets the MAC it generated for the IPAM driver, and every ipvlan container fails to start | not filed yet |
+| [#1140], one install tag for both architectures | Docker's plugin installer to select the host platform from a manifest list or OCI image index, both when it reads the plugin's privileges and when it pulls. Today it refuses the reference | not filed yet |
 
 For [#218], both halves were filed in June 2026. The endpoint-name change
 ([moby/moby#52871]) is still awaiting review, and [#218] will not be
@@ -441,6 +444,7 @@ project does, that review is where it gets corrected.
 [#1132]: https://github.com/claymore666/docker-net-dhcp/issues/1132
 [#1135]: https://github.com/claymore666/docker-net-dhcp/issues/1135
 [#1137]: https://github.com/claymore666/docker-net-dhcp/issues/1137
+[#1140]: https://github.com/claymore666/docker-net-dhcp/issues/1140
 [#1157]: https://github.com/claymore666/docker-net-dhcp/issues/1157
 [#1177]: https://github.com/claymore666/docker-net-dhcp/issues/1177
 [#1203]: https://github.com/claymore666/docker-net-dhcp/issues/1203
