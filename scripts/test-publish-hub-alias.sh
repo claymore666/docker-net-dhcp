@@ -43,17 +43,24 @@ n=0
 BIN="$TMP/bin"
 mkdir -p "$BIN"
 
+# ORAS_FAIL_FROM=K: copy number K and later fail (a re-copy that breaks, #1446).
 cat > "$BIN/oras" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${STUB_LOG}/oras.args"
+copies=$(wc -l < "${STUB_LOG}/oras.args")
+if [ -n "${ORAS_FAIL_FROM-}" ] && [ "$copies" -ge "$ORAS_FAIL_FROM" ]; then exit 1; fi
 exit "${ORAS_RC:-0}"
 STUB
 
 cat > "$BIN/docker" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${STUB_LOG}/docker.args"
-printf '%s' "${ALIAS_DIGEST_OUT-}"
-[ -n "${ALIAS_DIGEST_OUT-}" ] && echo
+# ALIAS_DIGEST_LATER: what the alias answers once a second copy has run.
+out="${ALIAS_DIGEST_OUT-}"
+if [ -n "${ALIAS_DIGEST_LATER-}" ] && [ -f "${STUB_LOG}/oras.args" ] \
+    && [ "$(wc -l < "${STUB_LOG}/oras.args")" -ge 2 ]; then out="$ALIAS_DIGEST_LATER"; fi
+printf '%s' "$out"
+[ -n "$out" ] && echo
 exit "${DOCKER_RC:-0}"
 STUB
 
@@ -63,6 +70,13 @@ cat > "$BIN/cosign" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${STUB_LOG}/cosign.args"
 reads=$(wc -l < "${STUB_LOG}/cosign.args")
+# COSIGN_NEEDS_COPIES=N: the referrer is on the alias only after N copies (#1446).
+copies=0
+[ -f "${STUB_LOG}/oras.args" ] && copies=$(wc -l < "${STUB_LOG}/oras.args")
+if [ "$copies" -lt "${COSIGN_NEEDS_COPIES:-0}" ]; then
+    echo "Error: no signatures found" >&2
+    exit 1
+fi
 if [ "$reads" -le "${COSIGN_ABSENT_READS:-0}" ]; then
     echo "Error: no signatures found" >&2
     exit 1
@@ -208,6 +222,39 @@ run "a signature present on the first read does not wait" 0 \
 assert "a first-read signature is read once and never waited for" \
     "$(if [ "$(wc -l < "$TMP/log/cosign.args")" -eq 1 ] \
           && [ "$(not_logged sleep.args)" = 1 ]; then echo 1; else echo 0; fi)"
+
+# --------------------------- a referrer that reaches the source late (#1446)
+
+run "a referrer absent on the first copy and carried by a later copy passes" 0 \
+    "verifies under its own name" \
+    -- "ALIAS_DIGEST_OUT=$SIGNED" "COSIGN_NEEDS_COPIES=2" -- --expect-digest "$SIGNED" "$SRC" "$DST"
+
+assert "the late referrer needed a second copy, taken between two reads" \
+    "$(if [ "$(wc -l < "$TMP/log/oras.args")" -eq 2 ] \
+          && [ "$(wc -l < "$TMP/log/cosign.args")" -eq 2 ]; then echo 1; else echo 0; fi)"
+assert "every re-copy is the same recursive source-to-alias copy" \
+    "$(if [ "$(grep -cxF "cp -r $SRC $DST" "$TMP/log/oras.args")" -eq 2 ]; then echo 1; else echo 0; fi)"
+
+run "a referrer that never reaches the alias still fails after six reads" 1 \
+    "does not verify through the alias name after 6 reads 10 s apart" \
+    -- "ALIAS_DIGEST_OUT=$SIGNED" "COSIGN_NEEDS_COPIES=99" -- --expect-digest "$SIGNED" "$SRC" "$DST"
+
+assert "a referrer that never arrives is copied before every read, six times" \
+    "$(if [ "$(wc -l < "$TMP/log/oras.args")" -eq 6 ] \
+          && [ "$(wc -l < "$TMP/log/cosign.args")" -eq 6 ]; then echo 1; else echo 0; fi)"
+
+run "a re-copy that lands a rebuilt manifest is refused as a rebuild" 1 \
+    "this is a rebuild and not a copy" \
+    -- "ALIAS_DIGEST_OUT=$SIGNED" "ALIAS_DIGEST_LATER=$REBUILT" "COSIGN_NEEDS_COPIES=99" \
+    -- --expect-digest "$SIGNED" "$SRC" "$DST"
+
+assert "the rebuilt re-copy stops the loop before a second read" \
+    "$(if [ "$(wc -l < "$TMP/log/cosign.args")" -eq 1 ]; then echo 1; else echo 0; fi)"
+
+run "a re-copy that fails is refused with the copy failure" 1 \
+    "Nothing was published under the alias name" \
+    -- "ALIAS_DIGEST_OUT=$SIGNED" "ORAS_FAIL_FROM=2" "COSIGN_NEEDS_COPIES=99" \
+    -- --expect-digest "$SIGNED" "$SRC" "$DST"
 
 # --------------------------------------------------------------- refusals
 

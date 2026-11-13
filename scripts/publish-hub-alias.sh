@@ -37,7 +37,8 @@
 #      different digest (#267), so "the alias is a rebuild" and "the
 #      alias is the signed manifest" are distinguishable, and this is
 #      where they are distinguished.
-#   4. verifies the signature THROUGH THE ALIAS NAME. Equal digests say
+#   4. verifies the signature THROUGH THE ALIAS NAME. A failed read waits and
+#      repeats (1) to (3) before the next read (#1446). Equal digests say
 #      the bytes match; this says a user who pulls the alias can verify
 #      what they pulled, which is a different claim and the one the
 #      referrer copy can lose on its own.
@@ -105,14 +106,20 @@ ALIAS="${2-}"
 # two cannot drift.
 inspect_ref() { printf '%s\n' "${1#docker.io/}"; }
 
-oras cp -r "$SOURCE" "$ALIAS" || fail "oras cp -r ${SOURCE} -> ${ALIAS} failed. Nothing was published under the alias name; the release still holds the source name only."
+# One copy plus the two checks that follow it, run again before every
+# re-read so a referrer that reached the source late is carried (#1446).
+copy_alias() {
+    oras cp -r "$SOURCE" "$ALIAS" || fail "oras cp -r ${SOURCE} -> ${ALIAS} failed. Nothing was published under the alias name; the release still holds the source name only."
 
-ALIAS_DIGEST=$(docker buildx imagetools inspect "$(inspect_ref "$ALIAS")" --format '{{.Manifest.Digest}}')
-[ -n "$ALIAS_DIGEST" ] || refuse "the registry returned no digest for ${ALIAS} after the copy reported success. This cannot say whether the alias is the signed manifest, and passing without that answer is what the check is for."
+    ALIAS_DIGEST=$(docker buildx imagetools inspect "$(inspect_ref "$ALIAS")" --format '{{.Manifest.Digest}}')
+    [ -n "$ALIAS_DIGEST" ] || refuse "the registry returned no digest for ${ALIAS} after the copy reported success. This cannot say whether the alias is the signed manifest, and passing without that answer is what the check is for."
 
-if [ "$ALIAS_DIGEST" != "$EXPECT" ]; then
-    fail "${ALIAS} is ${ALIAS_DIGEST}, but ${SOURCE} was signed as ${EXPECT}. The alias must be the same manifest, so this is a rebuild and not a copy."
-fi
+    if [ "$ALIAS_DIGEST" != "$EXPECT" ]; then
+        fail "${ALIAS} is ${ALIAS_DIGEST}, but ${SOURCE} was signed as ${EXPECT}. The alias must be the same manifest, so this is a rebuild and not a copy."
+    fi
+}
+
+copy_alias
 
 # The repository part, without the tag. `%:*` strips the SHORTEST
 # `:...` suffix, which is the tag; `%%:*` would strip from a registry
@@ -123,8 +130,10 @@ ALIAS_REPO="${ALIAS_REPO%:*}"
 # Docker Hub can serve the copied manifest before its referrers index lists
 # the copied bundle: v2.2.1-rc1 read "no signatures found" 1.4 s after the
 # copy and passed on a rerun ten minutes later (#1043, one failure in seven
-# tag runs). The lag is unmeasured beyond that; six reads 10 s apart wait up
-# to 50 s, and a longer lag still fails here.
+# tag runs). The lag can also be on the source: v2.8.0-rc2 copied the manifest
+# without the bundle 7 s after signing, and the source listed it minutes later
+# (#1446). Each failed read therefore waits, then copies again, then re-reads;
+# six reads 10 s apart wait up to 50 s, and a longer lag still fails here.
 VERIFY_READS=6
 VERIFY_WAIT=10
 read_n=1
@@ -136,6 +145,7 @@ until cosign verify \
         || fail "${ALIAS} is the signed digest, but the signature does not verify through the alias name after ${VERIFY_READS} reads ${VERIFY_WAIT} s apart. The manifest copied and its referrers did not, so a user pulling the alias cannot verify what they pulled."
     echo "publish-hub-alias: signature read ${read_n}/${VERIFY_READS} through ${ALIAS} failed; waiting ${VERIFY_WAIT} s for the registry's referrers."
     sleep "$VERIFY_WAIT"
+    copy_alias
     read_n=$((read_n + 1))
 done
 
