@@ -1619,8 +1619,8 @@ numbers are anchors; the order is not a queue.</p>
 </tr>
 <tr>
 <td>arm64</td>
-<td>a native arm64 runner executes the full integration suite as a release-candidate gate, and the shipping shape is per-architecture tags</td>
-<td><a href="https://github.com/claymore666/docker-net-dhcp/issues/507">#507</a>, <a href="https://github.com/claymore666/docker-net-dhcp/issues/531">#531</a></td>
+<td>a native arm64 runner executes the full integration suite as a release-candidate gate, and the shipping shape is per-architecture tags; one install tag for both architectures is blocked upstream</td>
+<td><a href="https://github.com/claymore666/docker-net-dhcp/issues/507">#507</a>, <a href="https://github.com/claymore666/docker-net-dhcp/issues/531">#531</a>, <a href="https://github.com/claymore666/docker-net-dhcp/issues/1140">#1140</a></td>
 </tr>
 <tr>
 <td>A test substrate that cannot lie</td>
@@ -1660,7 +1660,9 @@ plugin cannot be installed from a multi-architecture manifest list at
 all, so the architecture lives in the tag. A third-party
 registry serves one, and <a href="https://github.com/claymore666/docker-net-dhcp/issues/1035">#1035</a> measured it: <code>docker plugin install</code>
 refuses a manifest list, and an OCI image index, on every engine from 20.10 to
-29.8, by tag and by digest, while the per-architecture tags install.</p>
+29.8, by tag and by digest, while the per-architecture tags install.
+One install tag for both architectures needs a change in the engine
+(<a href="https://github.com/claymore666/docker-net-dhcp/issues/1140">#1140</a>, under "Blocked upstream" below).</p>
 <p><strong>A test substrate that cannot lie.</strong> This is infrastructure work with a
 user-visible reason: on this project, every timing crutch removed from CI
 turned out to be hiding a real defect. An opt-out helper added to make a
@@ -1674,7 +1676,7 @@ ordinary issues and generally translate into something concrete. This
 page exists because <code>documentation_roadmap</code> is one of them (<a href="https://github.com/claymore666/docker-net-dhcp/issues/452">#452</a>).</p>
 </details>
 <h2 id="blocked-upstream">Blocked upstream<a class="headerlink" href="#blocked-upstream" title="Permanent link">&para;</a></h2>
-<p>Two features cannot ship until Docker's own engine carries a change.
+<p>Three features cannot ship until Docker's own engine carries a change.
 They stay open on purpose:</p>
 <table>
 <thead>
@@ -1693,6 +1695,11 @@ They stay open on purpose:</p>
 <tr>
 <td><a href="https://github.com/claymore666/docker-net-dhcp/issues/949">#949</a>, ipvlan with this plugin as the IPAM driver</td>
 <td>Docker to leave the container's interface MAC alone at start when the link cannot change it. Today it sets the MAC it generated for the IPAM driver, and every ipvlan container fails to start</td>
+<td>not filed yet</td>
+</tr>
+<tr>
+<td><a href="https://github.com/claymore666/docker-net-dhcp/issues/1140">#1140</a>, one install tag for both architectures</td>
+<td>Docker's plugin installer to select the host platform from a manifest list or OCI image index, both when it reads the plugin's privileges and when it pulls. Today it refuses the reference</td>
 <td>not filed yet</td>
 </tr>
 </tbody>
