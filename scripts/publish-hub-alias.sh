@@ -108,8 +108,12 @@ inspect_ref() { printf '%s\n' "${1#docker.io/}"; }
 
 # One copy plus the two checks that follow it, run again before every
 # re-read so a referrer that reached the source late is carried (#1446).
+PUBLISHED=0
 copy_alias() {
-    oras cp -r "$SOURCE" "$ALIAS" || fail "oras cp -r ${SOURCE} -> ${ALIAS} failed. Nothing was published under the alias name; the release still holds the source name only."
+    if ! oras cp -r "$SOURCE" "$ALIAS"; then
+        [ "$PUBLISHED" -eq 0 ] || fail "oras cp -r ${SOURCE} -> ${ALIAS} failed on a re-copy. An earlier copy already published ${ALIAS} as the signed manifest ${EXPECT}, so it is public, and its signature does not verify through the alias name, so a user pulling the alias cannot verify what they pulled."
+        fail "oras cp -r ${SOURCE} -> ${ALIAS} failed. Nothing was published under the alias name; the release still holds the source name only."
+    fi
 
     ALIAS_DIGEST=$(docker buildx imagetools inspect "$(inspect_ref "$ALIAS")" --format '{{.Manifest.Digest}}')
     [ -n "$ALIAS_DIGEST" ] || refuse "the registry returned no digest for ${ALIAS} after the copy reported success. This cannot say whether the alias is the signed manifest, and passing without that answer is what the check is for."
@@ -117,6 +121,7 @@ copy_alias() {
     if [ "$ALIAS_DIGEST" != "$EXPECT" ]; then
         fail "${ALIAS} is ${ALIAS_DIGEST}, but ${SOURCE} was signed as ${EXPECT}. The alias must be the same manifest, so this is a rebuild and not a copy."
     fi
+    PUBLISHED=1
 }
 
 copy_alias

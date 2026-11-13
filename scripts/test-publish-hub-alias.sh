@@ -251,10 +251,16 @@ run "a re-copy that lands a rebuilt manifest is refused as a rebuild" 1 \
 assert "the rebuilt re-copy stops the loop before a second read" \
     "$(if [ "$(wc -l < "$TMP/log/cosign.args")" -eq 1 ]; then echo 1; else echo 0; fi)"
 
-run "a re-copy that fails is refused with the copy failure" 1 \
-    "Nothing was published under the alias name" \
+run "a re-copy that fails says the alias is already published and unverifiable" 1 \
+    "failed on a re-copy. An earlier copy already published $DST as the signed manifest $SIGNED" \
     -- "ALIAS_DIGEST_OUT=$SIGNED" "ORAS_FAIL_FROM=2" "COSIGN_NEEDS_COPIES=99" \
     -- --expect-digest "$SIGNED" "$SRC" "$DST"
+
+assert "a failed re-copy does not claim that nothing was published" \
+    "$(if grep -q 'Nothing was published' "$TMP/out"; then echo 0; else echo 1; fi)"
+assert "a failed re-copy stops after the first read and the second copy" \
+    "$(if [ "$(wc -l < "$TMP/log/oras.args")" -eq 2 ] \
+          && [ "$(wc -l < "$TMP/log/cosign.args")" -eq 1 ]; then echo 1; else echo 0; fi)"
 
 # --------------------------------------------------------------- refusals
 
