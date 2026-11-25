@@ -1047,8 +1047,12 @@ be true.
     re-reads the digest through the alias name, refuses anything that is
     not the digest just signed, and verifies the signature under the
     alias. Docker Hub can list the copied signature later than the
-    manifest (once still missing 1.4 s after the copy), so the verify
-    reads up to six times, 10 s apart, before it fails (#1043). It comes **after** signing on purpose: the alias is the same
+    manifest (once still missing 1.4 s after the copy), and the source
+    can list it later than the first copy (v2.8.0-rc2 copied the
+    manifest without it 7 s after signing). The verify therefore reads
+    up to six times, 10 s apart, and every failed read is followed by
+    a repeat of the copy and the digest check before the next read
+    (#1043, #1446). It comes **after** signing on purpose: the alias is the same
     manifest, not a second build (#267). The two Hub description steps
     are separate because the action PATCHes one repository at a time.
 
