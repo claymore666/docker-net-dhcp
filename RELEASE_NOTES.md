@@ -80,7 +80,14 @@ so `docker plugin upgrade` from v2.7.0 asks for nothing new.
   through that server (#1440, PR #1441).
 - The plugin image pins `zlib` 1.4-r0. The image scan reported
   CVE-2026-4738 against the 1.3.2-r1 that the `alpine:3.24.3` base
-  ships (#1438, PR #1443).
+  ships (#1438, PR #1443). The base is `alpine:3.24.4` since
+  v2.8.0-rc3 and ships the same 1.3.2-r1, so the pin stays (PR #1453).
+- The plugin binary carries `github.com/moby/moby/api` v1.57.0 (was
+  v1.56.1), `github.com/moby/moby/client` v0.6.3 (was v0.6.2),
+  `golang.org/x/sys` v0.50.0 (was v0.49.0) and OpenTelemetry v1.47.0
+  (indirect, was v1.45.0); the image builds on `alpine:3.24.4` (was
+  3.24.3) and a new `golang:1.27.4-alpine` digest. The manifest and the
+  plugin's behaviour are unchanged (PR #1454, PR #1453, PR #1448).
 
 ### CI
 
@@ -94,6 +101,16 @@ so `docker plugin upgrade` from v2.7.0 asks for nothing new.
   counts and a link to the results page. The README and the testing
   guide link to it, and the release runbook runs each rc through the lab
   before the final tag (#1433, PR #1434).
+- The release workflow's step that publishes the Hub alias copies the
+  manifest and its referrers again before each failed signature re-read.
+  In the v2.8.0-rc2 run the copy ran 7 s after signing and left out the
+  signature bundle, which the source registry listed only later, so the
+  six re-reads all failed. A re-copy that fails now says the alias is
+  already published (#1446, PR #1447).
+- Bumps of the CI actions (`actions/setup-go` 7.1.0,
+  `actions/dependency-review-action` 5.0.1, `ossf/scorecard-action`
+  2.6.0) and of the docs site's `mkdocs-material` (9.8.1) (PR #1455,
+  PR #1452).
 
 ## v2.7.0
 
