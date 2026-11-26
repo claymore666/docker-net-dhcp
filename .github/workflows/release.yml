@@ -501,7 +501,9 @@ jobs:
     # the comparison by no longer describing it.
     needs: [resolve, production-shape]
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The Hub alias step can run 12 min waiting for the signature (#1459); the
+    # slowest of 58 release jobs measured 2026-11-26 ran 3.7 min.
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: write       # GHCR push + image-signature/attestation upload
@@ -1076,7 +1078,8 @@ jobs:
   release-arm64:
     needs: [resolve, production-shape]
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 20
+    # Same Hub alias wait as the release job (#1459).
+    timeout-minutes: 30
     outputs:
       # Same reasoning as the release job's hub_pushed: the arm64 Hub
       # image is what verify-install-arm64 would pull, and only the step

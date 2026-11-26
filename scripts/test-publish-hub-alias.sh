@@ -81,6 +81,14 @@ if [ "$reads" -le "${COSIGN_ABSENT_READS:-0}" ]; then
     echo "Error: no signatures found" >&2
     exit 1
 fi
+# COSIGN_LAG_S=S: the alias lists the signature only once the stubbed sleeps
+# add up to S seconds, as the v2.8.0-rc3 alias did after about 4.5 min (#1459).
+waited=0
+[ -f "${STUB_LOG}/sleep.args" ] && waited=$(LC_ALL=C awk '{ s += $1 } END { print s + 0 }' "${STUB_LOG}/sleep.args")
+if [ "$waited" -lt "${COSIGN_LAG_S:-0}" ]; then
+    echo "Error: no signatures found" >&2
+    exit 1
+fi
 exit "${COSIGN_RC:-0}"
 STUB
 
@@ -181,27 +189,27 @@ run "an empty digest from the registry cannot be judged" 2 \
     -- "ALIAS_DIGEST_OUT=" -- --expect-digest "$SIGNED" "$SRC" "$DST"
 
 run "equal digests with a signature that does not verify through the alias fails" 1 \
-    "does not verify through the alias name after 6 reads 10 s apart" \
+    "does not verify through the alias name after 12 reads 60 s apart (660 s)" \
     -- "ALIAS_DIGEST_OUT=$SIGNED" "COSIGN_RC=1" -- --expect-digest "$SIGNED" "$SRC" "$DST"
 
 # ------------------------------------------------- referrers lag the copy (#1043)
 
 run "a signature absent on every read still fails after the last read" 1 \
-    "does not verify through the alias name after 6 reads 10 s apart" \
+    "does not verify through the alias name after 12 reads 60 s apart (660 s)" \
     -- "ALIAS_DIGEST_OUT=$SIGNED" "COSIGN_ABSENT_READS=99" -- --expect-digest "$SIGNED" "$SRC" "$DST"
 
-assert "an always-absent signature is read six times" \
-    "$(if [ "$(wc -l < "$TMP/log/cosign.args")" -eq 6 ]; then echo 1; else echo 0; fi)"
-assert "the six reads are separated by five waits of 10 s" \
-    "$(if [ "$(grep -cx 10 "$TMP/log/sleep.args")" -eq 5 ] \
-          && [ "$(wc -l < "$TMP/log/sleep.args")" -eq 5 ]; then echo 1; else echo 0; fi)"
+assert "an always-absent signature is read twelve times" \
+    "$(if [ "$(wc -l < "$TMP/log/cosign.args")" -eq 12 ]; then echo 1; else echo 0; fi)"
+assert "the twelve reads are separated by eleven waits of 60 s" \
+    "$(if [ "$(grep -cx 60 "$TMP/log/sleep.args")" -eq 11 ] \
+          && [ "$(wc -l < "$TMP/log/sleep.args")" -eq 11 ]; then echo 1; else echo 0; fi)"
 assert "every read verifies the alias at the signed digest under the same identity" \
     "$(if [ "$(grep -cF -- "--certificate-identity-regexp ^test-identity\$ --certificate-oidc-issuer https://token.actions.githubusercontent.com claymore666/docker-net-dhcp@$SIGNED" \
-            "$TMP/log/cosign.args")" -eq 6 ]; then echo 1; else echo 0; fi)"
+            "$TMP/log/cosign.args")" -eq 12 ]; then echo 1; else echo 0; fi)"
 assert "each failed read before the last prints its attempt count and the wait" \
-    "$(if grep -q "read 1/6 through $DST failed; waiting 10 s" "$TMP/out" \
-          && grep -q "read 5/6 through $DST failed; waiting 10 s" "$TMP/out" \
-          && ! grep -q "read 6/6" "$TMP/out"; then echo 1; else echo 0; fi)"
+    "$(if grep -q "read 1/12 through $DST failed; waiting 60 s" "$TMP/out" \
+          && grep -q "read 11/12 through $DST failed; waiting 60 s" "$TMP/out" \
+          && ! grep -q "read 12/12" "$TMP/out"; then echo 1; else echo 0; fi)"
 
 run "a signature absent on the first read and present on a later one passes" 0 \
     "verifies under its own name" \
@@ -214,6 +222,35 @@ assert "the late signature was found on the third read, after two waits" \
 run "a signature absent on the first five reads and present on the sixth passes" 0 \
     "verifies under its own name" \
     -- "ALIAS_DIGEST_OUT=$SIGNED" "COSIGN_ABSENT_READS=5" -- --expect-digest "$SIGNED" "$SRC" "$DST"
+
+run "a signature absent on the first eleven reads and present on the twelfth passes" 0 \
+    "verifies under its own name" \
+    -- "ALIAS_DIGEST_OUT=$SIGNED" "COSIGN_ABSENT_READS=11" -- --expect-digest "$SIGNED" "$SRC" "$DST"
+
+# ------------------- the alias lists the signature minutes after the copy (#1459)
+
+run "a signature the alias lists 270 s after the copy passes, past the old 50 s window" 0 \
+    "verifies under its own name" \
+    -- "ALIAS_DIGEST_OUT=$SIGNED" "COSIGN_LAG_S=270" -- --expect-digest "$SIGNED" "$SRC" "$DST"
+
+assert "the 270 s lag was read through after five waits, copying again before each read" \
+    "$(if [ "$(wc -l < "$TMP/log/sleep.args")" -eq 5 ] \
+          && [ "$(wc -l < "$TMP/log/oras.args")" -eq 6 ]; then echo 1; else echo 0; fi)"
+
+run "a signature the alias lists 660 s after the copy passes on the last read" 0 \
+    "verifies under its own name" \
+    -- "ALIAS_DIGEST_OUT=$SIGNED" "COSIGN_LAG_S=660" -- --expect-digest "$SIGNED" "$SRC" "$DST"
+
+assert "the 660 s lag was found on the twelfth read" \
+    "$(if [ "$(wc -l < "$TMP/log/cosign.args")" -eq 12 ]; then echo 1; else echo 0; fi)"
+
+run "a signature the alias lists 661 s after the copy fails and names the window" 1 \
+    "does not verify through the alias name after 12 reads 60 s apart (660 s)" \
+    -- "ALIAS_DIGEST_OUT=$SIGNED" "COSIGN_LAG_S=661" -- --expect-digest "$SIGNED" "$SRC" "$DST"
+
+assert "a lag past the window stops after twelve reads and twelve copies" \
+    "$(if [ "$(wc -l < "$TMP/log/cosign.args")" -eq 12 ] \
+          && [ "$(wc -l < "$TMP/log/oras.args")" -eq 12 ]; then echo 1; else echo 0; fi)"
 
 run "a signature present on the first read does not wait" 0 \
     "verifies under its own name" \
@@ -235,13 +272,13 @@ assert "the late referrer needed a second copy, taken between two reads" \
 assert "every re-copy is the same recursive source-to-alias copy" \
     "$(if [ "$(grep -cxF "cp -r $SRC $DST" "$TMP/log/oras.args")" -eq 2 ]; then echo 1; else echo 0; fi)"
 
-run "a referrer that never reaches the alias still fails after six reads" 1 \
-    "does not verify through the alias name after 6 reads 10 s apart" \
+run "a referrer that never reaches the alias still fails after twelve reads" 1 \
+    "does not verify through the alias name after 12 reads 60 s apart (660 s)" \
     -- "ALIAS_DIGEST_OUT=$SIGNED" "COSIGN_NEEDS_COPIES=99" -- --expect-digest "$SIGNED" "$SRC" "$DST"
 
-assert "a referrer that never arrives is copied before every read, six times" \
-    "$(if [ "$(wc -l < "$TMP/log/oras.args")" -eq 6 ] \
-          && [ "$(wc -l < "$TMP/log/cosign.args")" -eq 6 ]; then echo 1; else echo 0; fi)"
+assert "a referrer that never arrives is copied before every read, twelve times" \
+    "$(if [ "$(wc -l < "$TMP/log/oras.args")" -eq 12 ] \
+          && [ "$(wc -l < "$TMP/log/cosign.args")" -eq 12 ]; then echo 1; else echo 0; fi)"
 
 run "a re-copy that lands a rebuilt manifest is refused as a rebuild" 1 \
     "this is a rebuild and not a copy" \
@@ -326,6 +363,23 @@ signed=$(awk '
 ' "$WF")
 assert "the digest they hand it is the digest the signing step published" \
     "$(if [ "$signed" -eq 2 ]; then echo 1; else echo 0; fi)"
+
+# A read window longer than the calling job's timeout-minutes is cut off
+# before its last read (#1459). Each calling job must leave 10 min past the
+# window for its other steps; the slowest of 58 release jobs measured
+# 2026-11-26 ran 3.7 min in all.
+reads=$(sed -n 's/^VERIFY_READS=\([0-9]*\)$/\1/p' "$SUBJECT")
+wait_s=$(sed -n 's/^VERIFY_WAIT=\([0-9]*\)$/\1/p' "$SUBJECT")
+span=$(( (${reads:-0} - 1) * ${wait_s:-0} ))
+fits=$(awk -v span="$span" '
+    function close_job() { if (calls && tmo * 60 >= span + 600) n++; calls = 0; tmo = 0 }
+    /^  [A-Za-z0-9_-]+:$/ { close_job() }
+    /^    timeout-minutes: [0-9]+$/ { tmo = $2 }
+    /publish-hub-alias\.sh --expect-digest/ { calls = 1 }
+    END { close_job(); print n + 0 }
+' "$WF")
+assert "both calling jobs' timeout-minutes cover the ${span} s read window plus 10 min" \
+    "$(if [ "$span" -gt 0 ] && [ "$fits" -eq 2 ]; then echo 1; else echo 0; fi)"
 
 echo
 if [ "$failures" -eq 0 ]; then
